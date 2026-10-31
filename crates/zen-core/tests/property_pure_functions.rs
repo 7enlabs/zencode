@@ -46,7 +46,7 @@ fn prop_cache_hit_rate_always_bounded_and_finite() {
 
 #[test]
 fn prop_cache_hit_rate_zero_denominator_is_zero() {
-    let mut rng = Lcg::new(0xB17C_A11);
+    let mut rng = Lcg::new(0x0B17_CA11);
     for _ in 0..CASES {
         let cache_read = rng.next_u64();
         assert_eq!(cache_hit_rate(cache_read, 0), 0.0);
@@ -146,7 +146,7 @@ fn prop_split_without_marker_is_identity() {
 
 #[test]
 fn prop_split_with_marker_roundtrips() {
-    let mut rng = Lcg::new(0x200D_D);
+    let mut rng = Lcg::new(0x0002_00DD);
     for _ in 0..CASES {
         let before = random_text(&mut rng);
         let after = random_text(&mut rng);
@@ -167,7 +167,7 @@ fn prop_split_with_marker_roundtrips() {
 
 #[test]
 fn prop_split_stable_never_contains_marker() {
-    let mut rng = Lcg::new(0x57AB_1E);
+    let mut rng = Lcg::new(0x0057_AB1E);
     for _ in 0..CASES {
         let mut text = random_text(&mut rng);
         if rng.below(2) == 0 {
@@ -181,7 +181,7 @@ fn prop_split_stable_never_contains_marker() {
 
 #[test]
 fn prop_split_uses_first_marker_only() {
-    let mut rng = Lcg::new(0xF125_7);
+    let mut rng = Lcg::new(0x000F_1257);
     for _ in 0..CASES {
         let head = random_text(&mut rng);
         let mid = random_text(&mut rng);
@@ -202,3 +202,4 @@ fn prop_split_uses_first_marker_only() {
         );
     }
 }
+
