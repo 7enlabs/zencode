@@ -314,3 +314,29 @@ Status column is maintained in PLAN.md ("Parity status").
 - C10.1 P1 Auto-compact threshold (`autoCompact` setting / `--autocompact auto|<tokens>`), manual `/compact [instructions]`.
 - C10.2 P1 PreCompact hook (trigger, custom_instructions) before; PostCompact (P2) after; `compact_boundary` event with trigger + pre_tokens.
 - C10.3 P1 Never leave orphaned tool messages; keep the last turn(s) verbatim; summary marked as such in the transcript.
+
+## Appendix D - Decisions after 2026-10-26 (directions and contracts, not shipped features)
+
+This appendix records product decisions made after the last SPEC revision (2026-10-26).
+Nothing here changes Appendix C: the parity checklist stays the 2026-10-14 baseline until
+re-measured. Items below are directions or contracts, not claims of shipped behavior.
+
+### D1 Assistant engine direction (decided 2026-10-28)
+- D1.1 ZenCode is an execution engine under the user's personal assistant, not a replacement
+  for the assistant. The core stays clean; features attach as modules through protocols and ports.
+
+### D2 Companion-host contract v1 (decided 2026-10-31; contract plus schema tests only, no transport code)
+- D2.1 Companion and host speak zen over a stream-JSON framing on WebSocket with TLS.
+  Three new events: companion_prompt, companion_interrupt, host_status. Full contract:
+  docs/companion-ws-v1.md; schemas: docs/schemas/companion-ws-v1/. Status: contract approved;
+  the document lands with the APP-2 M1 work.
+- D2.2 Web client first; mobile after v1.0.0, at most L2 scope.
+- D2.3 Same machine: localhost. Different machines on LAN: wss required; ws allowed on
+  localhost only.
+- D2.4 Self-signed host certificate with fingerprint pinning at pairing; pairing token
+  mandatory at connection open, delivered out of band (typed, or QR carrying token plus
+  fingerprint).
+- D2.5 One record is one text frame; 4 MiB per message limit; over-limit closes with a
+  clear error, no silent truncation, no frame splitting in M1.
+- D2.6 Resume is deferred out of M1: no sequence numbers; a dropped connection restarts
+  from the beginning. The contract states this limit.
