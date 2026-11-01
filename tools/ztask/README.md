@@ -1,11 +1,11 @@
 # ztask (MVP-0)
 
-Team task channel for ZenCode (Viec 10). Append-only, SHA-256 hash-chained
+Team task channel for ZenCode (Task 10). Append-only, SHA-256 hash-chained
 event log in SQLite (WAL); task state is a rebuildable projection.
 Python 3 stdlib only, no dependencies. Design: [DESIGN.md](DESIGN.md).
 Plan: [PLAN.md](PLAN.md).
 
-State model follows Quy trinh MVP v3.0, Muc 18 (DESIGN.md sections 0 and
+State model follows MVP Process v3.0, Section 18 (DESIGN.md sections 0 and
 2.13-2.18):
 
 ```
@@ -94,5 +94,5 @@ python3 -m unittest discover -s tools/ztask -p 'test_*.py' -v
 
 The three acceptance tests are `test_a_idempotent_event_log`,
 `test_b_lease_12h_expiry_returns_to_queue` and
-`test_c_verify_detects_hand_edit_TamperEvident`. Muc 18 alignment tests are
-in `Muc18Tests`.
+`test_c_verify_detects_hand_edit_TamperEvident`. Section 18 alignment tests are
+in `Section18Tests`.
