@@ -17,7 +17,9 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional
@@ -135,6 +137,194 @@ class ZtaskError(Exception):
     """Base error. `code` is a stable machine-readable class name."""
 
     code = "error"
+
+
+def check_evidence(evidence, base_dir="."):
+    """Submit-time check. Plain string -> 'reported'. JSON {cmd, exit,
+    artifacts: [{path, sha256}]} -> re-hash every file; missing/mismatch
+    raises ZtaskError. Returns 'verified' only when all artifacts match.
+    The approve gate runs the full verify_evidence() (adds exit 0 + commit)."""
+    text = (evidence or "").strip()
+    if not text.startswith("{"):
+        return "reported"
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        raise ZtaskError("evidence looks like JSON but does not parse")
+    if not isinstance(doc, dict):
+        raise ZtaskError("evidence JSON must be an object")
+    arts = doc.get("artifacts")
+    if not isinstance(arts, list) or not arts or not doc.get("cmd") \
+            or "exit" not in doc:
+        raise ZtaskError("evidence JSON needs cmd, exit, artifacts[]")
+    for a in arts:
+        if not isinstance(a, dict):
+            raise ZtaskError("evidence artifact must be an object")
+        path = os.path.join(base_dir, str(a.get("path", "")))
+        try:
+            with open(path, "rb") as f:
+                got = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            raise ZtaskError("evidence artifact missing: %s" % a.get("path"))
+        if got != a.get("sha256"):
+            raise ZtaskError("evidence artifact hash mismatch: %s"
+                             % a.get("path"))
+    return "verified"
+
+
+# Evidence A verdicts. Only "verified" passes; a check that could not run is
+# "undecided", never a silent pass.
+VERIFIED, FAILED, UNDECIDED = "verified", "failed", "undecided"
+EVIDENCE_EXIT = {VERIFIED: 0, FAILED: 1, UNDECIDED: 3}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+GIT_TIMEOUT = 10  # seconds
+
+
+def _git(repo: str, *argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", repo, *argv], capture_output=True,
+                          text=True, timeout=GIT_TIMEOUT)
+
+
+def verify_evidence(evidence, base_dir: str = ".",
+                    repo: Optional[str] = None) -> dict:
+    """Evidence A full check. `evidence` is the JSON text (or a dict):
+    {"cmd": str, "exit": 0, "commit": "<7-40 hex>",
+     "artifacts": [{"path": str, "sha256": "<64 hex>"}, ...]}.
+    Relative artifact paths resolve against base_dir; the commit must exist
+    in the git repo at `repo` (default base_dir).
+    Returns {"verdict": verified|failed|undecided, "checks": [...]}.
+    failed = a check ran and disproved the evidence; undecided = a check could
+    not run (unreadable file, no git, not a repo, unexpected error)."""
+    checks: List[dict] = []
+
+    def add(name, result, detail=""):
+        checks.append({"check": name, "result": result, "detail": detail})
+
+    def done() -> dict:
+        results = [c["result"] for c in checks]
+        if not results:  # nothing was checked: never a pass
+            verdict = UNDECIDED
+        elif FAILED in results:
+            verdict = FAILED
+        elif UNDECIDED in results:
+            verdict = UNDECIDED
+        else:
+            verdict = VERIFIED
+        return {"verdict": verdict, "checks": checks}
+
+    if isinstance(evidence, dict):
+        doc = evidence
+    else:
+        text = (evidence or "").strip()
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            add("format", FAILED, "evidence is not JSON (plain text is "
+                "'reported', not verified)")
+            return done()
+    if not isinstance(doc, dict):
+        add("format", FAILED, "evidence JSON must be an object")
+        return done()
+
+    # Field shape. Every malformed field is a fail.
+    cmd = doc.get("cmd")
+    if isinstance(cmd, str) and cmd.strip():
+        add("cmd", VERIFIED, cmd)
+    else:
+        add("cmd", FAILED, "cmd must be a non-empty string")
+    code = doc.get("exit")
+    if isinstance(code, bool) or not isinstance(code, int):
+        add("exit", FAILED, "exit must be an integer, got %r" % (code,))
+    elif code != 0:
+        add("exit", FAILED, "command exit code %d, needs 0" % code)
+    else:
+        add("exit", VERIFIED, "0")
+
+    arts = doc.get("artifacts")
+    if not isinstance(arts, list) or not arts:
+        add("artifacts", FAILED, "artifacts must be a non-empty list")
+        arts = []
+    for i, a in enumerate(arts):
+        name = "artifact[%d]" % i
+        try:
+            if not isinstance(a, dict):
+                add(name, FAILED, "artifact must be an object")
+                continue
+            path, want = a.get("path"), a.get("sha256")
+            if not isinstance(path, str) or not path.strip():
+                add(name, FAILED, "path must be a non-empty string")
+                continue
+            if not isinstance(want, str) or not _SHA256_RE.match(want):
+                add(name, FAILED, "%s: sha256 must be 64 lowercase hex"
+                    % path)
+                continue
+            full = os.path.join(base_dir, path)
+            try:
+                h = hashlib.sha256()
+                with open(full, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+                got = h.hexdigest()
+            except FileNotFoundError:
+                add(name, FAILED, "%s: artifact missing" % path)
+                continue
+            except OSError as e:
+                add(name, UNDECIDED, "%s: cannot read (%s)" % (path, e))
+                continue
+            if got != want:
+                add(name, FAILED, "%s: sha256 mismatch, recomputed %s"
+                    % (path, got))
+            else:
+                add(name, VERIFIED, "%s %s" % (path, got))
+        except Exception as e:  # any surprise is undecided, not a pass
+            add(name, UNDECIDED, "error: %r" % (e,))
+
+    commit = doc.get("commit")
+    repo = repo or base_dir
+    if not isinstance(commit, str) or not _COMMIT_RE.match(commit):
+        add("commit", FAILED, "commit must be 7-40 lowercase hex")
+    else:
+        try:
+            probe = _git(repo, "rev-parse", "--git-dir")
+            if probe.returncode != 0:
+                add("commit", UNDECIDED, "%s is not a git repo: %s"
+                    % (repo, probe.stderr.strip()))
+            else:
+                r = _git(repo, "rev-parse", "--verify", "--quiet",
+                         commit + "^{commit}")
+                if r.returncode != 0 or not r.stdout.strip():
+                    add("commit", FAILED, "commit %s not found in %s"
+                        % (commit, repo))
+                else:
+                    add("commit", VERIFIED, r.stdout.strip())
+        except FileNotFoundError:
+            add("commit", UNDECIDED, "git not installed")
+        except subprocess.TimeoutExpired:
+            add("commit", UNDECIDED, "git timed out")
+        except Exception as e:
+            add("commit", UNDECIDED, "error: %r" % (e,))
+    return done()
+
+
+def verify_evidence_file(path: str, base_dir: str = ".",
+                         repo: Optional[str] = None) -> dict:
+    """`ztask verify --evidence FILE`: read FILE and run verify_evidence."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {"verdict": FAILED, "checks": [
+            {"check": "file", "result": FAILED,
+             "detail": "%s: evidence file missing" % path}]}
+    except (OSError, UnicodeDecodeError) as e:
+        return {"verdict": UNDECIDED, "checks": [
+            {"check": "file", "result": UNDECIDED,
+             "detail": "%s: cannot read (%s)" % (path, e)}]}
+    out = verify_evidence(text, base_dir, repo)
+    out["evidence_file"] = path
+    out["evidence_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return out
 
 
 class InvalidTransition(ZtaskError):
@@ -417,8 +607,12 @@ Listener = Callable[[dict, List[str]], None]
 
 class Store:
     def __init__(self, path: str, now: Optional[Callable[[], datetime]] = None,
-                 aging: timedelta = DEFAULT_AGING):
+                 aging: timedelta = DEFAULT_AGING, evidence_base: str = ".",
+                 evidence_repo: Optional[str] = None):
         self.path = path
+        # Where the approve gate resolves artifact paths and the commit.
+        self.evidence_base = evidence_base
+        self.evidence_repo = evidence_repo
         self._now = now or utc_now
         self.aging = aging
         self.listeners: List[Listener] = []
@@ -821,6 +1015,7 @@ class Store:
         """DOING -> REVIEW (holder). REVIEW is not DONE."""
         if not (evidence or "").strip():
             raise ZtaskError("submit needs non-empty evidence")
+        check_evidence(evidence, self.evidence_base)
         args = {"token": int(token), "evidence": evidence}
 
         def build(pending, key, fp):
@@ -856,9 +1051,38 @@ class Store:
 
         return self._write("attest", task_id, actor, args, idem_key, build)
 
+    def _claimers(self, task_id: str) -> List[str]:
+        """Every actor that ever held the task (claim or recover-assign)."""
+        out = []
+        for r in self.conn.execute(
+                "SELECT body FROM events WHERE task_id=? ORDER BY seq",
+                (task_id,)):
+            ev = json.loads(r["body"])
+            who = None
+            if ev["type"] == "task.claimed":
+                who = ev["data"].get("assignee") or ev["actor"]
+            elif ev["type"] == "task.recovered":
+                who = ev["data"].get("assignee")
+            if who and who not in out:
+                out.append(who)
+        return out
+
     def approve(self, task_id: str, actor: str,
                 idem_key: Optional[str] = None) -> dict:
-        """REVIEW -> DONE. Leader only, needs the verified triple."""
+        """REVIEW -> DONE. Leader only. Gate (Evidence A): verified triple,
+        verified_by never a claimer of the task, and the submitted evidence
+        re-checked now by verify_evidence() with verdict 'verified'."""
+        # Re-check evidence outside the write lock (it reads files and runs
+        # git). Skipped when not REVIEW so an idempotent replay still works;
+        # build() refuses a non-REVIEW task anyway.
+        checked = None
+        pre = self._load_task(task_id)
+        if pre["state"] == "REVIEW":
+            self._require_leader(actor, "approve DONE")
+            checked = (pre["evidence"],
+                       verify_evidence(pre["evidence"], self.evidence_base,
+                                       self.evidence_repo))
+
         def build(pending, key, fp):
             self._require_leader(actor, "approve DONE")
             task = self._load_task(task_id)
@@ -869,13 +1093,34 @@ class Store:
                 raise InvalidTransition(
                     f"{task_id} is not verified: DONE needs verified_by + "
                     f"verification command + receipt")
+            claimers = self._claimers(task_id)
+            if task["verified_by"] in claimers or \
+                    task["verified_by"] == task["assignee"]:
+                raise NotAllowed(
+                    f"{task_id} was verified by {task['verified_by']}, who "
+                    f"claimed it (no self-verify)")
+            if checked is None or checked[0] != task["evidence"]:
+                raise InvalidTransition(
+                    f"{task_id} evidence changed during approve; retry")
+            result = checked[1]
+            if result["verdict"] != VERIFIED:
+                bad = "; ".join(c["detail"] for c in result["checks"]
+                                if c["result"] != VERIFIED)
+                raise InvalidTransition(
+                    f"{task_id} evidence is {result['verdict']}, DONE needs "
+                    f"verified evidence: {bad}")
             open_children = self._open_children(task_id)
             if open_children:
                 raise InvalidTransition(
                     f"{task_id} has open children: "
                     f"{', '.join(open_children)}")
-            return self._append("task.approved", task_id, actor, {}, key, fp,
-                                pending)
+            commit = next(c["detail"] for c in result["checks"]
+                          if c["check"] == "commit")
+            return self._append(
+                "task.approved", task_id, actor,
+                {"evidence_verdict": VERIFIED, "evidence_commit": commit,
+                 "evidence_sha256": sha256_hex(task["evidence"])},
+                key, fp, pending)
 
         return self._write("approve", task_id, actor, {}, idem_key, build)
 
@@ -1087,18 +1332,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--needs", required=True, help="who must unblock")
     sp.add_argument("--impact", required=True, help="effect on deadline")
     add("unblock", "task")
-    add("submit", "task", token=True).add_argument("--evidence", required=True)
+    submit_sp = add("submit", "task", token=True)
+    submit_sp.add_argument("--evidence", required=True)
     sp = add("attest", "task")
     sp.add_argument("--cmd", required=True, dest="vcmd",
                     help="verification command that was run")
     sp.add_argument("--receipt", required=True,
                     help="receipt: output digest, log link, or result")
-    add("approve", "task")
+    approve_sp = add("approve", "task")
     add("reject", "task").add_argument("--reason", required=True)
     add("drop", "task").add_argument("--reason", required=True)
     add("recover", "task").add_argument("--assignee")
-    for name in ("sweep", "list", "log", "verify", "rebuild", "outbox"):
+    for name in ("sweep", "list", "log", "rebuild", "outbox"):
         sub.add_parser(name)
+    sp = sub.add_parser("verify", help="check the hash chain, or with "
+                        "--evidence FILE check an Evidence A JSON file")
+    sp.add_argument("--evidence", metavar="FILE")
+    for s_ in (sp, approve_sp, submit_sp):
+        s_.add_argument("--base", default=".",
+                        help="directory for relative artifact paths")
+        s_.add_argument("--repo", default=None,
+                        help="git repo that must contain the commit "
+                             "(default: --base)")
     sub.add_parser("show").add_argument("task")
     sub.add_parser("backup").add_argument("path")
     sub.add_parser("ack").add_argument("id", type=int)
@@ -1107,7 +1362,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    store = Store(args.db, now=_now_from_env())
+    if args.cmd == "verify" and args.evidence is not None:
+        # Evidence A: no database needed. Exit 0 verified, 1 failed,
+        # 3 undecided; any non-verified verdict is non-zero.
+        try:
+            out = verify_evidence_file(args.evidence, args.base, args.repo)
+        except Exception as e:  # never a silent pass
+            out = {"verdict": UNDECIDED, "checks": [
+                {"check": "internal", "result": UNDECIDED,
+                 "detail": "error: %r" % (e,)}]}
+        out["ok"] = out["verdict"] == VERIFIED
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return EVIDENCE_EXIT.get(out["verdict"], 3)
+    store = Store(args.db, now=_now_from_env(),
+                  evidence_base=getattr(args, "base", "."),
+                  evidence_repo=getattr(args, "repo", None))
     try:
         c = args.cmd
         if c == "init":

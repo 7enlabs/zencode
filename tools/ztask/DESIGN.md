@@ -472,3 +472,41 @@ Process note from the Leader: unrelated `ci.yml` changes go in a separate
 change next time.
 
 No code behaviour changes in this commit (docs only).
+
+## 12. Evidence A: checkable evidence and the approve gate (2026-11-01)
+
+Goal: "reported" is not "verified". DONE needs evidence a second agent can
+re-check from bytes, not trust.
+
+Evidence JSON (the `evidence` field at submit):
+
+| Field | Rule | Check |
+|-------|------|-------|
+| `cmd` | non-empty string | shape |
+| `exit` | integer (not bool) | must be 0 |
+| `commit` | 7-40 lowercase hex | `git rev-parse --verify <c>^{commit}` in the repo |
+| `artifacts[]` | non-empty list of `{path, sha256}`, sha256 = 64 lowercase hex | SHA-256 of the file recomputed |
+
+Verdicts: `verified` (every check ran and passed), `failed` (a check ran and
+disproved the evidence: bad shape, exit != 0, hash mismatch, artifact
+missing, commit absent), `undecided` (a check could not run: git missing,
+`--repo` not a git repo, file unreadable, unexpected error, or nothing was
+checked). Only `verified` passes; failed wins over undecided.
+
+- `ztask verify --evidence FILE [--base DIR] [--repo DIR]`: no database.
+  Exit 0 verified, 1 failed, 3 undecided. Prints every check.
+- Submit keeps the earlier early check (`check_evidence`: JSON evidence must
+  re-hash; plain text is accepted as "reported").
+- Approve gate (in addition to 2.16): the evidence is re-checked at approve
+  time with `verify_evidence`, outside the write lock, then compared with
+  the stored evidence inside the transaction; verdict must be `verified`.
+  `verified_by` must not be any actor that ever claimed the task (claim or
+  recover-assign), not only the current assignee. The `task.approved` event
+  records `evidence_verdict`, `evidence_commit` (full hash) and
+  `evidence_sha256` (of the evidence text).
+- Plain-text evidence can still reach REVIEW but can never reach DONE.
+
+Not covered: the gate trusts the filesystem and repo of the approving
+process at approve time; it does not re-run `cmd`. The formal model
+(ztask-formal) does not model evidence content.
+

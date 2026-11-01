@@ -6,10 +6,13 @@ Acceptance tests for Viec 10 (2026-10-30) are the three `test_a_`, `test_b_`,
 Muc18Tests.
 """
 
+import hashlib
 import io
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -37,6 +40,44 @@ BLOCK = dict(blocked_by="waiting on Z Ops checklist",
              impact="checkpoint 2026-10-28 slips by 1 day if not cleared")
 
 
+# Evidence A fixture: one temp git repo with a committed artifact, shared by
+# all tests (setUpModule). EV is valid evidence for it.
+REPO = None
+HEAD = None
+EV = None
+ARTIFACT = b"Ran 25 tests in 0.5s\n\nOK\n"
+
+
+def git(*argv, cwd=None):
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", *argv], cwd=cwd or REPO,
+        capture_output=True, text=True, check=True).stdout.strip()
+
+
+def evidence(**over):
+    doc = {"cmd": "python3 -m unittest -v", "exit": 0, "commit": HEAD,
+           "artifacts": [{"path": "out.txt",
+                          "sha256": hashlib.sha256(ARTIFACT).hexdigest()}]}
+    doc.update(over)
+    return json.dumps(doc)
+
+
+def setUpModule():
+    global REPO, EV, HEAD
+    REPO = tempfile.mkdtemp(prefix="ztask-ev-")
+    git("init", "-q", cwd=REPO)
+    Path(REPO, "out.txt").write_bytes(ARTIFACT)
+    git("add", "out.txt")
+    git("commit", "-q", "-m", "artifact")
+    HEAD = git("rev-parse", "HEAD")
+    EV = evidence()
+
+
+def tearDownModule():
+    shutil.rmtree(REPO, ignore_errors=True)
+
+
 class Clock:
     def __init__(self, start=T0):
         self.t = start
@@ -53,7 +94,7 @@ class Base(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.dir.name, "ztask.db")
         self.clock = Clock()
-        self.store = Store(self.path, now=self.clock)
+        self.store = Store(self.path, now=self.clock, evidence_base=REPO)
         self.store.init([LEADER])
 
     def tearDown(self):
@@ -73,7 +114,7 @@ class Base(unittest.TestCase):
 
     def to_done(self, tid, who=DEV, verifier=QA):
         tok = self.claim_start(tid, who)
-        self.store.submit(tid, who, tok, evidence="e")
+        self.store.submit(tid, who, tok, evidence=EV)
         self.store.attest(tid, verifier, command="python3 -m unittest",
                           receipt="Ran 1 test, OK")
         self.store.approve(tid, LEADER)
@@ -219,7 +260,7 @@ class StateMachineTests(Base):
         task = self.store.task(tid)
         self.assertEqual(task["state"], "DOING")
         self.assertIsNone(task["verified_by"])  # rework voids verification
-        self.store.submit(tid, DEV, tok, evidence="tests added")
+        self.store.submit(tid, DEV, tok, evidence=EV)
         with self.assertRaises(InvalidTransition):
             self.store.approve(tid, LEADER)  # REVIEW but not verified
         self.store.attest(tid, QA, command="python3 -m unittest -v",
@@ -265,7 +306,7 @@ class StateMachineTests(Base):
         with self.assertRaises(ztask.NotFound):
             self.new_task(title="Orphan", goal_ref="T99")
         ptok = self.claim_start(parent, DEV)
-        self.store.submit(parent, DEV, ptok, evidence="e")
+        self.store.submit(parent, DEV, ptok, evidence=EV)
         self.store.attest(parent, QA, command="c", receipt="r")
         with self.assertRaises(InvalidTransition):
             self.store.approve(parent, LEADER)
@@ -375,7 +416,7 @@ class Muc18Tests(Base):
     def test_self_verify_rejected(self):
         tid = self.new_task()
         tok = self.claim_start(tid, DEV)
-        self.store.submit(tid, DEV, tok, evidence="diff + test output")
+        self.store.submit(tid, DEV, tok, evidence=EV)
         with self.assertRaises(NotAllowed) as cm:
             self.store.attest(tid, DEV, command="python3 -m unittest",
                               receipt="OK")
@@ -584,13 +625,180 @@ class SafetyAndOpsTests(Base):
         with self.assertRaises(SystemExit):
             run("block", "T1", "--actor", DEV, "--token", "1", "--by", "x")
         self.assertEqual(run("submit", "T1", "--actor", DEV, "--token", "1",
-                             "--evidence", "e")[0], 0)
+                             "--evidence", EV, "--base", REPO)[0], 0)
         self.assertEqual(run("attest", "T1", "--actor", DEV, "--cmd", "c",
                              "--receipt", "r")[0], 1)       # self-verify
         self.assertEqual(run("attest", "T1", "--actor", QA, "--cmd", "c",
                              "--receipt", "r")[0], 0)
-        self.assertEqual(run("approve", "T1", "--actor", LEADER)[0], 0)
+        self.assertEqual(run("approve", "T1", "--actor", LEADER)[0], 1)
+        # cwd is not the evidence repo: artifact missing -> refused
+        self.assertEqual(run("approve", "T1", "--actor", LEADER,
+                             "--base", REPO)[0], 0)
         self.assertEqual(run("verify")[0], 0)
+
+
+class EvidenceATests(Base):
+    """Evidence A: `verify --evidence` and the approve gate."""
+
+    def verdict(self, ev, **kw):
+        return ztask.verify_evidence(ev, REPO, **kw)["verdict"]
+
+    def test_fake_evidence_rejected(self):
+        d = tempfile.mkdtemp()
+        f = os.path.join(d, "a.txt")
+        Path(f).write_bytes(b"hello")
+        sha = hashlib.sha256(b"hello").hexdigest()
+        ev = json.dumps({"cmd": "t", "exit": 0,
+                         "artifacts": [{"path": f, "sha256": sha}]})
+        self.assertEqual(ztask.check_evidence(ev), "verified")
+        self.assertEqual(ztask.check_evidence("raw text"), "reported")
+        Path(f).write_bytes(b"hellp")  # 1 byte changed
+        with self.assertRaises(ZtaskError):
+            ztask.check_evidence(ev)
+        os.remove(f)
+        with self.assertRaises(ZtaskError):
+            ztask.check_evidence(ev)
+        shutil.rmtree(d)
+
+    def test_verify_evidence_pass_and_each_failure(self):
+        ok = ztask.verify_evidence(EV, REPO)
+        self.assertEqual(ok["verdict"], "verified")
+        self.assertEqual({c["result"] for c in ok["checks"]}, {"verified"})
+        self.assertIn(HEAD, [c["detail"] for c in ok["checks"]])
+        self.assertEqual(self.verdict(evidence(commit=HEAD[:7])), "verified")
+        bad = hashlib.sha256(b"x").hexdigest()
+        for ev in ("plain text", "[1]", "{not json",
+                   evidence(exit=1), evidence(exit=True), evidence(exit="0"),
+                   evidence(cmd=""), evidence(commit="nothex"),
+                   evidence(commit="0" * 40),       # well formed, absent
+                   evidence(commit=None),
+                   evidence(artifacts=[]),
+                   evidence(artifacts=["out.txt"]),
+                   evidence(artifacts=[{"path": "out.txt", "sha256": bad}]),
+                   evidence(artifacts=[{"path": "out.txt",
+                                        "sha256": "ABC"}]),
+                   evidence(artifacts=[{"path": "gone.txt", "sha256": bad}])):
+            self.assertEqual(self.verdict(ev), "failed", ev)
+        # One bad artifact among good ones still fails.
+        good = json.loads(EV)["artifacts"][0]
+        self.assertEqual(self.verdict(evidence(artifacts=[
+            good, {"path": "gone.txt", "sha256": bad}])), "failed")
+
+    def test_verify_evidence_undecided_never_passes(self):
+        nogit = tempfile.mkdtemp()
+        try:
+            shutil.copy(os.path.join(REPO, "out.txt"), nogit)
+            # artifact fine, but the commit cannot be checked: undecided
+            self.assertEqual(ztask.verify_evidence(EV, nogit)["verdict"],
+                             "undecided")
+            self.assertEqual(ztask.verify_evidence(EV, nogit, repo=REPO)
+                             ["verdict"], "verified")
+            # a directory where a file should be: cannot read -> undecided
+            os.mkdir(os.path.join(nogit, "dir"))
+            self.assertEqual(self.verdict(evidence(artifacts=[
+                {"path": os.path.join(nogit, "dir"),
+                 "sha256": "0" * 64}])), "undecided")
+            # git missing from PATH: undecided, not pass
+            old = os.environ.get("PATH", "")
+            os.environ["PATH"] = nogit
+            try:
+                self.assertEqual(self.verdict(EV), "undecided")
+            finally:
+                os.environ["PATH"] = old
+        finally:
+            shutil.rmtree(nogit)
+
+    def test_cli_verify_evidence_exit_codes(self):
+        def run(*argv):
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                rc = ztask.main(["--db", self.path, *argv])
+            return rc, json.loads(out.getvalue())
+
+        f = os.path.join(self.dir.name, "ev.json")
+        Path(f).write_text(EV)
+        rc, out = run("verify", "--evidence", f, "--base", REPO)
+        self.assertEqual((rc, out["verdict"], out["ok"]),
+                         (0, "verified", True))
+        self.assertEqual(out["evidence_sha256"],
+                         hashlib.sha256(EV.encode()).hexdigest())
+        Path(f).write_text(evidence(exit=2))
+        self.assertEqual(run("verify", "--evidence", f, "--base", REPO)[0], 1)
+        self.assertEqual(run("verify", "--evidence", f + ".missing")[0], 1)
+        Path(f).write_text(EV)
+        nogit = tempfile.mkdtemp()
+        try:
+            shutil.copy(os.path.join(REPO, "out.txt"), nogit)
+            rc, out = run("verify", "--evidence", f, "--base", nogit)
+            self.assertEqual((rc, out["verdict"], out["ok"]),
+                             (3, "undecided", False))
+        finally:
+            shutil.rmtree(nogit)
+        # Plain `verify` still checks the chain.
+        self.assertEqual(run("verify")[1]["ok"], True)
+
+    def test_approve_gate_needs_verified_evidence(self):
+        tid = self.new_task()
+        tok = self.claim_start(tid, DEV)
+        self.store.submit(tid, DEV, tok, evidence="test output, trust me")
+        self.store.attest(tid, QA, command="c", receipt="r")
+        with self.assertRaises(InvalidTransition) as cm:
+            self.store.approve(tid, LEADER)          # reported, not verified
+        self.assertIn("failed", str(cm.exception))
+        tok = self.store.reject(tid, LEADER, reason="need JSON")["data"][
+            "token"]
+        self.store.submit(tid, DEV, tok, evidence=evidence(exit=1))
+        self.store.attest(tid, QA, command="c", receipt="r")
+        with self.assertRaises(InvalidTransition):
+            self.store.approve(tid, LEADER)          # exit code 1
+        tok = self.store.reject(tid, LEADER, reason="tests fail")["data"][
+            "token"]
+        self.store.submit(tid, DEV, tok, evidence=evidence(commit="0" * 40))
+        self.store.attest(tid, QA, command="c", receipt="r")
+        with self.assertRaises(InvalidTransition):
+            self.store.approve(tid, LEADER)          # commit absent
+        self.assertEqual(self.store.task(tid)["state"], "REVIEW")
+        tok = self.store.reject(tid, LEADER, reason="commit")["data"]["token"]
+        self.store.submit(tid, DEV, tok, evidence=EV)
+        self.store.attest(tid, QA, command="c", receipt="r")
+        ev = self.store.approve(tid, LEADER)
+        self.assertEqual(self.store.task(tid)["state"], "DONE")
+        self.assertEqual(ev["data"]["evidence_verdict"], "verified")
+        self.assertEqual(ev["data"]["evidence_commit"], HEAD)
+        self.store.verify()
+
+    def test_approve_gate_artifact_tampered_after_submit(self):
+        tid = self.new_task()
+        tok = self.claim_start(tid, DEV)
+        self.store.submit(tid, DEV, tok, evidence=EV)
+        self.store.attest(tid, QA, command="c", receipt="r")
+        art = Path(REPO, "out.txt")
+        art.write_bytes(ARTIFACT + b"x")
+        try:
+            with self.assertRaises(InvalidTransition) as cm:
+                self.store.approve(tid, LEADER)
+            self.assertIn("sha256 mismatch", str(cm.exception))
+        finally:
+            art.write_bytes(ARTIFACT)
+        self.store.approve(tid, LEADER)
+        self.assertEqual(self.store.task(tid)["state"], "DONE")
+
+    def test_approve_gate_verifier_never_a_claimer(self):
+        # DEV claims, releases; DEV2 claims and submits; DEV (a past claimer,
+        # no longer the assignee) attests. attest allows it, approve refuses.
+        tid = self.new_task()
+        tok = self.store.claim(tid, DEV)["data"]["token"]
+        self.store.release(tid, DEV, tok)
+        tok = self.claim_start(tid, DEV2)
+        self.store.submit(tid, DEV2, tok, evidence=EV)
+        self.store.attest(tid, DEV, command="c", receipt="r")
+        with self.assertRaises(NotAllowed) as cm:
+            self.store.approve(tid, LEADER)
+        self.assertIn("no self-verify", str(cm.exception))
+        self.assertEqual(self.store.task(tid)["state"], "REVIEW")
+        self.store.attest(tid, QA, command="c", receipt="r")
+        self.store.approve(tid, LEADER)
+        self.assertEqual(self.store.task(tid)["state"], "DONE")
 
 
 if __name__ == "__main__":
