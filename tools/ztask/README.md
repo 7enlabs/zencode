@@ -35,13 +35,35 @@ python3 ztask.py --db $DB start T1 --actor "ZC Platform" --token 1
 python3 ztask.py --db $DB heartbeat T1 --actor "ZC Platform" --token 1 \
   --checkpoint "tests written, docs next"
 python3 ztask.py --db $DB submit T1 --actor "ZC Platform" --token 1 \
-  --evidence "test output + git diff --stat"
+  --evidence "$(cat ev.json)" --base /path/to/repo
+python3 ztask.py verify --evidence ev.json --base /path/to/repo
 python3 ztask.py --db $DB attest T1 --actor "ZC QA" \
   --cmd "python3 -m unittest discover -s tools/ztask -p 'test_*.py'" \
-  --receipt "Ran 24 tests OK"
-python3 ztask.py --db $DB approve T1 --actor "ZC Leader"
+  --receipt "Ran 31 tests OK"
+python3 ztask.py --db $DB approve T1 --actor "ZC Leader" --base /path/to/repo
 python3 ztask.py --db $DB verify
 ```
+
+## Evidence A
+
+Evidence that can reach DONE is a JSON object (DESIGN.md section 12):
+
+```json
+{"cmd": "python3 -m unittest -v", "exit": 0, "commit": "<7-40 hex>",
+ "artifacts": [{"path": "out.txt", "sha256": "<64 hex>"}]}
+```
+
+`ztask verify --evidence FILE [--base DIR] [--repo DIR]` re-hashes every
+artifact (relative paths from `--base`, default `.`), checks `exit` is 0 and
+that `commit` exists in the git repo `--repo` (default `--base`). It needs no
+database. Exit 0 `verified`, 1 `failed` (a check disproved it), 3
+`undecided` (a check could not run: no git, not a repo, unreadable file).
+Only `verified` passes.
+
+Approve gate: `approve` re-runs the same check on the submitted evidence
+(`--base`/`--repo` as above) and refuses DONE unless the verdict is
+`verified` and `verified_by` never claimed the task. Plain-text evidence is
+"reported" and can be submitted, but cannot be approved.
 
 Other commands:
 
@@ -59,7 +81,8 @@ python3 ztask.py --db $DB backup /tmp/ztask-backup.db
 ```
 
 `ZTASK_DB` sets the default database path. Exit codes: 0 ok, 1 rejected
-command, 2 TamperEvident (log does not match its hash chain).
+command, 2 TamperEvident (log does not match its hash chain), 3 evidence
+undecided (`verify --evidence` only).
 
 Keep the database on box-local disk only (never NFS or a synced folder).
 
