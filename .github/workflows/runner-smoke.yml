@@ -1,0 +1,11 @@
+name: Runner smoke (self-hosted)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, zc-self]
+    steps:
+      - run: echo "runner smoke OK"
+      - run: uname -a && whoami && pwd
