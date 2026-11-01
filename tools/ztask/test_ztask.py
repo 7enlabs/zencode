@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for ztask.py (stdlib unittest, no network, temp SQLite files).
 
-Acceptance tests for Viec 10 (2026-10-30) are the three `test_a_`, `test_b_`,
-`test_c_` cases in AcceptanceTests. Muc 18 alignment tests are in
-Muc18Tests.
+Acceptance tests for Task 10 (2026-10-30) are the three `test_a_`, `test_b_`,
+`test_c_` cases in AcceptanceTests. Section 18 alignment tests are in
+Section18Tests.
 """
 
 import hashlib
@@ -102,7 +102,7 @@ class Base(unittest.TestCase):
         self.dir.cleanup()
 
     def new_task(self, title="Write DESIGN.md", **kw):
-        ev = self.store.create(title=title, goal="ztask design for Viec 10",
+        ev = self.store.create(title=title, goal="ztask design for Task 10",
                                owner=LEADER,
                                acceptance="Leader reviews DESIGN.md", **kw)
         return ev["task_id"]
@@ -126,12 +126,12 @@ class Base(unittest.TestCase):
 
 class AcceptanceTests(Base):
     def test_a_idempotent_event_log(self):
-        tid = self.new_task(idem_key="create:viec10:design")
+        tid = self.new_task(idem_key="create:task10:design")
         again = self.store.create(title="Write DESIGN.md",
-                                  goal="ztask design for Viec 10",
+                                  goal="ztask design for Task 10",
                                   owner=LEADER,
                                   acceptance="Leader reviews DESIGN.md",
-                                  idem_key="create:viec10:design")
+                                  idem_key="create:task10:design")
         self.assertTrue(again.get("replayed"))
         self.assertEqual(again["task_id"], tid)
 
@@ -339,7 +339,7 @@ class StateMachineTests(Base):
         self.store.verify()
 
 
-class Muc18Tests(Base):
+class Section18Tests(Base):
     def test_seven_states_declared(self):
         self.assertEqual(ztask.STATES, ("QUEUED", "CLAIMED", "DOING",
                                         "BLOCKED", "REVIEW", "DONE",
@@ -351,10 +351,10 @@ class Muc18Tests(Base):
             self.store.drop(a, LEADER, reason=" ")        # reason required
         with self.assertRaises(NotAllowed):
             self.store.drop(a, DEV, reason="not needed")  # leader only
-        self.store.drop(a, LEADER, reason="superseded by Viec 11")
+        self.store.drop(a, LEADER, reason="superseded by Task 11")
         task = self.store.task(a)
         self.assertEqual(task["state"], "DROPPED")
-        self.assertEqual(task["drop_reason"], "superseded by Viec 11")
+        self.assertEqual(task["drop_reason"], "superseded by Task 11")
         with self.assertRaises(InvalidTransition):
             self.store.claim(a, DEV)                      # terminal
         with self.assertRaises(InvalidTransition):

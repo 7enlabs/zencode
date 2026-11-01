@@ -1,4 +1,4 @@
-# PLAN - Viec 10 (ztask) MVP-0
+# PLAN - Task 10 (ztask) MVP-0
 
 Owner: ZC Platform. Checkpoint: 2026-10-28. Acceptance: 2026-10-30.
 Branch: dev/task-channel (local only, base 98779ad). No push, no PR, no merge.
@@ -52,11 +52,11 @@ Note: the repo `.gitignore` ignores `/PLAN.md` at the root, so this plan lives a
 - Pre-deploy gate: Z Ops 6-item verification checklist must pass before any
   deploy. MVP-0 is local only and is not a deploy.
 
-## Re-plan 2026-10-27: align with Quy trinh MVP v3.0, Muc 18
+## Re-plan 2026-10-27: align with MVP Process v3.0, Section 18
 
-Trigger: the team process rule "Quy trinh MVP v3.0, Muc 18" (effective
-2026-10-25) overrides older specs (Quy trinh wins per Muc 12). The spec is
-living: replaced parts of DESIGN.md are kept and marked "superseded by Muc 18",
+Trigger: the team process rule "MVP Process v3.0, Section 18" (effective
+2026-10-25) overrides older specs (MVP Process wins per Section 12). The spec is
+living: replaced parts of DESIGN.md are kept and marked "superseded by Section 18",
 not deleted. Still local only: no push, no PR, no merge, no new dependency,
 only `tools/ztask/` changes.
 
@@ -72,7 +72,7 @@ Steps (in order, plan before code):
    verification command + receipt, no self-verify, DONE needs triple + leader);
    per-task lease (12h default, pilot presets 30 min and 1 shift); dead-letter
    after 3 re-queues with recovery from checkpoint; reconciliation section
-   (acceptance said "5-level state machine", Muc 18 says 7; chose Muc 18,
+   (acceptance said "5-level state machine", Section 18 says 7; chose Section 18,
    flagged for ZC Leader).
 10. ztask.py: implement the above; keep hash chain, TamperEvident,
     idempotency, WAL, VACUUM INTO, secret precheck, notifications, goal_ref.
