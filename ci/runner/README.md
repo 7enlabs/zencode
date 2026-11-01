@@ -111,3 +111,11 @@ after the 7-day cooldown, then rebuild with `--build`.
   container was stopped: it stays offline until GitHub cleans it up or it is
   removed by hand.
 - Whether the box auto-sleep pauses a waiting runner.
+
+## Hardening notes (follow-up to #13)
+
+- Base image is pinned by digest in the Dockerfile; bump it on purpose.
+- `sudo` is not installed. Jobs run as uid 1001 with `no-new-privileges` and all capabilities dropped; install system packages in the image, not at job time.
+- Registration tokens are shape-checked on the host and in the container (8-256 chars of `A-Za-z0-9_-`). A malformed token exits 66 on the host, 65 in the container; an empty one exits 65 on the host, 64 in the container.
+- The dry-run log no longer prints the token length.
+- The shared cache volume stays opt-in via `RUNNER_CACHE_VOLUME`; nothing is mounted by default.

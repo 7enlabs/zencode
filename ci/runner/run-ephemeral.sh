@@ -113,6 +113,12 @@ run_once() {
 
   log "starting $name (dry_run=$dry_run, cap ${RUNNER_MAX_SECONDS}s)"
   token="$(get_token)" || return $?
+  if [[ -z "$token" ]]; then
+    log "token command returned nothing"; return 65
+  fi
+  if [[ ! "$token" =~ ^[A-Za-z0-9_-]{8,256}$ ]]; then
+    log "token has an unexpected shape (whitespace or odd characters)"; token=""; return 66
+  fi
   set +e
   printf '%s\n' "$token" | timeout --signal=TERM --kill-after=60 "$RUNNER_MAX_SECONDS" docker "${args[@]}"
   rc=$?

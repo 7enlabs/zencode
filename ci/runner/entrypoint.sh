@@ -24,6 +24,11 @@ if [[ -z "$reg_token" ]]; then
   log "no registration token on stdin; refusing to start"
   exit 64
 fi
+if [[ ! "$reg_token" =~ ^[A-Za-z0-9_-]{8,256}$ ]]; then
+  log "registration token has an unexpected shape (whitespace or odd characters); refusing to start"
+  reg_token=""
+  exit 65
+fi
 
 config_args=(
   --unattended
@@ -41,7 +46,7 @@ fi
 
 if [[ "$ZC_RUNNER_DRY_RUN" == "1" ]]; then
   log "dry-run: runner version $(./config.sh --version)"
-  log "dry-run: would run ./config.sh ${config_args[*]} --token <redacted, ${#reg_token} chars>"
+  log "dry-run: would run ./config.sh ${config_args[*]} --token <redacted>"
   log "dry-run: would then run ./run.sh (one job) and exit"
   reg_token=""
   exit 0
