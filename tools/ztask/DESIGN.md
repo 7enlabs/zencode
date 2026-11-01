@@ -452,7 +452,7 @@ non-goal.)
 13. Owner of Muc 4 page: Muc 4 still shows the old Vietnamese state names;
     Muc 18 is newer. Align Muc 4 (ZC Leader page).
 
-## 11. Quyết định Leader 30/10 (tin 545)
+## 11. Leader decisions 30/10 (Telegram message 545)
 
 ZC Leader verified and ACCEPTED MVP-0 at `cba8586` (Telegram 7EN Labs,
 tin 545, 2026-10-30 01:58 +07). Decisions, closing the matching items in
