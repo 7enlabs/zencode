@@ -1,6 +1,8 @@
 # Ephemeral GitHub Actions runner image for ZenCode self-hosted CI.
 # One container = one registration = one job. See README.md.
-FROM ubuntu:24.04
+# Base image pinned by digest (ubuntu:24.04 index digest, checked 2026-11-02).
+# Bump the digest on purpose; `docker pull ubuntu:24.04` then read RepoDigests.
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 
 # Pinned runner release. v2.338.0 is the newest stable release past the
 # team's 7-day package cooldown on 2026-11-01. Bump RUNNER_VERSION and
@@ -22,7 +24,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl git jq tar gzip unzip zstd xz-utils \
-       build-essential pkg-config libssl-dev python3 sudo tini \
+       build-essential pkg-config libssl-dev python3 tini \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1001 --shell /bin/bash runner
