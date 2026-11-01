@@ -60,14 +60,21 @@ Out of scope for M1:
 
   - The **payload** is either an unchanged stream-json v1 record or one of
     the three new companion events (section 6).
-  - The envelope is **separate from the payload**: envelope fields are not
-    stream-json record fields, and adding envelope fields never changes the
-    record shapes defined by stream-json v1.
+  - The envelope adds no fields of its own in M1: its fields are the
+    stream-json v1 record fields themselves (`type`, `v`, `uuid`,
+    `session_id`), so carrying a payload never changes the record shapes
+    defined by stream-json v1.
 
-- The exact envelope field set (names, which fields are required, and the
-  maximum frame size for oversized tool results) is recorded in the schema
-  suite as it is finalised; see the open points in section 9. This document
-  does not invent envelope field names that have not been decided.
+- The envelope field set is finalised (Q1-Q10 decision, transcribed
+  2026-11-01): the envelope reuses the stream-json v1 record fields -
+  `type`, `v`, `uuid`, and `session_id`. Record payloads carry them exactly
+  as stream-json v1 defines them (`uuid` is absent only on `system/init`);
+  companion event payloads carry all of them, with `type` set to the event
+  name (section 6). No additional wrapper fields are added in M1.
+- Maximum message size: **4 MiB per message** (one record or event = one
+  text frame). An oversized message is never truncated silently and never
+  split across frames in M1: the host closes the connection and ends the
+  run with an error `result` record.
 
 ## 5. Record stream semantics (inherited from stream-json v1)
 
@@ -104,23 +111,33 @@ Their names, directions (host -> companion and/or companion -> host), and
 payload fields were decided by the project lead together with Z App
 (APP-2 plan approval, messages 591 and 1596-1597 on 2026-10-31).
 
-> **Open point - exact event names not reproduced here.** The working plan
-> file for this milestone (`plans/app2-m1-companion-contract-PLAN.md`, kept
-> outside this repository) records that the names were decided, but does not
-> contain the names themselves, and this contract must not invent them.
-> Until the decided names and payloads are transcribed here verbatim, this
-> section is a placeholder and the schema suite in section 8 intentionally
-> contains no schemas for the three events. Everything else in this
-> document - envelope separation, record schemas, pairing, TLS - does not
-> depend on the event names.
+The three events are transcribed verbatim from the Q1-Q10 decision text
+(project lead, 2026-10-31; decision text re-issued 2026-11-01). Each event
+is a payload in the same envelope as the record payloads (section 4):
+`type` carries the event name, and the envelope fields are the record v1
+fields (`v` = 1, a fresh `uuid`, and the run's `session_id`). The events
+are additive in v1 - `v` is not bumped.
 
-What is already decided about the events, independent of their names:
+| event | direction | required fields | optional fields |
+|---|---|---|---|
+| `companion_prompt` | companion -> host | `text` | `id` |
+| `companion_interrupt` | companion -> host | (none) | `reason` |
+| `host_status` | host -> companion | `state` (`idle` or `running`) | (none) |
 
-- They travel in the same WebSocket envelope as record payloads (section 4),
-  as a payload kind distinct from stream-json records.
-- They do not change any stream-json v1 record shape.
-- Each event will get its own JSON Schema and at least one valid fixture in
-  the schema suite before M1 is considered complete.
+- `companion_prompt` carries the user's prompt in `text`. `id` is an
+  optional companion-chosen correlation identifier. The host answers with
+  the run's record stream: `system/init` first, exactly one `result` last.
+- `companion_interrupt` asks the host to interrupt the current run.
+  `reason` is optional free text. The host still ends the run with exactly
+  one `result` record; the interrupt does not replace it.
+- `host_status` reports whether the host has a run in progress: `state`
+  is exactly `idle` (no run in progress) or `running` (a run is in
+  progress).
+
+The events do not change any stream-json v1 record shape. There is no
+`seq` field and no resume in M1: if the connection drops, the companion
+reconnects and starts over. Each event has its own JSON Schema and valid
+fixtures in the schema suite (sections 7 and 8).
 
 ## 7. Schemas
 
@@ -128,7 +145,7 @@ Schemas live in `docs/schemas/companion-ws-v1/` (JSON Schema draft 2020-12):
 
 | file | covers |
 |---|---|
-| `envelope.schema.json` | Fields common to every stream-json v1 record: `type` (enum of 5), `v` (const 1), `session_id` (required). `uuid` is not required at this level because `system/init` has none. |
+| `envelope.schema.json` | Fields common to every stream-json v1 record and to the three companion events: `type` (enum of 5 record types + 3 event names), `v` (const 1), `session_id` (required). `uuid` is not required at this level because `system/init` has none. |
 | `system.schema.json` | Every `system` record: `subtype` required, enum of the 7 contract subtypes. |
 | `system-init.schema.json` | `init`: cwd, model, tools, mcp_servers, permissionMode, slash_commands, folder_trusted; optional `mcp_server_errors`. |
 | `system-api_retry.schema.json` | attempt, max_retries, retry_delay_ms, error_status, error. |
@@ -141,6 +158,9 @@ Schemas live in `docs/schemas/companion-ws-v1/` (JSON Schema draft 2020-12):
 | `user.schema.json` | message with role `user`, content array of tool_result entries. |
 | `stream_event.schema.json` | event/delta. Written loosely from the single contract example; no fixture emits this record yet. |
 | `result.schema.json` | subtype enum (success, error_max_turns, error_during_execution), is_error, duration fields, num_turns, result, total_cost_usd, usage, model, permission_denials, stop_reason. |
+| `companion_prompt.schema.json` | Companion -> host prompt event: `text` required, `id` optional; envelope fields (`v`, `uuid`, `session_id`) required. |
+| `companion_interrupt.schema.json` | Companion -> host interrupt event: `reason` optional; envelope fields required. |
+| `host_status.schema.json` | Host -> companion status event: `state` required, one of `idle`/`running`; envelope fields required. |
 
 All schemas set `additionalProperties: true`: unknown fields stay valid,
 matching the v1 ignore-unknown rule. Schemas are self-contained (no
@@ -158,7 +178,8 @@ fixtures against the schemas. The fixtures in
 `docs/schemas/companion-ws-v1/fixtures/stream-json/` are byte-identical
 copies of the contract fixtures in `docs/fixtures/stream-json/` (kept next
 to the schemas so the suite is self-contained; the copies must be refreshed
-whenever the source fixtures change).
+whenever the source fixtures change). The companion event fixtures live in
+`docs/schemas/companion-ws-v1/fixtures/companion/`.
 
 Run:
 
@@ -172,13 +193,21 @@ subset validator; it installs nothing.
 
 Current results (against the fixtures shipped in this commit):
 
-- Valid cases: 50/50 records across the 11 fixtures validate against the
-  envelope plus their per-type (and per-subtype) schemas.
-- Negative cases: 6/6 rejected as expected (missing `v`; `v` = 2; unknown
-  `type`; missing `session_id`; `system` record missing `subtype`;
-  `result` record missing `usage`).
+- Valid cases: 56/56 records validate against the envelope plus their
+  per-type (and per-subtype) schemas - 50 records across the 11 stream-json
+  fixtures, plus 6 companion event records in
+  `fixtures/companion/events.ndjson` (each event covered with and without
+  its optional fields).
+- Negative cases: 10/10 rejected as expected (missing `v`; `v` = 2;
+  unknown `type`; missing `session_id`; `system` record missing `subtype`;
+  `result` record missing `usage`; `companion_prompt` missing `text`;
+  `companion_prompt` missing `uuid`; `host_status` missing `state`;
+  `host_status` with `state` outside the enum).
 - Compatibility case: 1/1 - an `assistant` record carrying an unknown extra
   field stays valid.
+- Verified with both validators the script supports: the `jsonschema`
+  library (Draft 2020-12) and the built-in subset validator give the same
+  results.
 
 The existing Rust contract test is unchanged and must stay green:
 
@@ -188,15 +217,14 @@ cargo test -p zen-cli --test stream_json_contract
 
 ## 9. Open points
 
-1. The exact names, directions, and payload fields of the three new events
-   (decided 2026-10-31) must be transcribed into section 6 and turned into
-   schemas + fixtures; this is the remaining M1 work after this commit.
-2. The exact WebSocket envelope field set and the maximum frame size (and
-   the behaviour when a tool result exceeds it: reject, truncate, or split)
-   must be written into section 4 once transcribed from the same decision.
-3. Reconnect/resume behaviour: v1 has no `seq`; whether resume is supported
-   in a later milestone, and whether a sequence number would live in the
-   envelope rather than in records, is undecided and out of M1 scope.
-4. Three schemas (`stream_event`, `system-prune`, `system-tool_progress`)
+1. Resolved in the M1 supplement commit: the three events are transcribed
+   into section 6 with schemas + fixtures, and the envelope field set and
+   the 4 MiB message limit (close + error `result`, no silent truncation,
+   no frame splitting) are written into section 4.
+2. Reconnect/resume: decided for M1 - no `seq`, no resume; a dropped
+   connection is re-established from the start. Whether a later milestone
+   adds resume, and whether a sequence number would live in the envelope
+   rather than in records, remains undecided and out of M1 scope.
+3. Three schemas (`stream_event`, `system-prune`, `system-tool_progress`)
    are written from the contract text only; they must be re-checked against
    real records when a run first emits those types.

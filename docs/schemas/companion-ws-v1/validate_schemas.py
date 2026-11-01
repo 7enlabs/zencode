@@ -8,6 +8,8 @@ copies in ./fixtures/stream-json are byte-identical to docs/fixtures/stream-json
 
 Checks:
   * every fixture record is valid against envelope + its per-type(/subtype) schema
+  * every companion-event fixture record in ./fixtures/companion is valid
+    against envelope + its per-event schema
   * generated negative cases are rejected
   * one compatibility case (unknown extra field) stays valid (v1 ignore-unknown rule)
 
@@ -25,6 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCHEMA_DIR = HERE
 FIXTURE_DIR = os.path.join(HERE, "fixtures", "stream-json")
+COMPANION_FIXTURE_DIR = os.path.join(HERE, "fixtures", "companion")
 
 try:
     from jsonschema import Draft202012Validator
@@ -113,7 +116,9 @@ def main():
     valid_total = valid_pass = 0
     per_file = []
     records = {}
-    for path in sorted(glob.glob(os.path.join(FIXTURE_DIR, "*.ndjson"))):
+    fixture_paths = sorted(glob.glob(os.path.join(FIXTURE_DIR, "*.ndjson")))
+    fixture_paths += sorted(glob.glob(os.path.join(COMPANION_FIXTURE_DIR, "*.ndjson")))
+    for path in fixture_paths:
         fname = os.path.basename(path)
         n = ok = 0
         with open(path, encoding="utf-8") as fh:
@@ -140,6 +145,9 @@ def main():
     init_rec = next(r for r in plain if r.get("subtype") == "init")
     asst_rec = next(r for r in plain if r.get("type") == "assistant")
     result_rec = next(r for r in plain if r.get("type") == "result")
+    events = records["events.ndjson"]
+    prompt_rec = next(r for r in events if r.get("type") == "companion_prompt")
+    status_rec = next(r for r in events if r.get("type") == "host_status")
 
     def without(rec, field):
         c = copy.deepcopy(rec)
@@ -158,6 +166,10 @@ def main():
         ("missing session_id", without(asst_rec, "session_id"), "envelope"),
         ("system record missing subtype", without(init_rec, "subtype"), "system"),
         ("result record missing usage", without(result_rec, "usage"), "result"),
+        ("companion_prompt missing text", without(prompt_rec, "text"), "companion_prompt"),
+        ("companion_prompt missing uuid", without(prompt_rec, "uuid"), "companion_prompt"),
+        ("host_status missing state", without(status_rec, "state"), "host_status"),
+        ("host_status state outside enum", changed(status_rec, "state", "busy"), "host_status"),
     ]
     neg_ok = 0
     for label, rec, schema_name in negatives:
