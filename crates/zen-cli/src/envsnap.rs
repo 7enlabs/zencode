@@ -94,7 +94,7 @@ fn ignored_names(cwd: &Path) -> Vec<String> {
 }
 
 fn visible_entries(dir: &Path, ignored: &[String]) -> Vec<(String, bool)> {
-    // Names only, never file contents — and hidden entries plus
+    // Names only, never file contents - and hidden entries plus
     // gitignored names are omitted, so dotfiles and ignored artifacts
     // cannot leak into the snapshot the model sees at session start.
     let Ok(rd) = std::fs::read_dir(dir) else {

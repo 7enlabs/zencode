@@ -276,7 +276,7 @@ pub fn verify_signature(message: &[u8], signature_hex: &str) -> bool {
 /// Trust ladder: builtins are verified by construction; a fetched skill is
 /// verified only with a valid ZenCode signature over its canonical manifest
 /// bytes. An unsigned manifest is community, and no manifest at all is
-/// unverified — a missing signature is never treated as verified.
+/// unverified - a missing signature is never treated as verified.
 pub fn assign_tier(source: &InstallSource, manifest: Option<&PluginManifest>) -> TrustTier {
     match source {
         InstallSource::Builtin => TrustTier::Verified,
