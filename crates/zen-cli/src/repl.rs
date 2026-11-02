@@ -1630,4 +1630,3 @@ mod multiline_tests {
         assert_eq!(run("\"\"\"hi\"\"\"", &[]), "hi");
     }
 }
-
