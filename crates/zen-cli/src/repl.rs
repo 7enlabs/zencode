@@ -212,7 +212,14 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        let trimmed = line.trim();
+        let joined = read_multiline(line, || {
+            let mut next = String::new();
+            match std::io::stdin().read_line(&mut next) {
+                Ok(0) | Err(_) => None,
+                Ok(_) => Some(next),
+            }
+        });
+        let trimmed = joined.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -391,6 +398,78 @@ fn resume_into(
         agent.messages().len()
     );
     Ok(())
+}
+
+/// Join continuation lines into one turn: a trailing `\\` continues on the
+/// next line, and a line starting with `"""` opens a block that runs until a
+/// line ending with `"""` (or end of input).
+fn read_multiline(first: String, mut next: impl FnMut() -> Option<String>) -> String {
+    let head = first.trim_end_matches(['\n', '\r']).to_string();
+    if let Some(rest) = head.trim_start().strip_prefix("\"\"\"") {
+        let mut out = String::new();
+        let mut cur = rest.to_string();
+        loop {
+            if let Some(body) = cur.trim_end().strip_suffix("\"\"\"") {
+                out.push_str(body);
+                return out;
+            }
+            out.push_str(&cur);
+            out.push('\n');
+            match next() {
+                Some(l) => cur = l.trim_end_matches(['\n', '\r']).to_string(),
+                None => return out,
+            }
+        }
+    }
+    let mut out = head;
+    while out.trim_end().ends_with('\\') {
+        let t = out.trim_end().len() - 1;
+        out.truncate(t);
+        out.push('\n');
+        match next() {
+            Some(l) => out.push_str(l.trim_end_matches(['\n', '\r'])),
+            None => break,
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod multiline_tests {
+    use super::read_multiline;
+
+    fn run(first: &str, rest: &[&str]) -> String {
+        let mut it = rest.iter().map(|s| format!("{s}\n"));
+        read_multiline(format!("{first}\n"), || it.next())
+    }
+
+    #[test]
+    fn single_line_unchanged() {
+        assert_eq!(run("hello", &[]), "hello");
+    }
+
+    #[test]
+    fn backslash_continues() {
+        assert_eq!(run("a \\", &["b \\", "c"]), "a \nb \nc");
+    }
+
+    #[test]
+    fn triple_quote_block() {
+        assert_eq!(
+            run("\"\"\"line1", &["line2", "line3\"\"\""]),
+            "line1\nline2\nline3"
+        );
+    }
+
+    #[test]
+    fn unterminated_block_ends_at_eof() {
+        assert_eq!(run("\"\"\"x", &["y"]), "x\ny\n");
+    }
+
+    #[test]
+    fn one_line_triple_quotes() {
+        assert_eq!(run("\"\"\"hi\"\"\"", &[]), "hi");
+    }
 }
 
 fn print_turn(result: Option<RunResult>) {
