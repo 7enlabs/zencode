@@ -1,0 +1,6 @@
+{"session_id":"00000000-0000-4000-8000-0000000000aa","state":"idle","type":"host_status","uuid":"<uuid>","v":1}
+{"id":"prompt-1","session_id":"00000000-0000-4000-8000-0000000000aa","text":"Summarize the repository layout.","type":"companion_prompt","uuid":"<uuid>","v":1}
+{"session_id":"00000000-0000-4000-8000-0000000000aa","text":"Run the test suite and report failures.","type":"companion_prompt","uuid":"<uuid>","v":1}
+{"session_id":"00000000-0000-4000-8000-0000000000aa","state":"running","type":"host_status","uuid":"<uuid>","v":1}
+{"reason":"user requested stop","session_id":"00000000-0000-4000-8000-0000000000aa","type":"companion_interrupt","uuid":"<uuid>","v":1}
+{"session_id":"00000000-0000-4000-8000-0000000000aa","type":"companion_interrupt","uuid":"<uuid>","v":1}
