@@ -75,6 +75,66 @@ pub fn find_session_path(home: &Path, id_or_path: &str) -> Option<PathBuf> {
 
 pub fn latest_session_for_cwd(home: &Path, encoded: &str) -> Option<PathBuf> {
     let dir = project_dir(home, encoded);
+    if let Some(p) = latest_in_project_dir(&dir) {
+        return Some(p);
+    }
+    // Encoded-name drift fallback (round 5): on Windows the encoded
+    // project name is computed from `canonicalize()` output in the
+    // calling process, but the directory on disk may have been created
+    // by another process whose form of the same cwd differs only in
+    // case, separators, or punctuation (verbatim prefix, short/long
+    // name forms). The exact-name lookup above then misses a project
+    // directory that does hold this cwd sessions, and `--continue`
+    // silently starts a new session. If - and only if - the exact
+    // directory yields nothing, retry against sibling project
+    // directories whose names match under a normalization that erases
+    // exactly those form differences. A normalized match still has to
+    // name the same path: every alphanumeric character must agree.
+    let root = home.join(".zen").join("projects");
+    let target = normalize_project_name(encoded);
+    for entry in std::fs::read_dir(&root).ok()? {
+        let Ok(entry) = entry else { continue };
+        let candidate = entry.path();
+        if !candidate.is_dir() {
+            continue;
+        }
+        let Some(name) = candidate
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        if normalize_project_name(&name) != target {
+            continue;
+        }
+        if let Some(p) = latest_in_project_dir(&candidate) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Normalize an encoded project directory name for comparison:
+/// lowercase, and collapse every run of non-alphanumeric characters
+/// to a single `-`. Two names that differ only in letter case or in
+/// which punctuation a path form produced compare equal; any
+/// difference in the alphanumeric content itself does not.
+fn normalize_project_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = true;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.extend(ch.to_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+fn latest_in_project_dir(dir: &Path) -> Option<PathBuf> {
     if !dir.exists() {
         return None;
     }
@@ -89,7 +149,7 @@ pub fn latest_session_for_cwd(home: &Path, encoded: &str) -> Option<PathBuf> {
     // back to the file creation time, and the file name is the final
     // tie-break, so the result never depends on directory listing order.
     let mut latest: Option<((i64, u32), SystemTime, String, PathBuf)> = None;
-    for entry in std::fs::read_dir(&dir).ok()? {
+    for entry in std::fs::read_dir(dir).ok()? {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
