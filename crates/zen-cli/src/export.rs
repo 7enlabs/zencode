@@ -872,7 +872,7 @@ mod tests {
             ),
             ("google", "AIzaSyD-abcdefghijklmnopqrstuvwxyz0123", "AIza"),
             ("github", "token ghp_0123456789abcdefghijKLMNOP", "ghp_"),
-            ("aws", "AKIAIOSFODNN7EXAMPLE here", "AKIA"),
+            ("aws", "AKIAIOSFODNN7EXAMPLE here", "AKIA"), // aislop-ignore-line security/hardcoded-secret -- deliberate fake pattern in a redaction test, not a real secret
             (
                 "bearer",
                 "Authorization: Bearer abcdef0123456789XYZ",
@@ -886,7 +886,7 @@ mod tests {
             ("assign-colon", "password: hunter2hunter2", "hunter2"),
             (
                 "pem",
-                "-----BEGIN RSA PRIVATE KEY-----\nMIIBPAIBAA==\n-----END RSA PRIVATE KEY-----",
+                "-----BEGIN RSA PRIVATE KEY-----\nMIIBPAIBAA==\n-----END RSA PRIVATE KEY-----", // aislop-ignore-line security/hardcoded-secret -- deliberate fake PEM block in a redaction test, not a real key
                 "MIIBPAIBAA",
             ),
         ];
