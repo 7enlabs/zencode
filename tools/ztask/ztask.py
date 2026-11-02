@@ -7,7 +7,7 @@ The event log is the source of truth. The `tasks` table is a projection that
 `rebuild` recreates by replaying events, and `verify` checks both the SHA-256
 hash chain and that the projection matches a fresh replay.
 
-State model follows Quy trinh MVP v3.0, Muc 18:
+State model follows MVP Process v3.0, Section 18:
 QUEUED -> CLAIMED -> DOING -> BLOCKED -> REVIEW -> DONE -> DROPPED.
 """
 
@@ -25,16 +25,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, List, Optional
 
 CHAIN_SPEC = "ztask.chain.v1"
-EVENT_VERSION = 2  # v2 = Muc 18 state model (v1 logs from aba714b not replayed)
+EVENT_VERSION = 2  # v2 = Section 18 state model (v1 logs from aba714b not replayed)
 GENESIS_PREV_HASH = "0" * 64
 
-# Lease: 12h default (Viec 10 acceptance), configurable per task.
+# Lease: 12h default (Task 10 acceptance), configurable per task.
 DEFAULT_LEASE = timedelta(hours=12)
 LEASE = DEFAULT_LEASE  # kept for callers of the MVP-0 name
 LEASE_PRESETS = {
     "default": DEFAULT_LEASE,          # acceptance criterion
-    "buffer-s": timedelta(minutes=30),  # Muc 18 pilot: small buffer tasks
-    "shift": timedelta(hours=8),        # Muc 18 pilot: 1 shift, main tasks
+    "buffer-s": timedelta(minutes=30),  # Section 18 pilot: small buffer tasks
+    "shift": timedelta(hours=8),        # Section 18 pilot: 1 shift, main tasks
 }
 LEASE_MIN = timedelta(minutes=1)
 LEASE_MAX = timedelta(days=7)
@@ -47,7 +47,7 @@ HELD = ("CLAIMED", "DOING")  # states with a live lease
 LEVELS = ("L0", "L1", "L2", "L3", "L4")
 DEFAULT_LEVEL = "L2"
 
-# BLOCKED needs all four (Muc 18): what is blocking, what was tried,
+# BLOCKED needs all four (Section 18): what is blocking, what was tried,
 # who must unblock, effect on the deadline.
 BLOCK_FIELDS = ("blocked_by", "blocked_tried", "blocked_needs",
                 "blocked_impact")
@@ -973,7 +973,7 @@ class Store:
     def block(self, task_id: str, actor: str, token: int, blocked_by: str,
               tried: str = "", needs: str = "", impact: str = "",
               idem_key: Optional[str] = None) -> dict:
-        """CLAIMED/DOING -> BLOCKED. All four Muc 18 fields are required."""
+        """CLAIMED/DOING -> BLOCKED. All four Section 18 fields are required."""
         fields = {"blocked_by": blocked_by, "blocked_tried": tried,
                   "blocked_needs": needs, "blocked_impact": impact}
         missing = [k for k, v in fields.items() if not (v or "").strip()]
