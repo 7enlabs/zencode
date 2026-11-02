@@ -386,6 +386,30 @@ async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32>
     Ok(code)
 }
 
+/// Resolve -c/-r to an existing transcript for the REPL (None = start fresh).
+pub(crate) fn resolve_session_for_repl(
+    cli: &Cli,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Result<Option<std::path::PathBuf>> {
+    if cli.resume.as_deref().is_none_or(str::is_empty) && !cli.continue_session {
+        return Ok(None);
+    }
+    // Like /resume, -r also accepts a session name (title).
+    if let (Some(r), Some(h)) = (cli.resume.as_deref().filter(|r| !r.is_empty()), home) {
+        if session::find_session_path(h, r).is_none() {
+            if let Some((_, p)) = session::list_sessions_for_cwd(h, cwd)
+                .into_iter()
+                .find(|(_, p)| session::session_title(p).as_deref() == Some(r))
+            {
+                return Ok(Some(p));
+            }
+        }
+    }
+    let (_, _, from) = resolve_session(cli, cwd, home)?;
+    Ok(from)
+}
+
 fn resolve_session(
     cli: &Cli,
     cwd: &Path,
