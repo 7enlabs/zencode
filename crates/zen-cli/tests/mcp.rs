@@ -103,7 +103,11 @@ fn python_cmd() -> &'static str {
         .status()
         .map(|st| st.success())
         .unwrap_or(false);
-    if ok { "python3" } else { "python" }
+    if ok {
+        "python3"
+    } else {
+        "python"
+    }
 }
 
 // Build the CLI MCP config with real JSON serialization: interpolating a
@@ -440,9 +444,7 @@ async fn c7_5_mcp_subcommands_round_trip() {
     for a in args.iter_mut() {
         if let Some(v) = a.as_str() {
             if v.contains("SCRIPT") {
-                *a = serde_json::Value::String(
-                    v.replace("SCRIPT", &script.display().to_string()),
-                );
+                *a = serde_json::Value::String(v.replace("SCRIPT", &script.display().to_string()));
             }
         }
     }

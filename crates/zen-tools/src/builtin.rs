@@ -93,28 +93,39 @@ pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
 ///
 /// Git Bash reports MSYS paths (`/c/Users/...` or `/cygdrive/c/...`)
 /// that are not valid Windows paths, so the `is_dir()` check in the
-/// Bash tool would fail and a `cd` would never stick. Native Windows
-/// paths pass through unchanged. On other platforms this is identity.
+/// Bash tool would fail and a `cd` would never stick. Other shells on
+/// Windows report the same directory differently: WSL-flavoured shells
+/// use `/mnt/c/...`, a doubled leading slash (`//c/...`) shows up when
+/// the path crosses a UNC-style boundary, and a drive path may arrive
+/// with forward slashes (`C:/...`). All of these name the same directory
+/// and are normalized to one native path here. Native Windows paths pass
+/// through unchanged. On other platforms this is identity.
 fn native_shell_path(pwd: &str) -> PathBuf {
     if cfg!(windows) {
-        let (drive, rest) = match pwd.strip_prefix("/cygdrive/") {
-            Some(r) => {
-                let b = r.as_bytes();
-                if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b'/' {
-                    (Some(b[0]), &r[2..])
-                } else {
-                    (None, r)
-                }
-            }
-            None => {
-                let b = pwd.as_bytes();
-                if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
-                    (Some(b[1]), &pwd[3..])
-                } else {
-                    (None, pwd)
-                }
-            }
-        };
+        let mut rest = pwd;
+        if let Some(r) = rest.strip_prefix("/cygdrive/") {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("/mnt/") {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("//") {
+            rest = r;
+        }
+        let b = rest.as_bytes();
+        let mut drive: Option<u8> = None;
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b'/' {
+            drive = Some(b[0]);
+            rest = &rest[2..];
+        } else if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+            drive = Some(b[1]);
+            rest = &rest[3..];
+        } else if b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/')
+        {
+            drive = Some(b[0]);
+            rest = &rest[3..];
+        }
         if let Some(d) = drive {
             let drive = (d as char).to_ascii_uppercase();
             return PathBuf::from(format!("{}:\\{}", drive, rest.replace('/', "\\")));

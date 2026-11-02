@@ -540,9 +540,24 @@ mod tests {
     // Windows path (C:\...) is mangled by the shell, which reads \U,
     // \T, ... as escapes, so the redirect target silently points
     // somewhere else and the expected output file is never created.
-    // Forward slashes are accepted by Git Bash and by the filesystem.
+    // A drive path with forward slashes (C:/...) is no better: Git Bash
+    // does not treat it as an absolute path for redirection, so the file
+    // still lands in the wrong place. The MSYS form (/c/...) is the only
+    // unambiguous absolute path under Git Bash, and it names the same
+    // on-disk file, so reading it back through the native path works.
     fn shell_path(p: &Path) -> String {
-        p.to_string_lossy().replace('\\', "/")
+        let s = p.to_string_lossy();
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        let b = s.as_bytes();
+        if b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/')
+        {
+            let drive = (b[0] as char).to_ascii_lowercase();
+            return format!("/{}{}", drive, s[2..].replace('\\', "/"));
+        }
+        s.replace('\\', "/")
     }
 
     #[tokio::test]

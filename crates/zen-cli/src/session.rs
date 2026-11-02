@@ -78,20 +78,29 @@ pub fn latest_session_for_cwd(home: &Path, encoded: &str) -> Option<PathBuf> {
     if !dir.exists() {
         return None;
     }
-    let mut latest: Option<(SystemTime, PathBuf)> = None;
+    // "Latest" is by modification time. Ties are broken by creation time,
+    // and a remaining tie by later directory order, so two sessions
+    // written within one clock tick still resolve to the newer file
+    // instead of whichever entry the directory happens to list first.
+    let mut latest: Option<(SystemTime, SystemTime, PathBuf)> = None;
     for entry in std::fs::read_dir(&dir).ok()? {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
-            if latest.as_ref().is_none_or(|(t, _)| mtime > *t) {
-                latest = Some((mtime, path));
-            }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        let created = meta.created().unwrap_or(mtime);
+        let replace = match &latest {
+            None => true,
+            Some((t, c, _)) => (mtime, created) >= (*t, *c),
+        };
+        if replace {
+            latest = Some((mtime, created, path));
         }
     }
-    latest.map(|(_, p)| p)
+    latest.map(|(_, _, p)| p)
 }
 
 #[derive(Serialize, Clone)]

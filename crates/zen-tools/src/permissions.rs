@@ -58,10 +58,7 @@ fn drive_prefix_of(slash_path: &str) -> Option<&str> {
 }
 
 fn has_drive_prefix(p: &Path) -> bool {
-    matches!(
-        p.components().next(),
-        Some(std::path::Component::Prefix(_))
-    )
+    matches!(p.components().next(), Some(std::path::Component::Prefix(_)))
 }
 
 fn path_rule_matches(cwd: &Path, spec: &str, candidate: &str) -> bool {

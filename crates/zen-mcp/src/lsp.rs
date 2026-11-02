@@ -191,10 +191,7 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
         // file:///nonexistent/b.py is a rooted path: stripping the slash
         // would silently turn it into a relative path.
         let b = s.as_bytes();
-        let is_drive = b.len() >= 3
-            && b[0] == b'/'
-            && b[1].is_ascii_alphabetic()
-            && b[2] == b':';
+        let is_drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':';
         let stripped = if is_drive { &s[1..] } else { &s[..] };
         Some(PathBuf::from(stripped.replace('/', "\\")))
     }
