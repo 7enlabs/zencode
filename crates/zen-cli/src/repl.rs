@@ -434,44 +434,6 @@ fn read_multiline(first: String, mut next: impl FnMut() -> Option<String>) -> St
     out
 }
 
-#[cfg(test)]
-mod multiline_tests {
-    use super::read_multiline;
-
-    fn run(first: &str, rest: &[&str]) -> String {
-        let mut it = rest.iter().map(|s| format!("{s}\n"));
-        read_multiline(format!("{first}\n"), || it.next())
-    }
-
-    #[test]
-    fn single_line_unchanged() {
-        assert_eq!(run("hello", &[]), "hello");
-    }
-
-    #[test]
-    fn backslash_continues() {
-        assert_eq!(run("a \\", &["b \\", "c"]), "a \nb \nc");
-    }
-
-    #[test]
-    fn triple_quote_block() {
-        assert_eq!(
-            run("\"\"\"line1", &["line2", "line3\"\"\""]),
-            "line1\nline2\nline3"
-        );
-    }
-
-    #[test]
-    fn unterminated_block_ends_at_eof() {
-        assert_eq!(run("\"\"\"x", &["y"]), "x\ny\n");
-    }
-
-    #[test]
-    fn one_line_triple_quotes() {
-        assert_eq!(run("\"\"\"hi\"\"\"", &[]), "hi");
-    }
-}
-
 fn print_turn(result: Option<RunResult>) {
     match result {
         Some(r) if r.is_error => eprintln!("error: {}", r.result),
@@ -1630,3 +1592,42 @@ fn record_turn_cost(
         delta_out,
     );
 }
+
+#[cfg(test)]
+mod multiline_tests {
+    use super::read_multiline;
+
+    fn run(first: &str, rest: &[&str]) -> String {
+        let mut it = rest.iter().map(|s| format!("{s}\n"));
+        read_multiline(format!("{first}\n"), || it.next())
+    }
+
+    #[test]
+    fn single_line_unchanged() {
+        assert_eq!(run("hello", &[]), "hello");
+    }
+
+    #[test]
+    fn backslash_continues() {
+        assert_eq!(run("a \\", &["b \\", "c"]), "a \nb \nc");
+    }
+
+    #[test]
+    fn triple_quote_block() {
+        assert_eq!(
+            run("\"\"\"line1", &["line2", "line3\"\"\""]),
+            "line1\nline2\nline3"
+        );
+    }
+
+    #[test]
+    fn unterminated_block_ends_at_eof() {
+        assert_eq!(run("\"\"\"x", &["y"]), "x\ny\n");
+    }
+
+    #[test]
+    fn one_line_triple_quotes() {
+        assert_eq!(run("\"\"\"hi\"\"\"", &[]), "hi");
+    }
+}
+
