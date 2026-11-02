@@ -38,6 +38,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CV_LIMIT = 0.30
@@ -104,18 +105,20 @@ def run_timed(argv, env, stdin_data=None, timeout=60):
                     break
                 chunks.append(data)
         except ValueError:
-            pass
+            # The child closed the pipe mid-read: for a drain thread
+            # that is EOF, so there is nothing left to read.
+            return
 
     t1 = threading.Thread(target=drain, args=(proc.stdout, out_chunks))
     t2 = threading.Thread(target=drain, args=(proc.stderr, err_chunks))
     t1.start()
     t2.start()
     if stdin_cfg == subprocess.PIPE:
-        try:
+        # The child may exit before consuming stdin; a broken pipe
+        # here means there is nothing left to feed, not a bench error.
+        with suppress(BrokenPipeError):
             proc.stdin.write(stdin_data)
             proc.stdin.close()
-        except BrokenPipeError:
-            pass
 
     deadline = start + timeout
     ru = None
@@ -248,11 +251,11 @@ def measure_repl_prompt(zen, runs):
             else:
                 raise RuntimeError("REPL prompt not seen within timeout")
         finally:
-            try:
+            # Best-effort /quit: if the REPL already died, the pipe is
+            # broken and there is nothing left to shut down gracefully.
+            with suppress(BrokenPipeError):
                 proc.stdin.write(b"/quit\n")
                 proc.stdin.flush()
-            except BrokenPipeError:
-                pass
             try:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
