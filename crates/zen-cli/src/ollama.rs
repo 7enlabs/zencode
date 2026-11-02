@@ -14,6 +14,9 @@ pub fn strip_ollama_prefix(model: &str) -> Option<&str> {
     model.strip_prefix(OLLAMA_PREFIX)
 }
 
+/// Normalize an Ollama host into a base URL: add a scheme when missing
+/// and append `/v1` when absent, since the chat client always talks to
+/// the OpenAI-compatible `/v1` endpoint.
 pub fn normalize_ollama_host(raw: Option<&str>) -> String {
     let raw = raw.map(str::trim).unwrap_or_default();
     if raw.is_empty() {
@@ -41,6 +44,9 @@ pub fn api_origin(base_url: &str) -> String {
     t.strip_suffix("/v1").unwrap_or(t).to_string()
 }
 
+/// A requested name without a tag matches any tag of that model, and an
+/// explicit `:latest` is implied: `llama3` matches `llama3:latest` and
+/// `llama3:8b` alike, while `llama3:8b` matches only itself.
 pub fn model_matches(available: &str, requested: &str) -> bool {
     if available == requested {
         return true;

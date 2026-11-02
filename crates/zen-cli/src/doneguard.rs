@@ -319,6 +319,9 @@ impl ScopeGuard {
     }
 
     pub fn violations(&self, changed: &[String]) -> Vec<String> {
+        // An empty scope constrains nothing: scope is advisory until the
+        // user declares one, so no change is ever reported as a violation
+        // merely because no scope was set.
         if self.declared.is_empty() {
             return vec![];
         }
@@ -330,6 +333,9 @@ impl ScopeGuard {
     }
 
     pub fn seed_from_prompt(&mut self, prompt: &str, cwd: &Path) {
+        // Tokens containing "://" are URLs, not paths, and are never
+        // seeded as scope: a pasted link must not become a scope glob.
+        // An empty seed leaves a previously declared scope untouched.
         let mut seeds = Vec::new();
         for tok in prompt.split_whitespace() {
             let t = tok.trim_matches(|c: char| ".,;:!?()[]{}\"'`".contains(c));

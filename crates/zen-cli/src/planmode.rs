@@ -3,10 +3,16 @@ use zen_core::PermissionMode;
 
 pub const PLAN_BADGE: &str = "[PLAN]";
 
+/// Approve words match exactly: "yes please", "approved", and "approve the
+/// plan" are all rejected, so an ambiguous or past-tense reply can never
+/// accidentally approve a plan (plan mode gates real file changes).
 pub fn is_approve_word(s: &str) -> bool {
     matches!(s.trim().to_ascii_lowercase().as_str(), "approve" | "yes")
 }
 
+/// Strip plan-exit markers only from the end: a marker mentioned inside the
+/// plan body is plan content and must survive, only a trailing marker is an
+/// instruction to leave plan mode.
 pub fn strip_plan_exit_markers(text: &str) -> String {
     let mut lines: Vec<&str> = text.lines().collect();
     while let Some(last) = lines.last() {
@@ -20,6 +26,10 @@ pub fn strip_plan_exit_markers(text: &str) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
+/// Rebuild the system prompt from the untouched base on every mode change,
+/// instead of appending or stripping a banner: toggling plan mode twice
+/// must never stack the plan banner, and leaving plan mode must restore the
+/// exact base prompt.
 pub fn set_permission_mode(
     config: &mut AgentConfig,
     mode: PermissionMode,

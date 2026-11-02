@@ -67,6 +67,8 @@ pub fn project_snapshot(cwd: &Path) -> Option<String> {
     }
     if s.chars().count() > MAX_CHARS {
         s = s.chars().take(MAX_CHARS).collect();
+        // The marker matters: without it the model would read a cut-off
+        // snapshot as the complete project layout.
         s.push_str("\n[snapshot truncated]");
     }
     Some(s.trim_end().to_string())
@@ -92,6 +94,9 @@ fn ignored_names(cwd: &Path) -> Vec<String> {
 }
 
 fn visible_entries(dir: &Path, ignored: &[String]) -> Vec<(String, bool)> {
+    // Names only, never file contents — and hidden entries plus
+    // gitignored names are omitted, so dotfiles and ignored artifacts
+    // cannot leak into the snapshot the model sees at session start.
     let Ok(rd) = std::fs::read_dir(dir) else {
         return vec![];
     };

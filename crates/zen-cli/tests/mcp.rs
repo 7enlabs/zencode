@@ -94,7 +94,6 @@ fn write_mcp_server_script(dir: &TempDir) -> std::path::PathBuf {
 }
 
 // `python3` does not exist on a stock Windows install (only `python`).
-// Prefer python3 when it runs, fall back to python.
 fn python_cmd() -> &'static str {
     let ok = std::process::Command::new("python3")
         .arg("--version")

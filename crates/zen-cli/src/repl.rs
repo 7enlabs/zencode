@@ -240,6 +240,10 @@ struct ReplInterrupts {
 }
 
 impl ReplInterrupts {
+    /// Unix-only interrupt handling; on other platforms this returns None
+    /// and turns run uninterrupted. While a turn is running, Ctrl-C
+    /// cancels the turn; outside a turn, two presses within 2 seconds exit
+    /// with code 130, so a single stray press never kills the session.
     fn install() -> Option<Self> {
         #[cfg(unix)]
         {

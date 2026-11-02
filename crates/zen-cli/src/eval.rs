@@ -43,6 +43,9 @@ pub enum Check {
 }
 
 impl Check {
+    /// Every failure is false, never an error: a missing file, an
+    /// unreadable file, or a failed command all count as a failed check,
+    /// so an eval run reports failures instead of aborting on I/O.
     pub fn run(&self, workdir: &Path) -> bool {
         match self {
             Check::FileContains { path, needle } => std::fs::read_to_string(workdir.join(path))

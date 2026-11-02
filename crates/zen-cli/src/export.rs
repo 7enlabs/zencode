@@ -177,6 +177,11 @@ fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '~' | '+' | '/' | '=')
 }
 
+/// Pattern-based, best-effort redaction — not a guarantee. Values shorter
+/// than the length floors pass through (Bearer tokens under 8 chars,
+/// `sk-` tails under 20, key assignments under 4), and unknown secret
+/// formats are not recognized, so a redacted export still needs review
+/// before sharing.
 pub fn redact_str(s: &str) -> String {
     let mut out = s.to_string();
 

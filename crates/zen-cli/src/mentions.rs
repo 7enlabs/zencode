@@ -261,6 +261,10 @@ pub enum ShellDecision {
     Denied(String),
 }
 
+/// Gate a shell-passthrough command through the normal Bash permission
+/// check. Without a prompter (non-interactive mode) an Ask decision is a
+/// denial, never an implicit run: headless runs cannot execute shell
+/// commands that would have needed a human confirmation.
 pub fn decide_shell(
     permissions: &Arc<dyn zen_core::PermissionChecker>,
     prompter: Option<&Arc<dyn zen_core::Prompter>>,

@@ -361,6 +361,10 @@ pub fn resolve_config(cli: &Cli, cwd: &std::path::Path) -> anyhow::Result<Resolv
     resolve_config_with_home(cli, cwd, dirs::home_dir().as_deref())
 }
 
+/// Project and local settings are honored only in a trusted folder.
+/// Otherwise the project layers are reported as skipped, so checking out
+/// an unfamiliar repository cannot silently change the model, API keys,
+/// permissions, or hooks used for the session.
 pub fn resolve_config_with_home(
     cli: &Cli,
     cwd: &std::path::Path,
@@ -573,6 +577,9 @@ pub fn resolve_config_with_home(
     })
 }
 
+/// A folder counts as trusted if any one of these holds: the explicit
+/// --trust-folder flag, the trust environment variable, or a previously
+/// stored trust record for this folder.
 pub fn folder_trusted(cli: &Cli, cwd: &std::path::Path, home: Option<&std::path::Path>) -> bool {
     cli.trust_folder || zen_ext::trust_env_set() || zen_ext::is_folder_trusted(cwd, home)
 }

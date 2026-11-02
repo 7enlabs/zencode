@@ -1,5 +1,10 @@
 use zen_agent::budget::BudgetPolicy;
 
+/// Resolve the effective spend cap. Precedence is flag > environment > config
+/// file, so a one-off invocation can override the configured cap without
+/// editing files. An invalid cap (zero, negative, non-finite)
+/// disables budgeting entirely with a warning instead of erroring, so a
+/// typo cannot silently turn into a near-zero cap that aborts every run.
 pub fn resolve_budget(
     cli_max: Option<f64>,
     cli_warn_at: Option<f64>,

@@ -284,6 +284,10 @@ pub fn collect_diff(cwd: &Path, scope: &ReviewScope, max_bytes: usize) -> Result
                         match std::fs::read(&full) {
                             Ok(bytes) => {
                                 let mut s = String::from_utf8_lossy(&bytes).into_owned();
+                                // Untracked files are inlined only up to
+                                // UNTRACKED_FILE_CAP, with an explicit
+                                // truncation marker: a review must never
+                                // silently see a partial file as complete.
                                 if s.len() > UNTRACKED_FILE_CAP {
                                     s.truncate(UNTRACKED_FILE_CAP);
                                     s.push_str("\n[... truncated: file larger than 20k ...]\n");
@@ -423,6 +427,9 @@ pub fn extract_findings(text: &str) -> Result<Vec<Finding>> {
 
 pub const REVIEW_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
 
+/// Build a review-only tool registry, failing closed: if a review tool is
+/// not marked read-only, or an expected read-only tool is missing, the
+/// review refuses to run instead of reviewing with write-capable tools.
 pub fn read_only_registry() -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     for t in zen_tools::builtin_tools() {

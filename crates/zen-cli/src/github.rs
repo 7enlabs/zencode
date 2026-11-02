@@ -304,6 +304,9 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| haystack.contains(n))
 }
 
+/// Keyword heuristic for triage ordering only, not a security judgment:
+/// checked in Critical-first order, case-insensitively, and anything
+/// matching no keyword defaults to Medium rather than to the lowest tier.
 pub fn severity_of(body: &str) -> Severity {
     let b = body.to_lowercase();
     if contains_any(
@@ -464,6 +467,9 @@ pub fn parse_workflow_runs(json: &str) -> Result<Vec<FailingCheck>> {
         .collect())
 }
 
+/// Keep the tail of the log, not the head: CI failures are conventionally
+/// reported at the end, and the omitted-line count is printed so the
+/// excerpt is never mistaken for the full log.
 pub fn truncate_log(log: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = log.lines().collect();
     if lines.len() <= max_lines {

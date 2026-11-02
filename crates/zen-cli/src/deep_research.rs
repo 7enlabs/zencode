@@ -178,6 +178,10 @@ pub fn estimate_cost_usd(max_subagents: usize) -> f64 {
     max_subagents as f64 * ESTIMATED_USD_PER_RESEARCHER + ESTIMATED_USD_SYNTHESIS
 }
 
+/// Refuse when the conservative cost estimate exceeds the cap; with no
+/// cap there is no check. The estimate is deliberately pessimistic
+/// (full per-researcher price plus synthesis), so a pass is not a promise
+/// the run will stay under budget.
 pub fn check_budget_usd(max_budget_usd: Option<f64>, max_subagents: usize) -> Result<(), String> {
     if let Some(cap) = max_budget_usd {
         let est = estimate_cost_usd(max_subagents);
