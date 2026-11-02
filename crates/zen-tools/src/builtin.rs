@@ -71,10 +71,11 @@ pub fn resolve_path(cwd: &Path, input: &str) -> PathBuf {
 /// Strip a Windows verbatim `\\?\` prefix so canonicalized paths compare
 /// equal to the plain DOS paths callers hold (`std::fs::canonicalize`
 /// returns verbatim paths on Windows, which breaks cwd comparisons).
+/// UNC paths keep their leading `\\`: `\\?\UNC\server\share` -> `\\server\share`.
 pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(rest);
+        return PathBuf::from(format!(r"\\{rest}"));
     }
     if let Some(rest) = s.strip_prefix(r"\\?\") {
         return PathBuf::from(rest);
