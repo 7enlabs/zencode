@@ -87,14 +87,13 @@ fn path_rule_matches(cwd: &Path, spec: &str, candidate: &str) -> bool {
     // targets on Windows, while patterns built from a synthetic cwd stay
     // drive-less.)
     let mut targets = vec![target_slash.clone()];
-    if cfg!(windows) && !has_drive_prefix(&pattern_path) {
-        if drive_prefix_of(&target_slash).is_some() {
-            let cwd_slash = slash(cwd);
-            let cwd_drive = drive_prefix_of(&cwd_slash);
-            let target_drive = drive_prefix_of(&target_slash);
-            if cwd_drive.is_none() || cwd_drive == target_drive {
-                targets.push(target_slash[2..].to_string());
-            }
+    if cfg!(windows) && !has_drive_prefix(&pattern_path) && drive_prefix_of(&target_slash).is_some()
+    {
+        let cwd_slash = slash(cwd);
+        let cwd_drive = drive_prefix_of(&cwd_slash);
+        let target_drive = drive_prefix_of(&target_slash);
+        if cwd_drive.is_none() || cwd_drive == target_drive {
+            targets.push(target_slash[2..].to_string());
         }
     }
     let mut globs = vec![pattern_slash.clone()];
