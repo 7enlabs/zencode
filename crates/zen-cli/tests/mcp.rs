@@ -93,11 +93,29 @@ fn write_mcp_server_script(dir: &TempDir) -> std::path::PathBuf {
     dir.write("mcp_fake_server.py", &fake_mcp_server_script())
 }
 
+// `python3` does not exist on a stock Windows install (only `python`).
+// Prefer python3 when it runs, fall back to python.
+fn python_cmd() -> &'static str {
+    let ok = std::process::Command::new("python3")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false);
+    if ok { "python3" } else { "python" }
+}
+
+// Build the CLI MCP config with real JSON serialization: interpolating a
+// raw Windows path (C:\...) into a format! string injects invalid JSON
+// escapes (\U, ...) and the whole config is rejected, leaving 0 servers.
 fn mcp_config_json(server_path: &str) -> String {
-    format!(
-        r#"{{"mcpServers":{{"fake":{{"command":"python3","args":["{}"]}}}}}}"#,
-        server_path
-    )
+    serde_json::json!({
+        "mcpServers": {
+            "fake": { "command": python_cmd(), "args": [server_path] }
+        }
+    })
+    .to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -235,10 +253,13 @@ async fn multiple_mcp_servers_mixed_status() {
 
     let server_script = write_mcp_server_script(&cwd);
     let server_path = server_script.to_string_lossy().to_string();
-    let mcp_config = format!(
-        r#"{{"mcpServers":{{"good":{{"command":"python3","args":["{}"]}},"bad":{{"command":"nonexistent","args":[]}}}}}}"#,
-        server_path
-    );
+    let mcp_config = serde_json::json!({
+        "mcpServers": {
+            "good": { "command": python_cmd(), "args": [server_path] },
+            "bad": { "command": "nonexistent", "args": [] }
+        }
+    })
+    .to_string();
 
     let server = MockServer::single_text("ok").await;
 
@@ -331,10 +352,14 @@ async fn c7_3_invalid_entries_reported_in_init() {
     let home = TempDir::new("mcp_inv_home");
     let cwd = TempDir::new("mcp_inv_cwd");
     let script = write_mcp_server_script(&cwd);
-    let cfg = format!(
-        r#"{{"mcpServers":{{"good":{{"command":"python3","args":["{}"]}},"nourl":{{"url":"http://127.0.0.1:9/mcp"}},"odd":{{"type":"carrier-pigeon","url":"x"}}}}}}"#,
-        script.display()
-    );
+    let cfg = serde_json::json!({
+        "mcpServers": {
+            "good": { "command": python_cmd(), "args": [script.display().to_string()] },
+            "nourl": { "url": "http://127.0.0.1:9/mcp" },
+            "odd": { "type": "carrier-pigeon", "url": "x" }
+        }
+    })
+    .to_string();
     let server = MockServer::single_text("ok").await;
     let (stdout, stderr, code) = tokio::time::timeout(TEST_TIMEOUT, async {
         ZenRun::new("mcp_inv", &home, &cwd)
@@ -389,6 +414,7 @@ async fn c7_5_mcp_subcommands_round_trip() {
     let run = |args: Vec<String>| ZenRun::new("mcp_cmd", &home, &cwd).args(args).run_output();
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
 
+    let py = python_cmd();
     let (_, err, code) = run(s(&[
         "mcp",
         "add",
@@ -396,7 +422,7 @@ async fn c7_5_mcp_subcommands_round_trip() {
         "K=V",
         "fake",
         "--",
-        "python3",
+        py,
         "${ZEN_TEST_NOPE:-SCRIPT}",
     ]));
     assert_eq!(code, 0, "{}", err);
@@ -405,10 +431,22 @@ async fn c7_5_mcp_subcommands_round_trip() {
             .unwrap();
     assert_eq!(local["mcpServers"]["fake"]["env"]["K"], "V");
 
-    let text = std::fs::read_to_string(cwd.path().join(".zen/mcp.json"))
-        .unwrap()
-        .replace("SCRIPT", &script.display().to_string());
-    std::fs::write(cwd.path().join(".zen/mcp.json"), text).unwrap();
+    let mcp_path = cwd.path().join(".zen/mcp.json");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    let args = doc["mcpServers"]["fake"]["args"]
+        .as_array_mut()
+        .expect("fake args");
+    for a in args.iter_mut() {
+        if let Some(v) = a.as_str() {
+            if v.contains("SCRIPT") {
+                *a = serde_json::Value::String(
+                    v.replace("SCRIPT", &script.display().to_string()),
+                );
+            }
+        }
+    }
+    std::fs::write(&mcp_path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
 
     let (_, err, code) = run(s(&[
         "mcp",

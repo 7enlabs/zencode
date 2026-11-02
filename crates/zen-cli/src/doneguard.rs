@@ -839,7 +839,13 @@ mod tests {
         let d = tmpdir("checkcmd");
         let (ok, detail) = run_check_command("t", &sh("exit 0"), &d).await;
         assert!(ok, "{detail}");
-        let (ok, detail) = run_check_command("t", &sh("echo boom; exit 3"), &d).await;
+        // cmd does not understand `;` as a separator: it would echo the
+        // whole `boom; exit 3` literally and exit 0.
+        #[cfg(windows)]
+        let fail_script = "echo boom & exit 3";
+        #[cfg(not(windows))]
+        let fail_script = "echo boom; exit 3";
+        let (ok, detail) = run_check_command("t", &sh(fail_script), &d).await;
         assert!(
             !ok && detail.contains("exit 3") && detail.contains("boom"),
             "{detail}"

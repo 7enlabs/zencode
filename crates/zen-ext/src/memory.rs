@@ -410,13 +410,23 @@ fn section_tokens(section: &str) -> u64 {
 }
 
 fn display_path(path: &Path, home: Option<&Path>) -> String {
+    // Report lines use `/` separators on every platform: without this a
+    // Windows report line reads `~/.zen\ZEN.md` (mixed separators).
+    let slash = |p: &Path| {
+        let s = p.to_string_lossy();
+        if cfg!(windows) {
+            s.replace('\\', "/")
+        } else {
+            s.into_owned()
+        }
+    };
     let home_dir = home.map(Path::to_path_buf).or_else(dirs::home_dir);
     if let Some(h) = home_dir {
         if let Ok(rel) = path.strip_prefix(&h) {
-            return format!("~/{}", rel.display());
+            return format!("~/{}", slash(&rel));
         }
     }
-    path.display().to_string()
+    slash(path)
 }
 
 pub fn memories_report(cwd: &Path, home: Option<&Path>) -> String {

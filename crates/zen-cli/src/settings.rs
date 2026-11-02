@@ -630,13 +630,24 @@ mod tests {
         let old_m = std::env::var("ZEN_MODEL").ok();
         let old_b = std::env::var("ZEN_BASE_URL").ok();
         std::env::remove_var("ZEN_MODEL");
-        let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
+        std::env::remove_var("ZEN_BASE_URL");
+        // Isolate from the real user settings file as well as the ambient
+        // env: defaults must hold with no user/project/local layer at all.
+        let dir = std::env::temp_dir().join(format!("zen_cfg_def_{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("zen_cfg_def_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
         if let Some(o) = old_m {
             std::env::set_var("ZEN_MODEL", o);
         }
         if let Some(o) = old_b {
             std::env::set_var("ZEN_BASE_URL", o);
         }
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
         assert_eq!(cfg.model, DEFAULT_MODEL);
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
         assert_eq!(cfg.max_turns, DEFAULT_MAX_TURNS);
@@ -681,8 +692,25 @@ mod tests {
         )
         .unwrap();
 
+        // Env overrides beat files, so a ZEN_MODEL/ZEN_BASE_URL left in the
+        // ambient environment would mask the project file. Resolve against
+        // an empty user home so the real user settings file cannot leak in.
+        let old_m = std::env::var("ZEN_MODEL").ok();
+        let old_b = std::env::var("ZEN_BASE_URL").ok();
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        let home = std::env::temp_dir().join(format!("zen_cfg_test_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
         let cli = Cli::parse_from(["zen", "--setting-sources", "project", "--trust-folder"]);
-        let cfg = resolve_config(&cli, &dir).unwrap();
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        if let Some(o) = old_m {
+            std::env::set_var("ZEN_MODEL", o);
+        }
+        if let Some(o) = old_b {
+            std::env::set_var("ZEN_BASE_URL", o);
+        }
+        let _ = fs::remove_dir_all(&home);
         assert_eq!(cfg.model, "from-file");
         assert_eq!(cfg.base_url, "https://file.example.com/v1");
         assert_eq!(cfg.permission_mode, PermissionMode::AcceptEdits);

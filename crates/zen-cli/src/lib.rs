@@ -43,11 +43,30 @@ pub use settings::{resolve_config, ResolvedConfig};
 pub use system_prompt::build_system_prompt;
 
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Resolve the user's home directory, honoring explicit overrides.
+///
+/// dirs::home_dir() on Windows returns the profile known folder and
+/// ignores HOME/USERPROFILE, so pointing the app at a different home
+/// (tests, portable installs, CI) is silently ignored there and sessions,
+/// settings, trust state, and cost ledgers leak into the real profile.
+/// Honor HOME first, then USERPROFILE on Windows, before falling back.
+fn resolve_home() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        return Some(PathBuf::from(h));
+    }
+    if cfg!(windows) {
+        if let Some(h) = std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()) {
+            return Some(PathBuf::from(h));
+        }
+    }
+    dirs::home_dir()
+}
 
 pub async fn run(cli: Cli) -> Result<i32> {
     let cwd = std::env::current_dir()?;
-    let home = dirs::home_dir();
+    let home = resolve_home();
     run_with_home(cli, &cwd, home.as_deref()).await
 }
 

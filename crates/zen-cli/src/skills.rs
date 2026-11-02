@@ -419,7 +419,26 @@ pub fn install_skill(home: &Path, source: &InstallSource, yes: bool) -> Result<R
             "internal: use install_builtin(name) for builtin sources"
         ));
     }
-    let staging = std::env::temp_dir().join(format!("zen-skill-install-{}", std::process::id()));
+    // One staging dir per call, not one per process: install tests (and
+    // two concurrent CLI installs) share a process, so a pid-only name
+    // lets one install's manifest/SKILL.md leak into another's staging
+    // (wrong trust tier, missing-SKILL.md installs that do not fail) and
+    // makes concurrent remove/copy races fail, reliably on Windows.
+    let staging = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = STAGING_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "zen-skill-install-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            n
+        ))
+    };
     if staging.exists() {
         std::fs::remove_dir_all(&staging)?;
     }

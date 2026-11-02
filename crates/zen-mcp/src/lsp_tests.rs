@@ -336,7 +336,7 @@ fn loc_result(uri: &str, sl: u64, sc: u64, el: u64, ec: u64) -> Value {
 fn parse_definition_single_location() {
     let locs = parse_locations(&loc_result("file:///nonexistent/a.rs", 4, 2, 4, 8));
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].path, "/nonexistent/a.rs");
+    assert_eq!(PathBuf::from(locs[0].path.as_str()), PathBuf::from("/nonexistent/a.rs"));
     assert_eq!((locs[0].line, locs[0].col), (5, 3));
     assert_eq!((locs[0].end_line, locs[0].end_col), (5, 9));
 }
@@ -349,7 +349,7 @@ fn parse_definition_location_array() {
     ]);
     let locs = parse_locations(&result);
     assert_eq!(locs.len(), 2);
-    assert_eq!(locs[1].path, "/nonexistent/b.py");
+    assert_eq!(PathBuf::from(locs[1].path.as_str()), PathBuf::from("/nonexistent/b.py"));
     assert_eq!((locs[1].line, locs[1].col), (11, 2));
 }
 
@@ -367,7 +367,7 @@ fn parse_definition_location_links() {
     let locs = parse_locations(&result);
     assert_eq!(locs.len(), 1);
     assert_eq!(locs[0].uri, "file:///nonexistent/lib.rs");
-    assert_eq!(locs[0].path, "/nonexistent/lib.rs");
+    assert_eq!(PathBuf::from(locs[0].path.as_str()), PathBuf::from("/nonexistent/lib.rs"));
     assert_eq!((locs[0].line, locs[0].col), (42, 5));
 }
 

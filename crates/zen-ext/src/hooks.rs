@@ -536,6 +536,15 @@ mod tests {
         )
     }
 
+    // Render a path for interpolation into a POSIX shell command. A raw
+    // Windows path (C:\...) is mangled by the shell, which reads \U,
+    // \T, ... as escapes, so the redirect target silently points
+    // somewhere else and the expected output file is never created.
+    // Forward slashes are accepted by Git Bash and by the filesystem.
+    fn shell_path(p: &Path) -> String {
+        p.to_string_lossy().replace('\\', "/")
+    }
+
     #[tokio::test]
     async fn test_exit0_context_feedback() {
         let tmp = TempDir::new();
@@ -744,7 +753,7 @@ mod tests {
     async fn test_stdin_payload_contains_context() {
         let tmp = TempDir::new();
         let outfile = tmp.path().join("out.json");
-        let cmd = format!("cat > {}", outfile.display());
+        let cmd = format!("cat > {}", shell_path(&outfile));
         let hooks = hooks_with("UserPromptSubmit", None, &cmd, 10);
         let r = runner(hooks, tmp.path());
         let _ = tokio::time::timeout(
@@ -773,7 +782,7 @@ mod tests {
     async fn test_env_zen_project_dir() {
         let tmp = TempDir::new();
         let outfile = tmp.path().join("env.txt");
-        let cmd = format!("echo $ZEN_PROJECT_DIR > {}", outfile.display());
+        let cmd = format!("echo $ZEN_PROJECT_DIR > {}", shell_path(&outfile));
         let hooks = hooks_with("SessionStart", None, &cmd, 10);
         let r = runner(hooks, tmp.path());
         let _ = tokio::time::timeout(
@@ -873,7 +882,7 @@ mod tests {
         let hooks = hooks_with(
             "SessionStart",
             None,
-            &format!("echo \"$FOO:$ZEN_PROJECT_DIR\" > {}", outfile.display()),
+            &format!("echo \"$FOO:$ZEN_PROJECT_DIR\" > {}", shell_path(&outfile)),
             10,
         );
         let env = HashMap::from([("FOO".to_string(), "bar".to_string())]);
@@ -1157,7 +1166,7 @@ mod tests {
     async fn parallel_run_and_dedupe() {
         let tmp = TempDir::new();
         let log = tmp.path().join("log");
-        let dup = format!("sleep 1; echo x >> {}", log.display());
+        let dup = format!("sleep 1; echo x >> {}", shell_path(&log));
         let hooks = json!({"PreToolUse": [
             {"matcher": "Bash", "hooks": [{"type": "command", "command": dup}, {"type": "command", "command": "sleep 1"}]},
             {"matcher": "*", "hooks": [{"type": "command", "command": dup}]}
@@ -1203,7 +1212,7 @@ mod tests {
         let hooks = hooks_with(
             "PostToolUse",
             Some("Bash"),
-            &format!("cat > {}", outfile.display()),
+            &format!("cat > {}", shell_path(&outfile)),
             10,
         );
         run_ev(
@@ -1262,7 +1271,7 @@ mod tests {
             let hooks = hooks_with(
                 event.as_str(),
                 None,
-                &format!("cat > {}", outfile.display()),
+                &format!("cat > {}", shell_path(&outfile)),
                 10,
             );
             run_ev(&runner(hooks, tmp.path()), event, target, payload).await;
