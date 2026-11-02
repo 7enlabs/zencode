@@ -2,12 +2,11 @@
 
 Status: DRAFT for Leader review. Task 6 (assigned 2026-10-20), branch target
 `dev/mmr-design`, acceptance target `docs/design/multi-model-review.md`.
-Open inputs, stated honestly instead of filled in: the P1 reference file
-`zencode-pstack-research-2026-10-19.md` is not present on this seat's VM, so
-P1-specific details are marked TBD where they belong. The 4 verdict buckets
-in section 3 are proposed from the team's actual verdict vocabulary and are
-pending Leader reconciliation - that reconciliation was the recorded blocker
-on this task, and this draft is the artifact to reconcile against.
+Revision note (Leader decision, 2026-11-02): section 3 now uses the verdict
+buckets and roster decided by the Leader, taken from the P1 reference
+(`zencode-pstack-research-2026-10-19.md`, pstack `interrogate` playbook).
+The P1 file gives no per-provider rate-limit figures, so none are quoted;
+that one gap is recorded as deferred in section 7 instead of invented.
 
 ## 1. Purpose
 
@@ -60,35 +59,36 @@ Components:
   final call. The aggregator output is advice with evidence attached, not a
   decision.
 
-## 3. Verdict buckets and flow (PROPOSED - pending Leader reconciliation)
+## 3. Verdict buckets and flow (decided per Leader decision, from P1)
 
-Four buckets, matching verdict words the team already uses in Telegram
-review rounds:
+Reviewers report findings; a named lead judges them into four buckets
+(taken from the pstack `interrogate` playbook in the P1 reference). The
+reviewers never apply changes themselves - the verdict is a report, not an
+edit.
 
-1. **ACCEPT** - the artifact meets its acceptance criteria; evidence is
-   attached and reproducible.
-2. **ACCEPT WITH CONDITIONS** - acceptable once listed mechanical or minor
-   fixes are applied; conditions are enumerated, each with an owner.
-   Re-review of the whole artifact is not required, only verification that
-   the conditions were applied.
-3. **REJECT** - at least one acceptance criterion fails on evidence, or a
-   claim in the artifact is fabricated or unverifiable. A single evidenced
-   REJECT blocks acceptance regardless of how many ACCEPTs exist.
-4. **ESCALATE** - reviewers disagree on a matter of fact that the evidence
-   in the artifact cannot settle, or a reviewer is blocked (missing file,
-   missing access). Escalation goes to the Leader with the contradiction
-   stated, not smoothed over.
+1. **Act on** - findings the lead judges must be applied; each carries
+   its evidence.
+2. **Consider** - findings worth applying after the lead weighs them
+   against cost and risk; applied only on the lead's call.
+3. **Noted** - findings recorded for the record, no action now.
+4. **Dismissed** - findings rejected, with the reason stated.
 
 Flow:
 
-- All reviewers ACCEPT -> artifact proceeds to the human gate as accepted.
-- Any ACCEPT WITH CONDITIONS -> conditions are applied by the author, then
-  one reviewer (not the author) verifies only the conditions.
-- Any evidenced REJECT -> artifact returns to the author with the evidence;
-  after rework it re-enters review as a new frozen version.
-- ESCALATE -> the Leader decides, asks for the missing evidence, or assigns
-  one more independent reviewer. The decision and its reason are recorded
-  with the artifact.
+- Findings from two or more independent reviewers pointing the same way
+  are the strongest signal (P1's rule) and go to Act on unless the lead
+  finds the shared evidence weak.
+- Act on items are applied by the author, then one reviewer (not the
+  author) verifies only those items.
+- A finding backed by evidence that an acceptance criterion fails, or a
+  claim in the artifact is fabricated or unverifiable, goes to Act on
+  regardless of how many reviewers missed it; after rework the artifact
+  re-enters review as a new frozen version.
+- Reviewer disagreement on a matter of fact the artifact cannot settle,
+  or a reviewer blocked (missing file, missing access), goes to the lead
+  with the contradiction stated, not smoothed over; the lead decides,
+  asks for the missing evidence, or assigns one more independent
+  reviewer, and records the decision with the artifact.
 
 ## 4. Model selection
 
@@ -96,9 +96,12 @@ Flow:
   `:free` models through pi). A paid model is used only with a separate
   per-case approval, and the design must keep working when that approval
   does not exist.
-- **Diversity over strength.** The roster prefers models from different
-  providers or families over three seats of the same model, so failure
-  modes do not correlate.
+- **Diversity over strength.** The roster is one reviewer per model
+  family, never two seats of the same family, so failure modes do not
+  correlate. P1's example roster is nemotron + qwen + gemma families,
+  run free through the local proxy (OpenRouter `:free` + IteraCompute);
+  the exact families are chosen per review from whatever free families
+  are available that day, and the choice is recorded with the result.
 - **Cheapest sufficient.** Review depth scales with risk: a docs-only
   change gets 2 reviewers, a contract or schema change gets 3, and anything
   touching release or security gets 3 plus the human gate reading the raw
@@ -137,18 +140,22 @@ Flow:
   criteria - never credentials, never unrelated user data.
 - **Self-review:** the author of an artifact is never on its roster, and
   the human gate for a Leader-authored artifact is Zen.
+- **Reviewer steered through the artifact:** a reviewer that is handed
+  only the author's summary, framing, or chosen excerpts will reproduce
+  the author's conclusions instead of checking them. Reviewers therefore
+  receive the raw artifact plus its acceptance criteria, never the
+  author's verdict on it; the normalizer drops any finding that rests
+  only on the author's summary without artifact evidence, and the
+  aggregator flags summaries that omit a material part of the artifact.
 
 ## 7. Open points for Leader
 
-1. Reconcile the 4 buckets in section 3 against the verdict vocabulary the
-   Leader wants as the team standard (this is the recorded blocker).
-2. Supply or point to the P1 file `zencode-pstack-research-2026-10-19.md`;
-   sections marked TBD get their P1 specifics from it.
-3. Confirm roster defaults (2 reviewers for docs, 3 for contract/schema,
-   3 plus raw-evidence read for release/security).
-
-TBD (waiting on P1): provider-specific notes from the P1 stack research,
-including any per-provider rate-limit figures the design should quote
-instead of describing qualitatively.
+1. Confirm roster defaults (2 reviewers for docs, 3 for contract/schema,
+   3 plus raw-evidence read for release/security) - the family rule in
+   section 4 is decided; only the counts by risk level need confirming.
+2. Deferred, not invented: the P1 reference gives no per-provider
+   rate-limit figures, so section 4 describes quotas qualitatively and
+   the dispatcher records the actual quota observed per review. If the
+   Leader wants figures quoted, they need a source outside P1.
 
 (No secrets in this document.)
