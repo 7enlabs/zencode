@@ -473,9 +473,7 @@ fn redirect_targets(command: &str) -> Vec<String> {
 }
 
 fn push_target(out: &mut Vec<String>, raw: &str) {
-    let t = raw
-        .trim_matches(['"', '\''])
-        .trim_end_matches(';');
+    let t = raw.trim_matches(['"', '\'']).trim_end_matches(';');
     if t.is_empty()
         || t.starts_with('&')
         || t == "/dev/null"
