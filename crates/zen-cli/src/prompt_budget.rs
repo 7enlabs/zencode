@@ -7,6 +7,9 @@ use crate::cli::Cli;
 
 pub const PROMPT_BUDGET_TOKENS: u64 = 1_200;
 
+/// Rough token estimate (characters / 4), not a tokenizer count: good
+/// enough to detect prompt-budget growth, but never compare it against a
+/// provider's billed usage.
 pub fn estimate_tokens(text: &str) -> u64 {
     text.len() as u64 / 4
 }

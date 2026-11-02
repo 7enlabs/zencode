@@ -78,6 +78,9 @@ fn run_output(program: &str, args: &[&str], cwd: &Path) -> Result<String> {
 }
 
 fn parse_ls_remote_head(out: &str) -> Option<String> {
+    // Accept only a full 40-hex SHA as the remote HEAD: anything else
+    // (error text, an empty response) is rejected rather than treated as
+    // a version to update to.
     let first = out.lines().next()?;
     let sha = first.split_whitespace().next()?;
     if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -142,6 +145,8 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
         )?;
     } else {
         let status = run_output(git, &["status", "--porcelain"], &src_dir)?;
+        // Never update over local changes: an update must not merge into,
+        // or discard, work the user has not committed.
         if !status.trim().is_empty() {
             anyhow::bail!(
                 "local checkout at {} has uncommitted changes; commit or stash them first",
@@ -178,6 +183,8 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
         )?;
         run(
             Path::new(git),
+            // Fast-forward only: a diverged local checkout is never
+            // auto-merged or force-updated; the user resolves it first.
             &["merge", "--ff-only", &format!("origin/{DEFAULT_BRANCH}")],
             Some(&src_dir),
         )?;
@@ -216,6 +223,9 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
         println!("already running the freshly built binary");
         return Ok(0);
     }
+    // Self-replacement: the running binary is moved aside to a `.old`
+    // backup first, and a failed copy restores it, so a broken install
+    // never leaves the user without a working binary.
     let backup = backup_path_for(&target);
     if backup.exists() {
         let _ = std::fs::remove_file(&backup);

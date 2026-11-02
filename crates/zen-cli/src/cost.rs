@@ -42,6 +42,10 @@ pub struct CostSummary {
 
 pub use zen_agent::budget::price_per_1m;
 
+/// Heuristic provider guess from the base URL's host, used for cost
+/// attribution and display only - never for routing. An unrecognized host
+/// is returned verbatim as the provider name instead of collapsing to
+/// "unknown", so cost reports stay attributable.
 pub fn provider_from_base_url(base_url: &str) -> String {
     let u = base_url.trim().to_lowercase();
     let host = u.rsplit("://").next().unwrap_or(&u);

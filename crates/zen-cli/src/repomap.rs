@@ -513,6 +513,10 @@ fn apply_priority_boosts(entries: &mut [(PathBuf, Vec<Symbol>)]) {
 }
 
 pub fn repo_map(cwd: &Path, map_tokens: usize) -> Option<RepoMap> {
+    // A zero budget disables the map entirely; a map that runs out of
+    // budget mid-file stops with an explicit truncation marker (reserved
+    // up front), so the model never mistakes a partial map for the whole
+    // repository.
     if map_tokens == 0 {
         return None;
     }

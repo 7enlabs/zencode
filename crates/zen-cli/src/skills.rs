@@ -79,6 +79,9 @@ impl SkillPermissions {
         }
     }
 
+    /// Advisory declares no tools: with an empty allow-list there is no
+    /// skill-level filter, so tool calls fall through to the normal
+    /// permission checker instead of being denied by the skill policy.
     pub fn advisory() -> Self {
         SkillPermissions {
             allowed_tools: vec![],
@@ -244,6 +247,9 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
+/// Fail closed: any malformed input (bad hex, wrong key/signature length,
+/// unparseable key) returns false instead of panicking, so a corrupt
+/// registry entry can never verify as trusted.
 pub fn verify_signature(message: &[u8], signature_hex: &str) -> bool {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     let (Ok(pubkey_bytes), Ok(sig_bytes)) = (
@@ -267,6 +273,10 @@ pub fn verify_signature(message: &[u8], signature_hex: &str) -> bool {
     vk.verify(message, &sig).is_ok()
 }
 
+/// Trust ladder: builtins are verified by construction; a fetched skill is
+/// verified only with a valid ZenCode signature over its canonical manifest
+/// bytes. An unsigned manifest is community, and no manifest at all is
+/// unverified - a missing signature is never treated as verified.
 pub fn assign_tier(source: &InstallSource, manifest: Option<&PluginManifest>) -> TrustTier {
     match source {
         InstallSource::Builtin => TrustTier::Verified,
@@ -1096,6 +1106,9 @@ pub struct LoadedSkill {
 }
 
 impl LoadedSkill {
+    /// Unverified skills are forced into the sandbox regardless of what
+    /// their manifest declares: an untrusted skill cannot grant itself
+    /// tools, network, or file writes by claiming them.
     pub fn effective_permissions(&self) -> SkillPermissions {
         match self.tier {
             TrustTier::Unverified => SkillPermissions::sandboxed(),
@@ -1120,6 +1133,8 @@ pub fn load_enabled_skills(home: &Path) -> Vec<LoadedSkill> {
             .unwrap_or_default();
         let permissions = load_manifest(&dir)
             .map(|m| m.permissions)
+            // A skill whose manifest cannot be read gets sandboxed
+            // permissions, not its declared ones: fail closed on load errors.
             .unwrap_or_else(|_| SkillPermissions::sandboxed());
         out.push(LoadedSkill {
             name: name.clone(),

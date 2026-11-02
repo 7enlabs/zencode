@@ -224,6 +224,10 @@ fn parse_worktree_porcelain(out: &str) -> Vec<(String, String, String)> {
     result
 }
 
+/// Worktree names are restricted to ASCII alphanumerics plus `-`, `_`,
+/// `.`, with no leading `-` or `.` and no `..`: a leading `-` would be
+/// parsed as a git flag, and `..` would let the name escape the worktrees
+/// directory.
 pub fn valid_worktree_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
@@ -251,6 +255,9 @@ pub fn remove_worktree(cwd: &Path, path: &Path) -> Result<(), String> {
 
 pub fn changed_files(cwd: &Path) -> Vec<(String, String)> {
     let p = spawn_probe("git", cwd, &["status", "--porcelain"]);
+    // A timed-out probe reports no changes rather than erroring: callers
+    // treat this as "nothing changed", so a slow repository can silently
+    // skip scope and commit-message checks that depend on this list.
     let out = match finish_probe(p, Instant::now() + GIT_TIMEOUT) {
         Some(o) => o,
         None => return vec![],
@@ -269,6 +276,9 @@ pub fn changed_files(cwd: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Stages everything in the working tree (`git add -A`), not a file list:
+/// callers must ensure the cwd contains only what should be committed,
+/// since untracked and unrelated changes are committed together.
 pub fn stage_and_commit(cwd: &Path, message: &str) -> Result<String, String> {
     let add = Command::new("git")
         .arg("-C")

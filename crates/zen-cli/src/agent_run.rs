@@ -364,6 +364,8 @@ pub(crate) fn build_permissions_with(
     extra_allow: &[String],
 ) -> Arc<dyn PermissionChecker> {
     let mode = core_mode(cfg.permission_mode);
+    // Bare mode ignores the project-local permission rules file: a bare
+    // run must not pick up rules from the directory it happens to run in.
     let local_path = if cli.bare {
         None
     } else {
@@ -388,6 +390,8 @@ fn build_hooks(
     transcript_path: Option<&Path>,
     cwd: &Path,
 ) -> Arc<dyn HookRunner> {
+    // Bare mode runs no hooks: hooks execute configured commands, so a
+    // bare run must not trigger project hooks from the current directory.
     if cli.bare {
         return Arc::new(NoHooks);
     }
@@ -1204,6 +1208,9 @@ pub fn kill_descendants() {
 }
 
 pub fn kill_new_descendants(keep: &[u32]) {
+    // SIGTERM, not SIGKILL, so children can shut down cleanly; pids that
+    // already existed before the turn (the keep list) are never signalled.
+    // A failed kill is only a warning: cleanup must not fail the run.
     let pids: Vec<u32> = descendants_of(std::process::id())
         .into_iter()
         .filter(|p| !keep.contains(p))
@@ -1218,6 +1225,9 @@ pub fn kill_new_descendants(keep: &[u32]) {
     }
 }
 
+/// Walk the process tree via /proc, so this only finds descendants on
+/// Linux: elsewhere the directory read fails and the result is empty,
+/// which makes descendant cleanup a no-op rather than an error.
 pub fn descendants_of(root: u32) -> Vec<u32> {
     let mut parent_of: Vec<(u32, u32)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir("/proc") {
@@ -1336,6 +1346,9 @@ pub fn expand_slash_prompt_cmd(
     Ok(
         match zen_ext::expand_slash_prompt(prompt, cwd, home, &ectx) {
             Some((mut cmd, text)) => {
+                // In an untrusted folder, slash commands defined under
+                // .zen lose their tool allow-list: a cloned repository must
+                // not smuggle tool access in through its own commands.
                 if !cfg.folder_trusted && cmd.path.starts_with(cwd.join(".zen")) {
                     cmd.allowed_tools.clear();
                 }

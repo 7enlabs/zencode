@@ -5,6 +5,9 @@ pub use agent_safety::{
     quota_exhausted_error, repeated_429_warning, SAFETY_DISCLAIMER,
 };
 
+/// The registry only tracks a fingerprint of the API key, never the key
+/// itself, so parallel-session tracking cannot leak credentials through the
+/// registry file or its warnings.
 pub fn check_parallel_sessions(
     provider: &str,
     api_key: Option<&str>,
