@@ -18,8 +18,11 @@ artifact in parallel, their findings are normalized into verdict buckets,
 and disagreements are surfaced to a human decider instead of averaged away.
 
 Scope of a review unit: a pull request, a research study, or a design doc.
-Out of scope for v1: automatic merging, automatic code edits by reviewers,
-and any paid model call.
+Out of scope for v1: automatic merging and automatic code edits by
+reviewers. Paid model calls are not part of the default review path;
+they need a separate per-case approval, and the design must keep working
+when that approval does not exist (see section 4) - this resolves the
+earlier wording that read as a total ban on paid calls.
 
 ## 2. Architecture
 
@@ -89,6 +92,12 @@ Flow:
   with the contradiction stated, not smoothed over; the lead decides,
   asks for the missing evidence, or assigns one more independent
   reviewer, and records the decision with the artifact.
+- All-escalate edge: if every reviewer escalates (all findings escalated
+  or all reviewers blocked), the review does not count as complete and
+  nothing is accepted by default. The artifact is marked BLOCKED pending
+  the missing evidence, the lead requests that evidence or assigns a
+  reviewer who has access to it, and only a fresh review round on the
+  completed evidence can proceed.
 
 ## 4. Model selection
 
@@ -113,7 +122,12 @@ Flow:
 - **Quota exhaustion.** When a free roster member is rate-limited or out of
   quota, the dispatcher substitutes another free model and records the
   substitution; the review never silently drops below 2 independent
-  reviewers.
+  reviewers. Tier floor on substitution: the substitute must be of the
+  same or a higher tier than the reviewer it replaces, where tier is
+  the capability tier recorded for that roster seat (family standing in
+  the roster for that review). If no free reviewer at or above that
+  tier is available, the review waits (deferred) instead of silently
+  downgrading to a weaker reviewer.
 
 ## 5. Cost accounting - target $0
 
