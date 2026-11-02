@@ -6,10 +6,30 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use uuid::Uuid;
 
+/// Strip a Windows verbatim `\\?\` prefix (and `\\?\UNC\` server prefix)
+/// from a canonicalized path, so downstream names use plain DOS paths.
+/// UNC paths keep their leading `\\`: `\\?\UNC\server\share` -> `\\server\share`.
+/// `std::fs::canonicalize` returns verbatim paths on Windows; leaving the
+/// prefix in an encoded directory name puts a `?` in it, which Windows
+/// rejects with error 123 when the directory is created.
+pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    p.to_path_buf()
+}
+
 pub fn encode_cwd(path: &Path) -> String {
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let abs = strip_verbatim_prefix(&abs);
     let s = abs.to_string_lossy();
-    s.replace(['/', '\\', ':', '.'], "-")
+    // Replace every character Windows forbids in a file name, not just the
+    // separators: `?` from a verbatim prefix, plus `* " < > |`.
+    s.replace(['/', '\\', ':', '.', '?', '*', '"', '<', '>', '|'], "-")
 }
 
 pub fn project_dir(home: &Path, encoded: &str) -> PathBuf {
@@ -474,6 +494,32 @@ mod tests {
         assert!(!s.contains('.'));
         assert!(!s.contains('\\'));
         assert!(!s.contains(':'));
+        // Windows verbatim `\\?\` prefix must not leak a `?` into the name
+        // (error 123 when the project dir is created), nor any other
+        // Windows-illegal file-name character.
+        assert!(!s.contains('?'));
+        assert!(!s.contains('*'));
+        assert!(!s.contains('"'));
+        assert!(!s.contains('<'));
+        assert!(!s.contains('>'));
+        assert!(!s.contains('|'));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_handles_drive_and_unc() {
+        // Pure string transform, so this runs on every OS, including Linux CI.
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\foo\bar")),
+            PathBuf::from(r"C:\foo\bar")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\dir")),
+            PathBuf::from(r"\\server\share\dir")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"C:\foo\bar")),
+            PathBuf::from(r"C:\foo\bar")
+        );
     }
 
     #[test]
