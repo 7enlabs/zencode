@@ -48,23 +48,77 @@ fn rule_pattern_path(cwd: &Path, spec: &str) -> (PathBuf, bool) {
     }
 }
 
+fn drive_prefix_of(slash_path: &str) -> Option<&str> {
+    let b = slash_path.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        Some(&slash_path[..2])
+    } else {
+        None
+    }
+}
+
+fn has_drive_prefix(p: &Path) -> bool {
+    matches!(p.components().next(), Some(std::path::Component::Prefix(_)))
+}
+
 fn path_rule_matches(cwd: &Path, spec: &str, candidate: &str) -> bool {
     let (pattern_path, dir_hint) = rule_pattern_path(cwd, spec);
 
     let target = canonicalize_lenient(&resolve_path(cwd, candidate));
-    let glob_pat = pattern_path.to_string_lossy().to_string();
-    let mut globs = vec![glob_pat.clone()];
-    if dir_hint {
-        globs.push(format!("{}/**", glob_pat));
+    // Match in a uniform `/`-separated space. On Windows a pattern such as
+    // `\work\proj\src/**` is mangled by globset, which treats `\` as an
+    // escape, so no Windows pattern would ever match. On other platforms
+    // the conversion is a no-op for ordinary paths.
+    let slash = |p: &Path| {
+        let s = p.to_string_lossy();
+        if cfg!(windows) {
+            s.replace('\\', "/")
+        } else {
+            s.into_owned()
+        }
+    };
+    let pattern_slash = slash(&pattern_path);
+    let target_slash = slash(&target);
+    // A drive-less pattern cannot name a drive, so it must also match a
+    // drive-qualified target by its drive-less remainder — but only when
+    // the target sits on the same drive as the cwd (or the cwd itself is
+    // drive-less), so a rule that names a drive keeps matching per-drive.
+    // (canonicalize_lenient attaches the current drive to drive-less
+    // targets on Windows, while patterns built from a synthetic cwd stay
+    // drive-less.)
+    let mut targets = vec![target_slash.clone()];
+    if cfg!(windows) && !has_drive_prefix(&pattern_path) && drive_prefix_of(&target_slash).is_some()
+    {
+        let cwd_slash = slash(cwd);
+        let cwd_drive = drive_prefix_of(&cwd_slash);
+        let target_drive = drive_prefix_of(&target_slash);
+        if cwd_drive.is_none() || cwd_drive == target_drive {
+            targets.push(target_slash[2..].to_string());
+        }
     }
-    for pat in globs {
-        if let Ok(g) = GlobBuilder::new(&pat).literal_separator(true).build() {
-            if g.compile_matcher().is_match(&target) {
-                return true;
+    let mut globs = vec![pattern_slash.clone()];
+    if dir_hint {
+        globs.push(format!("{}/**", pattern_slash));
+    }
+    for pat in &globs {
+        if let Ok(g) = GlobBuilder::new(pat).literal_separator(true).build() {
+            let matcher = g.compile_matcher();
+            for t in &targets {
+                if matcher.is_match_candidate(&globset::Candidate::from_bytes(t.as_bytes())) {
+                    return true;
+                }
             }
         }
     }
-    target == pattern_path || (dir_hint && target.starts_with(&pattern_path))
+    // Component-wise fallback on the same normalized forms.
+    let pattern_pb = PathBuf::from(&pattern_slash);
+    for t in &targets {
+        let target_pb = PathBuf::from(t);
+        if target_pb == pattern_pb || (dir_hint && target_pb.starts_with(&pattern_pb)) {
+            return true;
+        }
+    }
+    false
 }
 
 fn wildcard_match(pattern: &str, text: &str) -> bool {

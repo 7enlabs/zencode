@@ -303,17 +303,20 @@ async fn run_one(
     api_key_env: Option<&str>,
     event: HookEvent,
 ) -> SingleOutcome {
-    let mut cmd = match &spec.args {
+    let (mut cmd, cmd_display) = match &spec.args {
         Some(args) => {
             let mut c = Command::new(&spec.command);
             c.args(args);
-            c
+            let display = format!("{} {}", spec.command, args.join(" "));
+            (c, display)
         }
         None => {
             let sh = zen_core::resolve_shell("bash");
             let mut c = Command::new(&sh.program);
-            c.args(sh.args(&spec.command));
-            c
+            let argv = sh.args(&spec.command);
+            c.args(&argv);
+            let display = format!("{} {}", sh.program, argv.join(" "));
+            (c, display)
         }
     };
     cmd.current_dir(cwd)
@@ -345,7 +348,14 @@ async fn run_one(
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return failure(format!("failed to spawn hook '{}': {}", spec.command, e)),
+        Err(e) => {
+            return failure(format!(
+                "failed to spawn hook '{}': {} [hook-diag] {}",
+                spec.command,
+                e,
+                hook_diag(spec, &cmd_display, cwd)
+            ))
+        }
     };
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -356,11 +366,160 @@ async fn run_one(
     let timeout = Duration::from_secs(spec.timeout_secs);
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Err(_) => failure(format!(
-            "hook timed out after {}s: {}",
-            spec.timeout_secs, spec.command
+            "hook timed out after {}s: {} [hook-diag] {}",
+            spec.timeout_secs,
+            spec.command,
+            hook_diag(spec, &cmd_display, cwd)
         )),
-        Ok(Err(e)) => failure(format!("hook failed to run: {}", e)),
-        Ok(Ok(output)) => interpret_output(&output, event),
+        Ok(Err(e)) => failure(format!(
+            "hook failed to run: {} [hook-diag] {}",
+            e,
+            hook_diag(spec, &cmd_display, cwd)
+        )),
+        Ok(Ok(output)) => {
+            let mut out = interpret_output(&output, event);
+            if let Some(err) = &mut out.logged_error {
+                err.push_str(" [hook-diag] ");
+                err.push_str(&hook_diag(spec, &cmd_display, cwd));
+            } else if output.status.success() {
+                // Diagnostics only: a zero exit whose redirect target
+                // was never created is exactly the silent failure the
+                // PC hook tests hit. Surface it as a logged error; the
+                // outcome's control flow does not change.
+                if let Some(missing) = missing_redirect_target(spec, cwd) {
+                    out.logged_error = Some(format!(
+                        "hook exited 0 but redirect target was not created: {} \
+                         [hook-diag] {}",
+                        missing,
+                        hook_diag(spec, &cmd_display, cwd)
+                    ));
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Round-4 diagnostics for PR #18 - diagnostics ONLY: this never
+/// changes a hook's outcome, it only widens the error text a failure
+/// already produces. A `[hook-diag]` suffix is appended AFTER the
+/// original error text, reporting the full spawned command line, the
+/// cwd the hook ran with, and, for every redirect target in the
+/// command, whether the target and its parent directory exist. The
+/// six PC hook tests fail with the output file simply missing and no
+/// usable evidence (the temp path has no spaces, ruling out the
+/// word-splitting theory); this is the evidence the next diagnosis
+/// round needs from a single failing PC test run.
+fn hook_diag(spec: &CommandHookSpec, cmd_display: &str, cwd: &Path) -> String {
+    let mut s = format!(
+        "cmd: {}; cwd: {} (exists: {})",
+        cmd_display,
+        cwd.display(),
+        cwd.exists()
+    );
+    let targets = redirect_targets(&spec.command);
+    if targets.is_empty() {
+        s.push_str("; redirect targets: none");
+    } else {
+        for raw in &targets {
+            let probe = probe_path(cwd, raw);
+            let parent_exists = probe.parent().map(|p| p.exists()).unwrap_or(false);
+            let parent = probe
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            s.push_str(&format!(
+                "; redirect target: {} -> {} (exists: {}; parent {} exists: {})",
+                raw,
+                probe.display(),
+                probe.exists(),
+                parent,
+                parent_exists
+            ));
+        }
+    }
+    s
+}
+
+/// Redirect targets (`> path`, `>> path`, `>path`, `2>path`) named in
+/// a hook command string. Deliberately conservative: targets that
+/// cannot be resolved literally (fd redirects like `>&2`, `/dev/null`,
+/// anything with expansions or quotes) are skipped - this feeds
+/// diagnostics only, never execution.
+fn redirect_targets(command: &str) -> Vec<String> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i];
+        let bare = tok
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start_matches([';', '&', '|']);
+        if bare == ">" || bare == ">>" {
+            if let Some(next) = tokens.get(i + 1) {
+                push_target(&mut out, next);
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(rest) = bare.strip_prefix(">>").or_else(|| bare.strip_prefix('>')) {
+            if !rest.is_empty() {
+                push_target(&mut out, rest);
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn push_target(out: &mut Vec<String>, raw: &str) {
+    let t = raw.trim_matches(['"', '\'']).trim_end_matches(';');
+    if t.is_empty()
+        || t.starts_with('&')
+        || t == "/dev/null"
+        || t.contains('$')
+        || t.contains('`')
+        || t.contains('(')
+        || t.contains('"')
+        || t.contains('\'')
+    {
+        return;
+    }
+    if !out.iter().any(|x| x == t) {
+        out.push(t.to_string());
+    }
+}
+
+/// First redirect target of the hook command that does not exist on
+/// disk after the run, as written in the command; `None` when every
+/// target exists (the normal success path).
+fn missing_redirect_target(spec: &CommandHookSpec, cwd: &Path) -> Option<String> {
+    redirect_targets(&spec.command)
+        .into_iter()
+        .find(|raw| !probe_path(cwd, raw).exists())
+}
+
+/// Resolve a redirect target as written in a shell command to the
+/// path whose existence is worth reporting. Relative targets resolve
+/// against the hook's cwd. On Windows an MSYS target (`/c/...`) is
+/// translated to its native drive form - the same file the shell
+/// wrote - because the raw MSYS form means nothing to Windows APIs.
+fn probe_path(cwd: &Path, raw: &str) -> PathBuf {
+    let p = if cfg!(windows) {
+        let b = raw.as_bytes();
+        if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+            let drive = (b[1] as char).to_ascii_uppercase();
+            PathBuf::from(format!("{}:\\{}", drive, raw[3..].replace('/', "\\")))
+        } else {
+            PathBuf::from(raw.replace('/', "\\"))
+        }
+    } else {
+        PathBuf::from(raw)
+    };
+    if p.is_absolute() {
+        p
+    } else {
+        cwd.join(p)
     }
 }
 
@@ -534,6 +693,30 @@ mod tests {
             cwd.to_path_buf(),
             PermissionMode::Default,
         )
+    }
+
+    // Render a path for interpolation into a POSIX shell command. A raw
+    // Windows path (C:\...) is mangled by the shell, which reads \U,
+    // \T, ... as escapes, so the redirect target silently points
+    // somewhere else and the expected output file is never created.
+    // A drive path with forward slashes (C:/...) is no better: Git Bash
+    // does not treat it as an absolute path for redirection, so the file
+    // still lands in the wrong place. The MSYS form (/c/...) is the only
+    // unambiguous absolute path under Git Bash, and it names the same
+    // on-disk file, so reading it back through the native path works.
+    fn shell_path(p: &Path) -> String {
+        let s = p.to_string_lossy();
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        let b = s.as_bytes();
+        if b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/')
+        {
+            let drive = (b[0] as char).to_ascii_lowercase();
+            return format!("/{}{}", drive, s[2..].replace('\\', "/"));
+        }
+        s.replace('\\', "/")
     }
 
     #[tokio::test]
@@ -744,7 +927,7 @@ mod tests {
     async fn test_stdin_payload_contains_context() {
         let tmp = TempDir::new();
         let outfile = tmp.path().join("out.json");
-        let cmd = format!("cat > {}", outfile.display());
+        let cmd = format!("cat > {}", shell_path(&outfile));
         let hooks = hooks_with("UserPromptSubmit", None, &cmd, 10);
         let r = runner(hooks, tmp.path());
         let _ = tokio::time::timeout(
@@ -773,7 +956,7 @@ mod tests {
     async fn test_env_zen_project_dir() {
         let tmp = TempDir::new();
         let outfile = tmp.path().join("env.txt");
-        let cmd = format!("echo $ZEN_PROJECT_DIR > {}", outfile.display());
+        let cmd = format!("echo $ZEN_PROJECT_DIR > {}", shell_path(&outfile));
         let hooks = hooks_with("SessionStart", None, &cmd, 10);
         let r = runner(hooks, tmp.path());
         let _ = tokio::time::timeout(
@@ -873,7 +1056,7 @@ mod tests {
         let hooks = hooks_with(
             "SessionStart",
             None,
-            &format!("echo \"$FOO:$ZEN_PROJECT_DIR\" > {}", outfile.display()),
+            &format!("echo \"$FOO:$ZEN_PROJECT_DIR\" > {}", shell_path(&outfile)),
             10,
         );
         let env = HashMap::from([("FOO".to_string(), "bar".to_string())]);
@@ -1157,7 +1340,7 @@ mod tests {
     async fn parallel_run_and_dedupe() {
         let tmp = TempDir::new();
         let log = tmp.path().join("log");
-        let dup = format!("sleep 1; echo x >> {}", log.display());
+        let dup = format!("sleep 1; echo x >> {}", shell_path(&log));
         let hooks = json!({"PreToolUse": [
             {"matcher": "Bash", "hooks": [{"type": "command", "command": dup}, {"type": "command", "command": "sleep 1"}]},
             {"matcher": "*", "hooks": [{"type": "command", "command": dup}]}
@@ -1203,7 +1386,7 @@ mod tests {
         let hooks = hooks_with(
             "PostToolUse",
             Some("Bash"),
-            &format!("cat > {}", outfile.display()),
+            &format!("cat > {}", shell_path(&outfile)),
             10,
         );
         run_ev(
@@ -1262,7 +1445,7 @@ mod tests {
             let hooks = hooks_with(
                 event.as_str(),
                 None,
-                &format!("cat > {}", outfile.display()),
+                &format!("cat > {}", shell_path(&outfile)),
                 10,
             );
             run_ev(&runner(hooks, tmp.path()), event, target, payload).await;

@@ -81,6 +81,14 @@ async fn resume_session_replays_transcript() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_picks_latest_session() {
+    // The fixture project directory must be named with the production
+    // encoder (zen_cli::session::encode_cwd). A stale local copy that
+    // only replaced '/' and '.' diverged on Windows, where
+    // canonicalize() returns a verbatim path: the surviving
+    // backslashes and ':' made the joined fixture path absolute, so
+    // the fixture files landed in the cwd itself instead of the
+    // projects directory the binary searches, and --continue found
+    // no session.
     let home = TempDir::new("continue_home");
     let cwd = TempDir::new("continue_cwd");
 
@@ -88,7 +96,7 @@ async fn continue_picks_latest_session() {
         .path()
         .join(".zen")
         .join("projects")
-        .join(session::encode_cwd(cwd.path()));
+        .join(zen_cli::session::encode_cwd(cwd.path()));
     fs::create_dir_all(&proj_dir).unwrap();
 
     let p1 = proj_dir.join("first.jsonl");
@@ -242,7 +250,7 @@ async fn no_session_persistence_writes_no_file() {
         .path()
         .join(".zen")
         .join("projects")
-        .join(session::encode_cwd(cwd.path()));
+        .join(zen_cli::session::encode_cwd(cwd.path()));
     assert!(
         !proj_dir.exists() || fs::read_dir(&proj_dir).unwrap().count() == 0,
         "no transcript file should exist with --no-session-persistence"
@@ -361,15 +369,6 @@ async fn resume_nonexistent_session_errors() {
         stderr
     );
     assert_eq!(server.requests().await.len(), 0, "model must not be called");
-}
-
-mod session {
-    use std::path::Path;
-    pub fn encode_cwd(path: &Path) -> String {
-        let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let s = abs.to_string_lossy();
-        s.replace(['/', '.'], "-")
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

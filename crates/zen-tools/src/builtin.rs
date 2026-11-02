@@ -61,7 +61,13 @@ pub fn expand_tilde(input: &str) -> PathBuf {
 
 pub fn resolve_path(cwd: &Path, input: &str) -> PathBuf {
     let expanded = expand_tilde(input);
-    if expanded.is_absolute() {
+    // On Windows a rooted path such as `/etc/hosts` is NOT absolute by
+    // Rust's definition (no drive letter), so `cwd.join` would silently
+    // treat it as cwd-relative. A leading root means filesystem-root
+    // absolute on every platform; on Windows canonicalization attaches
+    // the current drive. This keeps permission rules and tools agreeing
+    // on what an absolute candidate means.
+    if expanded.is_absolute() || expanded.has_root() {
         expanded
     } else {
         cwd.join(expanded)
@@ -81,6 +87,68 @@ pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
         return PathBuf::from(rest);
     }
     p.to_path_buf()
+}
+
+/// Convert a POSIX-shell `$PWD` to a native path on Windows.
+///
+/// Git Bash reports MSYS paths (`/c/Users/...` or `/cygdrive/c/...`)
+/// that are not valid Windows paths, so the `is_dir()` check in the
+/// Bash tool would fail and a `cd` would never stick. Other shells on
+/// Windows report the same directory differently: WSL-flavoured shells
+/// use `/mnt/c/...`, a doubled leading slash (`//c/...`) shows up when
+/// the path crosses a UNC-style boundary, and a drive path may arrive
+/// with forward slashes (`C:/...`). All of these name the same directory
+/// and are normalized to one native path here. Git Bash additionally
+/// mounts `/tmp` on the Windows temp directory, so `/tmp/...` is mapped
+/// through `std::env::temp_dir()`. Native Windows paths pass through
+/// unchanged. On other platforms this is identity.
+fn native_shell_path(pwd: &str) -> PathBuf {
+    if cfg!(windows) {
+        // Git Bash mounts its own root `/tmp` on the Windows temp
+        // directory (%TEMP%), so a `$PWD` of `/tmp/...` names a real
+        // directory under `std::env::temp_dir()`. Without this mapping
+        // the path passes through unchanged, `is_dir()` fails, and a
+        // `cd` into a temp workspace never sticks (PC probe round 3,
+        // section C: marker captured, raw $PWD `/tmp/...`, native
+        // conversion unchanged, exists: false).
+        if pwd == "/tmp" || pwd.starts_with("/tmp/") {
+            let tail = pwd["/tmp".len()..].trim_start_matches('/');
+            let mut p = std::env::temp_dir();
+            for seg in tail.split('/').filter(|s| !s.is_empty()) {
+                p.push(seg);
+            }
+            return p;
+        }
+        let mut rest = pwd;
+        if let Some(r) = rest.strip_prefix("/cygdrive/") {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("/mnt/") {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("//") {
+            rest = r;
+        }
+        let b = rest.as_bytes();
+        let mut drive: Option<u8> = None;
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b'/' {
+            drive = Some(b[0]);
+            rest = &rest[2..];
+        } else if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+            drive = Some(b[1]);
+            rest = &rest[3..];
+        } else if b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/')
+        {
+            drive = Some(b[0]);
+            rest = &rest[3..];
+        }
+        if let Some(d) = drive {
+            let drive = (d as char).to_ascii_uppercase();
+            return PathBuf::from(format!("{}:\\{}", drive, rest.replace('/', "\\")));
+        }
+    }
+    PathBuf::from(pwd)
 }
 
 pub fn canonicalize_lenient(p: &Path) -> PathBuf {
@@ -826,9 +894,9 @@ impl Tool for BashTool {
                     };
                     let new_pwd = new_pwd.trim();
                     if !new_pwd.is_empty() {
-                        let p = PathBuf::from(new_pwd);
+                        let p = native_shell_path(new_pwd);
                         if p.is_dir() {
-                            *ctx.cwd.lock().unwrap() = p;
+                            *ctx.cwd.lock().unwrap() = canonicalize_lenient(&p);
                         }
                     }
                     combined = format!("{}{}", &combined[..pos], rest);
@@ -1992,6 +2060,13 @@ mod tests {
 
     #[tokio::test]
     async fn bash_cd_persists_between_calls() {
+        // The commands below are POSIX (`mkdir -p`, `pwd`); without a
+        // POSIX shell (e.g. a Windows machine without Git Bash) they
+        // cannot run meaningfully, and the fallback shells have no PWD
+        // tracking to persist a `cd`.
+        if zen_core::resolve_shell("bash").kind != zen_core::ShellKind::Posix {
+            return;
+        }
         let dir = tmpdir("bash-cd");
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let ctx = ctx_for(&dir);

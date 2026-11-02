@@ -33,7 +33,13 @@ impl TurnGuard {
 
     fn normalize(&self, file: &str) -> String {
         let p = Path::new(file);
-        let rel = if p.is_absolute() && !self.cwd.as_os_str().is_empty() {
+        // Always attempt the cwd strip, not only for `is_absolute()` paths:
+        // on Windows a rooted path such as `/repo/src/z.rs` is
+        // drive-relative, so `is_absolute()` is false and the strip was
+        // skipped, making every in-scope absolute path look out of scope.
+        // The strip only succeeds when the path really is under the cwd,
+        // so relative paths are unaffected.
+        let rel = if !self.cwd.as_os_str().is_empty() {
             p.strip_prefix(&self.cwd)
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|_| p.to_path_buf())

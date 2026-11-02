@@ -792,6 +792,27 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
 }
 
 pub fn is_wsl_launcher(path: &Path, system_root: Option<&str>) -> bool {
+    // A `bash.exe`/`sh.exe` under a `WindowsApps` directory is the
+    // Microsoft Store execution alias for WSL, wherever it lives
+    // (per-user `%LOCALAPPDATA%\Microsoft\WindowsApps` or the packaged
+    // `C:\Program Files\WindowsApps\...`). It is not a native POSIX
+    // shell: it starts a Linux bash that does not understand MSYS
+    // `/c/...` paths, so hook commands written for Git Bash fail and
+    // `$PWD` reporting breaks (PC hook diagnostics, round 5). It never
+    // sits under the system root, so the prefix check below misses it;
+    // reject it by path component instead, independent of
+    // `system_root`.
+    {
+        let p = path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        let file = p.rsplit('\\').next().unwrap_or(&p);
+        let base = file.strip_suffix(".exe").unwrap_or(file);
+        if matches!(base, "bash" | "sh") && p.split('\\').any(|c| c == "windowsapps") {
+            return true;
+        }
+    }
     let Some(root) = system_root.map(str::trim).filter(|r| !r.is_empty()) else {
         return false;
     };
@@ -956,9 +977,14 @@ mod tests {
             Path::new(r"C:\Windows\System32\cmd.exe"),
             root
         ));
-        assert!(!is_wsl_launcher(
-            Path::new(r"C:\WindowsApps\bash.exe"),
+        assert!(is_wsl_launcher(Path::new(r"C:\WindowsApps\bash.exe"), root));
+        assert!(is_wsl_launcher(
+            Path::new(r"C:\Users\Z\AppData\Local\Microsoft\WindowsApps\bash.exe"),
             root
+        ));
+        assert!(is_wsl_launcher(
+            Path::new(r"C:\Program Files\WindowsApps\bash.exe"),
+            None
         ));
         assert!(!is_wsl_launcher(
             Path::new(r"C:\Windows\System32\bash.exe"),
