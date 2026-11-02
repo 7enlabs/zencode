@@ -78,29 +78,67 @@ pub fn latest_session_for_cwd(home: &Path, encoded: &str) -> Option<PathBuf> {
     if !dir.exists() {
         return None;
     }
-    // "Latest" is by modification time. Ties are broken by creation time,
-    // and a remaining tie by later directory order, so two sessions
-    // written within one clock tick still resolve to the newer file
-    // instead of whichever entry the directory happens to list first.
-    let mut latest: Option<(SystemTime, SystemTime, PathBuf)> = None;
+    // "Latest" is decided by the timestamp the session itself recorded
+    // in its first transcript record - NOT by file mtime. The round-3 PC
+    // probe (section D) showed two session files with distinct mtimes
+    // listed in creation order, yet `--continue` still did not resolve
+    // to the newer one, so filesystem timestamps are not a trustworthy
+    // "latest" signal on that machine. The recorded timestamp is written
+    // by the session writer when the session starts and travels with the
+    // file content. Files without a parseable recorded timestamp fall
+    // back to the file creation time, and the file name is the final
+    // tie-break, so the result never depends on directory listing order.
+    let mut latest: Option<((i64, u32), SystemTime, String, PathBuf)> = None;
     for entry in std::fs::read_dir(&dir).ok()? {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(meta) = entry.metadata() else { continue };
-        let Ok(mtime) = meta.modified() else { continue };
-        let created = meta.created().unwrap_or(mtime);
+        let recorded = recorded_timestamp_key(&path);
+        let created = entry
+            .metadata()
+            .and_then(|m| m.created())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let replace = match &latest {
             None => true,
-            Some((t, c, _)) => (mtime, created) >= (*t, *c),
+            Some((t, c, n, _)) => (recorded, created, name.as_str()) > (*t, *c, n.as_str()),
         };
         if replace {
-            latest = Some((mtime, created, path));
+            latest = Some((recorded, created, name, path));
         }
     }
-    latest.map(|(_, _, p)| p)
+    latest.map(|(_, _, _, p)| p)
+}
+
+/// Ordering key from the `timestamp` of the first record in a session
+/// file: (unix seconds, sub-second nanos) of the RFC 3339 value the
+/// session writer recorded when the session started. `(i64::MIN, 0)`
+/// when the file has no parseable first-record timestamp, so such files
+/// sort before any timestamped session and the creation-time fallback
+/// decides between them.
+fn recorded_timestamp_key(path: &Path) -> (i64, u32) {
+    let fallback = (i64::MIN, 0);
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return fallback;
+    };
+    let Some(first_line) = content.lines().next() else {
+        return fallback;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(first_line) else {
+        return fallback;
+    };
+    let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) else {
+        return fallback;
+    };
+    match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => (dt.timestamp(), dt.timestamp_subsec_nanos()),
+        Err(_) => fallback,
+    }
 }
 
 #[derive(Serialize, Clone)]

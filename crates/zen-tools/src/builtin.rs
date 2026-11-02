@@ -98,10 +98,27 @@ pub fn strip_verbatim_prefix(p: &Path) -> PathBuf {
 /// use `/mnt/c/...`, a doubled leading slash (`//c/...`) shows up when
 /// the path crosses a UNC-style boundary, and a drive path may arrive
 /// with forward slashes (`C:/...`). All of these name the same directory
-/// and are normalized to one native path here. Native Windows paths pass
-/// through unchanged. On other platforms this is identity.
+/// and are normalized to one native path here. Git Bash additionally
+/// mounts `/tmp` on the Windows temp directory, so `/tmp/...` is mapped
+/// through `std::env::temp_dir()`. Native Windows paths pass through
+/// unchanged. On other platforms this is identity.
 fn native_shell_path(pwd: &str) -> PathBuf {
     if cfg!(windows) {
+        // Git Bash mounts its own root `/tmp` on the Windows temp
+        // directory (%TEMP%), so a `$PWD` of `/tmp/...` names a real
+        // directory under `std::env::temp_dir()`. Without this mapping
+        // the path passes through unchanged, `is_dir()` fails, and a
+        // `cd` into a temp workspace never sticks (PC probe round 3,
+        // section C: marker captured, raw $PWD `/tmp/...`, native
+        // conversion unchanged, exists: false).
+        if pwd == "/tmp" || pwd.starts_with("/tmp/") {
+            let tail = pwd["/tmp".len()..].trim_start_matches('/');
+            let mut p = std::env::temp_dir();
+            for seg in tail.split('/').filter(|s| !s.is_empty()) {
+                p.push(seg);
+            }
+            return p;
+        }
         let mut rest = pwd;
         if let Some(r) = rest.strip_prefix("/cygdrive/") {
             rest = r;
