@@ -173,9 +173,10 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
             continue;
         }
 
-        match handle_line(trimmed, cli, cwd, home, &cfg, &mut repl, &mut agent).await? {
-            LineAction::Exit => break,
-            LineAction::Continue => {}
+        match handle_line(trimmed, cli, cwd, home, &cfg, &mut repl, &mut agent).await {
+            Ok(LineAction::Exit) => break,
+            Ok(LineAction::Continue) => {}
+            Err(e) => eprintln!("error: {e:#}"),
         }
     }
 
