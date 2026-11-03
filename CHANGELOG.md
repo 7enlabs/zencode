@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+-  now groups the estimate into instructions, memory (ZEN.md / AGENTS.md text inside the system prompt), tool schemas and message history, with history split into conversation and tool calls/results. The groups add up to the printed total, and the line for the last API-reported prompt size shows how the estimate compares (B4.3).
 -  runs the 10 built-in eval tasks against a scripted solver (no API key, no network) and  sets the exit threshold (default 0.5, unchanged). A new  CI job runs it at 100% on every PR, so a broken eval task, check or tool turns CI red (B7.1).
 - One-command install for Linux, macOS, and Windows (install.sh, install.ps1) with
   `zen update` and `zen update --check` (PR #4): clones the repo or fast-forwards an

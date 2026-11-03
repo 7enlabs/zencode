@@ -54,6 +54,14 @@ async fn c5_4_headless_builtins_answer_locally() {
     let text = v["result"].as_str().unwrap();
     assert!(text.starts_with("Context usage (estimated)"), "{}", text);
     assert!(text.contains("- tools ("), "{}", text);
+    for label in [
+        "- instructions: ",
+        "- memory: ",
+        "- conversation: ",
+        "- tool calls and results: ",
+    ] {
+        assert!(text.contains(label), "missing {label}: {}", text);
+    }
 
     let (v, code) = run_p("pb6", &home, &cwd, &server, "/help");
     assert_eq!(code, 1);

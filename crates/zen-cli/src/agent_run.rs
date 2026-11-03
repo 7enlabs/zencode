@@ -765,6 +765,7 @@ pub(crate) async fn run_agent_with_result(
             "mcp" => Some(commands::mcp_report(&assembly.mcp_status)),
             "context" => Some(commands::context_report(
                 &agent.config.system_prompt,
+                &zen_ext::memory_prompt(cwd, home),
                 &agent.tools_for_request(),
                 agent.messages(),
                 agent.config.context_window,
