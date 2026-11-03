@@ -561,6 +561,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn repl_sess_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("zen_repl_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_session_for_repl_fresh_returns_none() {
+        let dir = repl_sess_dir("fresh");
+        let cli = Cli::parse_from(["zen"]);
+        assert_eq!(
+            resolve_session_for_repl(&cli, &dir, Some(&dir)).unwrap(),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_session_for_repl_resume_by_title() {
+        let dir = repl_sess_dir("title");
+        let proj = session::ensure_session_dir(&dir, &dir, "orig").unwrap();
+        let p = session::session_path(&proj, "orig");
+        session::append_typed(&p, "user", "orig", "cwd", "u", None, None, None).unwrap();
+        session::append_title(&p, "orig", "my-title").unwrap();
+        let cli = Cli::parse_from(["zen", "-r", "my-title"]);
+        assert_eq!(
+            resolve_session_for_repl(&cli, &dir, Some(&dir)).unwrap(),
+            Some(p)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_session_for_repl_resume_by_id_and_unknown_errors() {
+        let dir = repl_sess_dir("id");
+        let proj = session::ensure_session_dir(&dir, &dir, "orig").unwrap();
+        let p = session::session_path(&proj, "orig");
+        session::append_typed(&p, "user", "orig", "cwd", "u", None, None, None).unwrap();
+        let cli = Cli::parse_from(["zen", "-r", "orig"]);
+        assert_eq!(
+            resolve_session_for_repl(&cli, &dir, Some(&dir)).unwrap(),
+            Some(p)
+        );
+        let bad = Cli::parse_from(["zen", "-r", "no-such-session"]);
+        assert!(resolve_session_for_repl(&bad, &dir, Some(&dir)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn resolve_session_fork_gives_new_id() {
         let dir = std::env::temp_dir().join(format!("zen_lib_fork_{}", std::process::id()));
