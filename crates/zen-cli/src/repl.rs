@@ -80,8 +80,9 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     )
     .await?;
 
+    let progress: Arc<dyn EventSink> = Arc::new(crate::repl_progress::ReplProgressSink::new());
     let llm = crate::eventlog::wrap(
-        cfg.gated_llm_client(Arc::new(zen_core::NullSink), home),
+        cfg.gated_llm_client(progress.clone(), home),
         assembly.recorder.as_ref(),
     );
 
@@ -107,7 +108,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         assembly.permissions.clone(),
         Some(Arc::new(crate::agent_run::ReplPrompter)),
         assembly.hooks.clone(),
-        Arc::new(zen_core::NullSink),
+        progress.clone(),
         {
             let mut ctx = crate::agent_run::tool_context_public(cwd, &cfg, cli, &session_id);
 
