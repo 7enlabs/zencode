@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+-  now groups the estimate into instructions, memory (ZEN.md / AGENTS.md text inside the system prompt), tool schemas and message history, with history split into conversation and tool calls/results. The groups add up to the printed total, and the line for the last API-reported prompt size shows how the estimate compares (B4.3).
 - One-command install for Linux, macOS, and Windows (install.sh, install.ps1) with
   `zen update` and `zen update --check` (PR #4): clones the repo or fast-forwards an
   existing checkout, builds the CLI crate in release mode, copies `zen` (`zen.exe` on

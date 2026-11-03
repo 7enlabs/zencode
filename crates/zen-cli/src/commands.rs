@@ -104,19 +104,101 @@ pub fn init_prompt_with_imports(candidates: &[std::path::PathBuf]) -> String {
     )
 }
 
+/// Bytes one message adds to the estimate; the same terms as
+/// `zen_core::estimate_tokens`, so the groups below add up to its total.
+fn message_bytes(m: &zen_core::ChatMessage) -> usize {
+    m.content.as_deref().map(str::len).unwrap_or(0)
+        + m.tool_calls
+            .as_ref()
+            .map(|calls| {
+                calls
+                    .iter()
+                    .map(|c| c.function.arguments.len() + c.function.name.len())
+                    .sum()
+            })
+            .unwrap_or(0)
+}
+
+/// Estimated token cost of each part of the context, in the four groups
+/// `/context` prints. The parts always add up to `total`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextBreakdown {
+    pub instructions: u64,
+    pub memory: u64,
+    pub tools: u64,
+    pub history_conversation: u64,
+    pub history_tools: u64,
+}
+
+impl ContextBreakdown {
+    pub fn history(&self) -> u64 {
+        self.history_conversation + self.history_tools
+    }
+
+    pub fn total(&self) -> u64 {
+        self.instructions + self.memory + self.tools + self.history()
+    }
+}
+
+/// `memory` is the memory block (ZEN.md / AGENTS.md text) that was placed
+/// inside `system_prompt`; it is counted as memory only when that exact text is
+/// still found in the prompt, otherwise it stays in instructions.
+pub fn context_breakdown(
+    system_prompt: &str,
+    memory: &str,
+    tools: &[zen_core::ToolDefinition],
+    messages: &[zen_core::ChatMessage],
+) -> ContextBreakdown {
+    let sys = system_prompt.len() as u64 / 4;
+    let memory = memory.trim();
+    let memory_tokens = if !memory.is_empty() && system_prompt.contains(memory) {
+        (memory.len() as u64 / 4).min(sys)
+    } else {
+        0
+    };
+    let tools_tokens = serde_json::to_string(tools)
+        .map(|t| t.len() as u64 / 4)
+        .unwrap_or(0);
+    let all_bytes: usize = messages.iter().map(message_bytes).sum();
+    let tool_bytes: usize = messages
+        .iter()
+        .map(|m| {
+            if m.role == "tool" {
+                message_bytes(m)
+            } else {
+                m.tool_calls
+                    .as_ref()
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .map(|c| c.function.arguments.len() + c.function.name.len())
+                            .sum()
+                    })
+                    .unwrap_or(0)
+            }
+        })
+        .sum();
+    let history_total = all_bytes as u64 / 4;
+    let history_tools = (tool_bytes as u64 / 4).min(history_total);
+    ContextBreakdown {
+        instructions: sys - memory_tokens,
+        memory: memory_tokens,
+        tools: tools_tokens,
+        history_conversation: history_total - history_tools,
+        history_tools,
+    }
+}
+
 pub fn context_report(
     system_prompt: &str,
+    memory: &str,
     tools: &[zen_core::ToolDefinition],
     messages: &[zen_core::ChatMessage],
     context_window: u64,
     last_prompt_tokens: u64,
 ) -> String {
-    let sys = system_prompt.len() as u64 / 4;
-    let tool_tokens = serde_json::to_string(tools)
-        .map(|t| t.len() as u64 / 4)
-        .unwrap_or(0);
-    let msg = zen_core::estimate_tokens(messages);
-    let total = sys + tool_tokens + msg;
+    let b = context_breakdown(system_prompt, memory, tools, messages);
+    let total = b.total();
     let pct = |n: u64| {
         if context_window == 0 {
             0.0
@@ -126,24 +208,32 @@ pub fn context_report(
     };
     let mut out = format!(
         "Context usage (estimated): {} / {} tokens ({:.1}%)\n\
-         - system prompt: {} tokens\n\
+         - instructions: {} tokens\n\
+         - memory: {} tokens\n\
          - tools ({}): {} tokens\n\
          - messages ({}): {} tokens\n\
+         \x20   - conversation: {} tokens\n\
+         \x20   - tool calls and results: {} tokens\n\
          - free: {} tokens",
         total,
         context_window,
         pct(total),
-        sys,
+        b.instructions,
+        b.memory,
         tools.len(),
-        tool_tokens,
+        b.tools,
         messages.len(),
-        msg,
+        b.history(),
+        b.history_conversation,
+        b.history_tools,
         context_window.saturating_sub(total)
     );
     if last_prompt_tokens > 0 {
         out.push_str(&format!(
-            "\nLast request (reported by the API): {} prompt tokens",
-            last_prompt_tokens
+            "\nLast request (reported by the API): {} prompt tokens (estimate is {:.0}% of it; \
+             the estimate counts 4 bytes per token)",
+            last_prompt_tokens,
+            total as f64 * 100.0 / last_prompt_tokens as f64
         ));
     }
 
@@ -703,6 +793,107 @@ pub async fn sessions_command(
 mod tests {
     use super::*;
     use std::fs;
+
+    fn sample_messages() -> Vec<zen_core::ChatMessage> {
+        use zen_core::{ChatMessage, FunctionCall, ToolCall};
+        vec![
+            ChatMessage::user("please read the config file and summarise it"),
+            ChatMessage::assistant(
+                Some("reading it".into()),
+                Some(vec![ToolCall {
+                    id: "c1".into(),
+                    call_type: "function".into(),
+                    function: FunctionCall {
+                        name: "Read".into(),
+                        arguments: r#"{"file_path":"config.toml"}"#.into(),
+                    },
+                }]),
+            ),
+            ChatMessage::tool("c1", "x".repeat(400)),
+            ChatMessage::assistant(Some("it sets three options".into()), None),
+        ]
+    }
+
+    #[test]
+    fn context_breakdown_groups_add_up_to_the_estimate() {
+        let memory = "# Memory: ZEN.md\n\nalways run the tests before finishing";
+        let prompt = format!("You are zen.\n\n{memory}\n\nDefinition of done: ...");
+        let msgs = sample_messages();
+        let b = context_breakdown(&prompt, memory, &[], &msgs);
+        assert!(b.memory > 0 && b.instructions > 0);
+        assert_eq!(
+            b.instructions + b.memory,
+            prompt.len() as u64 / 4,
+            "instructions and memory split the system prompt exactly"
+        );
+        assert_eq!(b.history(), zen_core::estimate_tokens(&msgs));
+        assert!(b.history_tools >= 100, "tool result is ~400 bytes: {b:?}");
+        assert!(b.history_conversation > 0);
+        assert_eq!(
+            b.total(),
+            prompt.len() as u64 / 4 + zen_core::estimate_tokens(&msgs)
+        );
+    }
+
+    #[test]
+    fn context_breakdown_ignores_memory_missing_from_the_prompt() {
+        let b = context_breakdown("You are zen.", "# Memory: gone", &[], &[]);
+        assert_eq!(b.memory, 0);
+        assert_eq!(b.instructions, "You are zen.".len() as u64 / 4);
+        let none = context_breakdown("You are zen.", "", &[], &[]);
+        assert_eq!(none.memory, 0);
+    }
+
+    #[test]
+    fn context_report_group_lines_sum_to_the_printed_total() {
+        let memory = "# Memory: ZEN.md\n\nkeep diffs small and tested";
+        let prompt = format!("You are zen.\n\n{memory}");
+        let msgs = sample_messages();
+        let report = context_report(&prompt, memory, &[], &msgs, 128_000, 0);
+        let num = |label: &str| -> u64 {
+            report
+                .lines()
+                .find(|l| l.trim_start().starts_with(label))
+                .unwrap_or_else(|| panic!("no '{label}' line in:\n{report}"))
+                .split(':')
+                .next_back()
+                .unwrap()
+                .trim()
+                .trim_end_matches(" tokens")
+                .parse()
+                .unwrap()
+        };
+        let total: u64 = report
+            .lines()
+            .next()
+            .unwrap()
+            .trim_start_matches("Context usage (estimated): ")
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sum = num("- instructions")
+            + num("- memory")
+            + num("- tools")
+            + num("- conversation")
+            + num("- tool calls and results");
+        assert_eq!(sum, total, "{report}");
+        assert_eq!(
+            num("- messages"),
+            num("- conversation") + num("- tool calls and results")
+        );
+        assert!(report.contains("- memory: "), "{report}");
+    }
+
+    #[test]
+    fn context_report_compares_with_the_api_reported_total() {
+        let report = context_report("You are zen.", "", &[], &sample_messages(), 128_000, 500);
+        assert!(
+            report.contains("Last request (reported by the API): 500 prompt tokens (estimate is "),
+            "{report}"
+        );
+    }
 
     #[test]
     fn builtin_commands_list() {
