@@ -150,6 +150,50 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         checkpoints,
     };
 
+    // Honour -c/-r and a positional prompt: resume first, then run the
+    // prompt as the first turn and stay in the session.
+    if !cli.ephemeral || cli.resume.is_some() || cli.continue_session {
+        match crate::resolve_session_for_repl(cli, cwd, home) {
+            Ok(Some(path)) if !cli.fork_session => {
+                if let Err(e) = resume_into(path, cwd, &mut agent, &mut repl) {
+                    eprintln!("error: {e:#}");
+                }
+            }
+            Ok(Some(path)) => {
+                // --fork-session: replay history into a fresh session id
+                let keep_id = repl.session_id.clone();
+                match crate::eventlog::resume_history(&path) {
+                    Ok((_, history)) => {
+                        agent.set_messages(history);
+                        println!("forked from {} as {}", path.display(), keep_id);
+                    }
+                    Err(e) => eprintln!("error: {e:#}"),
+                }
+            }
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let first_prompt = cli.prompt.join(" ").trim().to_string();
+    if !first_prompt.is_empty() {
+        match handle_line(&first_prompt, cli, cwd, home, &cfg, &mut repl, &mut agent).await {
+            Ok(LineAction::Exit) => {
+                crate::agent_run::run_session_end(
+                    &agent.hooks,
+                    &repl.session_id.clone(),
+                    cwd,
+                    &cfg,
+                    "prompt_input_exit",
+                )
+                .await;
+                println!("bye");
+                return Ok(());
+            }
+            Ok(LineAction::Continue) => {}
+            Err(e) => eprintln!("error: {e:#}"),
+        }
+    }
+
     loop {
         println!("{}", status_line(&cfg.model, cwd));
         {
@@ -313,6 +357,40 @@ async fn run_turn_interruptible(
         eprintln!("Interrupted.");
     }
     out
+}
+
+/// Load a saved transcript into the running REPL (shared by /resume and -c/-r).
+fn resume_into(
+    path: std::path::PathBuf,
+    cwd: &Path,
+    agent: &mut zen_agent::Agent,
+    repl: &mut ReplState<'_>,
+) -> Result<()> {
+    let id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let (committed, history) = crate::eventlog::resume_history(&path)?;
+    agent.ctx.session_dir = Some(crate::session::session_scratch_dir(&path));
+    if let Some(r) = &repl.recorder {
+        r.set_path(path.clone());
+    }
+    *repl.writer = crate::session::TranscriptWriter::new(path, &id, cwd);
+    if history != committed {
+        if let Err(e) = repl.writer.persist_turn(&committed, &history) {
+            eprintln!("warning: could not write transcript: {}", e);
+        }
+    }
+    agent.set_messages(history);
+    *repl.session_id = id.clone();
+    agent.ctx.session_id = id.clone();
+    println!(
+        "resumed session {} ({} messages)",
+        id,
+        agent.messages().len()
+    );
+    Ok(())
 }
 
 fn print_turn(result: Option<RunResult>) {
@@ -1268,30 +1346,7 @@ async fn handle_slash(
                 });
                 match found {
                     Some(path) => {
-                        let id = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        let (committed, history) = crate::eventlog::resume_history(&path)?;
-                        agent.ctx.session_dir = Some(crate::session::session_scratch_dir(&path));
-                        if let Some(r) = &repl.recorder {
-                            r.set_path(path.clone());
-                        }
-                        *repl.writer = crate::session::TranscriptWriter::new(path, &id, cwd);
-                        if history != committed {
-                            if let Err(e) = repl.writer.persist_turn(&committed, &history) {
-                                eprintln!("warning: could not write transcript: {}", e);
-                            }
-                        }
-                        agent.set_messages(history);
-                        *repl.session_id = id.clone();
-                        agent.ctx.session_id = id.clone();
-                        println!(
-                            "resumed session {} ({} messages)",
-                            id,
-                            agent.messages().len()
-                        );
+                        resume_into(path, cwd, agent, repl)?;
                     }
                     None => eprintln!("no session found: {}", arg),
                 }

@@ -386,6 +386,30 @@ async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32>
     Ok(code)
 }
 
+/// Resolve -c/-r to an existing transcript for the REPL (None = start fresh).
+pub(crate) fn resolve_session_for_repl(
+    cli: &Cli,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Result<Option<std::path::PathBuf>> {
+    if cli.resume.as_deref().is_none_or(str::is_empty) && !cli.continue_session {
+        return Ok(None);
+    }
+    // Like /resume, -r also accepts a session name (title).
+    if let (Some(r), Some(h)) = (cli.resume.as_deref().filter(|r| !r.is_empty()), home) {
+        if session::find_session_path(h, r).is_none() {
+            if let Some((_, p)) = session::list_sessions_for_cwd(h, cwd)
+                .into_iter()
+                .find(|(_, p)| session::session_title(p).as_deref() == Some(r))
+            {
+                return Ok(Some(p));
+            }
+        }
+    }
+    let (_, _, from) = resolve_session(cli, cwd, home)?;
+    Ok(from)
+}
+
 fn resolve_session(
     cli: &Cli,
     cwd: &Path,
@@ -534,6 +558,55 @@ mod tests {
             path.is_none(),
             "ephemeral resume must not open a transcript for writing"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn repl_sess_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("zen_repl_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_session_for_repl_fresh_returns_none() {
+        let dir = repl_sess_dir("fresh");
+        let cli = Cli::parse_from(["zen"]);
+        assert_eq!(
+            resolve_session_for_repl(&cli, &dir, Some(&dir)).unwrap(),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_session_for_repl_resume_by_title() {
+        let dir = repl_sess_dir("title");
+        let proj = session::ensure_session_dir(&dir, &dir, "orig").unwrap();
+        let p = session::session_path(&proj, "orig");
+        session::append_typed(&p, "user", "orig", "cwd", "u", None, None, None).unwrap();
+        session::append_title(&p, "orig", "my-title").unwrap();
+        let cli = Cli::parse_from(["zen", "-r", "my-title"]);
+        assert_eq!(
+            resolve_session_for_repl(&cli, &dir, Some(&dir)).unwrap(),
+            Some(p)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_session_for_repl_resume_by_id_and_unknown_errors() {
+        let dir = repl_sess_dir("id");
+        let proj = session::ensure_session_dir(&dir, &dir, "orig").unwrap();
+        let p = session::session_path(&proj, "orig");
+        session::append_typed(&p, "user", "orig", "cwd", "u", None, None, None).unwrap();
+        let cli = Cli::parse_from(["zen", "-r", "orig"]);
+        assert_eq!(
+            resolve_session_for_repl(&cli, &dir, Some(&dir)).unwrap(),
+            Some(p)
+        );
+        let bad = Cli::parse_from(["zen", "-r", "no-such-session"]);
+        assert!(resolve_session_for_repl(&bad, &dir, Some(&dir)).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
