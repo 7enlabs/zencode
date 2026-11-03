@@ -395,6 +395,15 @@ pub struct EvalArgs {
 
     #[arg(long, default_value_t = 25)]
     pub max_turns: usize,
+
+    /// Run every task against a built-in scripted solver instead of a live
+    /// model (no API key, no network). Checks the harness, tools and checks.
+    #[arg(long)]
+    pub mock: bool,
+
+    /// Exit non-zero when passed/total falls below this fraction (0.0 to 1.0).
+    #[arg(long, default_value_t = 0.5)]
+    pub min_pass_rate: f64,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1111,6 +1120,26 @@ mod tests {
         let cli = parse(&["eval", "--max-turns", "10"]);
         match &cli.subcommand {
             Some(Commands::Eval(a)) => assert_eq!(a.max_turns, 10),
+            other => panic!("expected Eval, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_eval_mock_and_threshold() {
+        let cli = parse(&["eval", "--mock", "--min-pass-rate", "1.0"]);
+        match &cli.subcommand {
+            Some(Commands::Eval(a)) => {
+                assert!(a.mock);
+                assert_eq!(a.min_pass_rate, 1.0);
+            }
+            other => panic!("expected Eval, got {:?}", other),
+        }
+        let cli = parse(&["eval"]);
+        match &cli.subcommand {
+            Some(Commands::Eval(a)) => {
+                assert!(!a.mock);
+                assert_eq!(a.min_pass_rate, 0.5);
+            }
             other => panic!("expected Eval, got {:?}", other),
         }
     }

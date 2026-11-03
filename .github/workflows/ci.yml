@@ -22,6 +22,21 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+  eval:
+    # Deterministic eval gate (B7.1): the scripted mock solver needs no API key
+    # and no network, so it runs on every PR including forks. Fails when any
+    # built-in eval task fails (a broken task, check, tool or agent loop).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: zen eval (mock provider, pass rate must be 100%)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo run --locked -q -p zen-cli -- eval --mock --min-pass-rate 1.0 | tee eval-report.md >> "$GITHUB_STEP_SUMMARY"
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 15

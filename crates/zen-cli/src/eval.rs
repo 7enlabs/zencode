@@ -10,8 +10,9 @@ use serde_json::Value;
 
 use zen_agent::{Agent, AgentConfig, OpenAiClient};
 use zen_core::{
-    AgentEvent, EventSink, LlmBackend, NoHooks, PermissionChecker, PermissionDecision,
-    PermissionMode, RunResult, ToolContext, ToolRegistry,
+    AgentEvent, ChatMessage, ChatRequest, ChatResponse, EventSink, FunctionCall, LlmBackend,
+    NoHooks, PermissionChecker, PermissionDecision, PermissionMode, RunResult, ToolCall,
+    ToolContext, ToolRegistry, Usage,
 };
 use zen_tools::{BashTool, EditTool, MultiEditTool, ReadTool, WriteTool};
 
@@ -350,6 +351,76 @@ pub struct EvalOptions {
 
     pub base_url: String,
     pub api_key: Option<String>,
+
+    /// Use the built-in scripted solver (see `MockSolver`) instead of a live
+    /// model. Needs no key and no network.
+    pub mock: bool,
+}
+
+/// Shell command that solves each built-in task, run through the real Bash
+/// tool. `None` means the task has no scripted solution, so the mock run
+/// fails it: a new task must ship with its solution or CI goes red.
+pub fn mock_solution(task_id: &str) -> Option<&'static str> {
+    Some(match task_id {
+        "create-file" => r#"printf 'Hello, eval!' > hello.txt"#,
+        "create-nested" => {
+            r#"mkdir -p docs/notes && printf -- '- [ ] Buy milk\n- [ ] Write code\n- [ ] Ship it\n' > docs/notes/todo.md"#
+        }
+        "fix-typo" => r#"sed 's/quik/quick/' message.txt > m.tmp && mv m.tmp message.txt"#,
+        "fix-bug" => r#"sed 's/6 \* 6/6 * 7/' calc.sh > c.tmp && mv c.tmp calc.sh"#,
+        "append-log" => r#"printf 'eval-ok\n' >> log.txt"#,
+        "rename-key" => r#"sed 's/"name"/"title"/' data.json > d.tmp && mv d.tmp data.json"#,
+        "sum-script" => r#"printf 'echo $((19 + 23))\n' > add.sh"#,
+        "delete-file" => "rm scratch.tmp",
+        "multi-edit" => {
+            r#"sed -e 's/teh/the/' -e 's/recieve/receive/' notes.txt > n.tmp && mv n.tmp notes.txt"#
+        }
+        "readme-section" => r#"printf '\n## Eval\n\nA tiny benchmark.\n' >> README.md"#,
+        _ => return None,
+    })
+}
+
+/// Deterministic stand-in for a model: first turn calls Bash with the task's
+/// scripted solution, later turns reply with plain text and stop. It exercises
+/// the agent loop, the Bash tool, the workdir setup and the pass/fail checks.
+struct MockSolver {
+    solution: Option<&'static str>,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmBackend for MockSolver {
+    async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::Relaxed);
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            ..Default::default()
+        };
+        match (n, self.solution) {
+            (0, Some(cmd)) => Ok(ChatResponse {
+                message: ChatMessage::assistant(
+                    None,
+                    Some(vec![ToolCall {
+                        id: "mock-1".into(),
+                        call_type: "function".into(),
+                        function: FunctionCall {
+                            name: "Bash".into(),
+                            arguments: serde_json::json!({ "command": cmd }).to_string(),
+                        },
+                    }]),
+                ),
+                usage,
+                finish_reason: Some("tool_calls".into()),
+            }),
+            _ => Ok(ChatResponse {
+                message: ChatMessage::assistant(Some("Done.".into()), None),
+                usage,
+                finish_reason: Some("stop".into()),
+            }),
+        }
+    }
 }
 
 const EVAL_SYSTEM_PROMPT: &str = "You are a coding agent running inside an eval harness. \
@@ -448,7 +519,7 @@ async fn run_one_task(
 }
 
 pub async fn run_eval(opts: &EvalOptions) -> Result<EvalReport> {
-    if !opts.model.contains(":free") {
+    if !opts.mock && !opts.model.contains(":free") {
         bail!(
             "refusing to eval non-free model '{}': only `:free` models are allowed",
             opts.model
@@ -471,17 +542,28 @@ pub async fn run_eval(opts: &EvalOptions) -> Result<EvalReport> {
     for task in tasks {
         let sink = Arc::new(MetricSink::default());
         let client_sink: Arc<dyn EventSink> = sink.clone();
-        let backend: Arc<dyn LlmBackend> = Arc::new(OpenAiClient::new(
-            opts.base_url.clone(),
-            opts.api_key.clone(),
-            client_sink,
-        ));
+        let backend: Arc<dyn LlmBackend> = if opts.mock {
+            Arc::new(MockSolver {
+                solution: mock_solution(task.id),
+                calls: AtomicUsize::new(0),
+            })
+        } else {
+            Arc::new(OpenAiClient::new(
+                opts.base_url.clone(),
+                opts.api_key.clone(),
+                client_sink,
+            ))
+        };
         results.push(run_one_task(task, backend, sink, opts.max_turns).await);
     }
 
     let passed_count = results.iter().filter(|m| m.passed).count();
     Ok(EvalReport {
-        model: opts.model.clone(),
+        model: if opts.mock {
+            "mock".to_string()
+        } else {
+            opts.model.clone()
+        },
         task_count: results.len(),
         passed_count,
         tasks: results,
@@ -789,5 +871,61 @@ mod tests {
 
         assert_eq!(m.edit_failures, 1);
         assert!(m.passed, "check FileNotExists should hold");
+    }
+    #[test]
+    fn every_task_has_a_mock_solution() {
+        for t in EVAL_TASKS.iter() {
+            assert!(
+                mock_solution(t.id).is_some(),
+                "task {} has no mock solution",
+                t.id
+            );
+        }
+    }
+
+    fn mock_opts(filter: Option<&str>) -> EvalOptions {
+        EvalOptions {
+            model: "unused".into(),
+            task_filter: filter.map(String::from),
+            max_turns: 10,
+            base_url: String::new(),
+            api_key: None,
+            mock: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_run_passes_all_tasks() {
+        let report = run_eval(&mock_opts(None)).await.unwrap();
+        assert_eq!(report.model, "mock");
+        let failed: Vec<_> = report
+            .tasks
+            .iter()
+            .filter(|t| !t.passed)
+            .map(|t| (t.task_id.clone(), t.error.clone()))
+            .collect();
+        assert!(failed.is_empty(), "mock tasks failed: {failed:?}");
+        assert_eq!(report.passed_count, report.task_count);
+    }
+
+    #[tokio::test]
+    async fn mock_run_fails_a_task_without_solution() {
+        let task = EvalTask {
+            id: "broken-probe",
+            description: "probe",
+            prompt: "Create probe.txt.",
+            setup: &[],
+            check: Check::FileContains {
+                path: "probe.txt",
+                needle: "x",
+            },
+        };
+        assert!(mock_solution(task.id).is_none());
+        let backend: Arc<dyn LlmBackend> = Arc::new(MockSolver {
+            solution: None,
+            calls: AtomicUsize::new(0),
+        });
+        let m = run_one_task(&task, backend, Arc::new(MetricSink::default()), 10).await;
+        assert!(!m.passed, "a task with no solution must fail under mock");
     }
 }

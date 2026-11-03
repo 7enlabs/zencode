@@ -185,6 +185,9 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             Ok(0)
         }
         Commands::Eval(args) => {
+            if !(0.0..=1.0).contains(&args.min_pass_rate) {
+                anyhow::bail!("--min-pass-rate must be between 0.0 and 1.0");
+            }
             let cfg = settings::resolve_config_with_home(cli, cwd, home)?;
             let model = args.model.clone().unwrap_or_else(|| cfg.model.clone());
             let opts = eval::EvalOptions {
@@ -193,6 +196,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 max_turns: args.max_turns,
                 base_url: cfg.base_url.clone(),
                 api_key: cfg.api_key().map(|s| s.to_string()),
+                mock: args.mock,
             };
             let report = eval::run_eval(&opts).await?;
             if args.json {
@@ -201,11 +205,15 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 println!("{}", report.to_markdown());
             }
 
-            Ok(if report.passed_count * 2 >= report.task_count {
-                0
-            } else {
-                1
-            })
+            Ok(
+                if report.passed_count as f64 + 1e-9
+                    >= args.min_pass_rate * report.task_count as f64
+                {
+                    0
+                } else {
+                    1
+                },
+            )
         }
         Commands::PrComments { pr, json } => {
             let fetched = github::fetch_pr_comments(cwd, pr.as_deref())?;
