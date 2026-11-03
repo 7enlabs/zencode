@@ -28,6 +28,7 @@ try:
 except ImportError:
     import tomli as tomllib
 
+
 @dataclasses.dataclass
 class Task:
     name: str
@@ -38,6 +39,7 @@ class Task:
     difficulty: str
     category: str
 
+
 @dataclasses.dataclass
 class TaskResult:
     name: str
@@ -45,6 +47,7 @@ class TaskResult:
     duration_sec: float
     agent_exit_code: int | None
     error: str | None
+
 
 def discover_tasks(repo_dir: Path) -> dict[str, Task]:
     """Parse all tasks from a terminal-bench-2 checkout."""
@@ -67,32 +70,56 @@ def discover_tasks(repo_dir: Path) -> dict[str, Task]:
         )
     return tasks
 
-def sh(cmd: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
-def run_task(task: Task, zen_bin: Path, model: str, base_url: str,
-             logs_dir: Path, agent_timeout: float | None = None) -> TaskResult:
+def sh(cmd: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd, check=False, capture_output=True, text=True, timeout=timeout
+    )
+
+
+def run_task(
+    task: Task,
+    zen_bin: Path,
+    model: str,
+    base_url: str,
+    logs_dir: Path,
+    agent_timeout: float | None = None,
+) -> TaskResult:
     """Run one task end-to-end in Docker. Returns the result."""
     t0 = time.time()
     cname = f"tb-zen-{task.name}-{int(t0)}".replace("_", "-")
     timeout = min(agent_timeout or task.agent_timeout_sec, 1200)
-    res = TaskResult(name=task.name, passed=None, duration_sec=0.0,
-                     agent_exit_code=None, error=None)
+    res = TaskResult(
+        name=task.name, passed=None, duration_sec=0.0, agent_exit_code=None, error=None
+    )
     try:
-
         r = sh(["docker", "pull", task.image], timeout=600)
         if r.returncode != 0:
             res.error = f"docker pull failed: {r.stderr[:300]}"
             return res
 
-        r = sh(["docker", "run", "-d", "--rm",
+        r = sh(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--rm",
                 "--add-host=host.docker.internal:host-gateway",
-                "--name", cname, task.image, "sleep", "infinity"], timeout=120)
+                "--name",
+                cname,
+                task.image,
+                "sleep",
+                "infinity",
+            ],
+            timeout=120,
+        )
         if r.returncode != 0:
             res.error = f"docker run failed: {r.stderr[:300]}"
             return res
 
-        r = sh(["docker", "cp", str(zen_bin), f"{cname}:/usr/local/bin/zen"], timeout=120)
+        r = sh(
+            ["docker", "cp", str(zen_bin), f"{cname}:/usr/local/bin/zen"], timeout=120
+        )
         if r.returncode != 0:
             res.error = f"docker cp zen failed: {r.stderr[:300]}"
             return res
@@ -102,7 +129,9 @@ def run_task(task: Task, zen_bin: Path, model: str, base_url: str,
             f.write(task.instruction)
             instr_host = f.name
         try:
-            r = sh(["docker", "cp", instr_host, f"{cname}:/tmp/instruction.md"], timeout=60)
+            r = sh(
+                ["docker", "cp", instr_host, f"{cname}:/tmp/instruction.md"], timeout=60
+            )
             if r.returncode != 0:
                 res.error = f"docker cp instruction failed: {r.stderr[:300]}"
                 return res
@@ -118,37 +147,54 @@ def run_task(task: Task, zen_bin: Path, model: str, base_url: str,
         r = sh(["docker", "exec", cname, "bash", "-c", wrapper], timeout=timeout + 180)
         res.agent_exit_code = r.returncode
         (logs_dir / f"{task.name}-agent.log").write_text(
-            f"=== STDOUT (tail) ===\n{r.stdout[-20000:]}\n=== STDERR (tail) ===\n{r.stderr[-5000:]}\n")
+            f"=== STDOUT (tail) ===\n{r.stdout[-20000:]}\n=== STDERR (tail) ===\n{r.stderr[-5000:]}\n"
+        )
 
-        r = sh(["docker", "cp", str(task.task_dir / "tests"), f"{cname}:/tests"], timeout=60)
+        r = sh(
+            ["docker", "cp", str(task.task_dir / "tests"), f"{cname}:/tests"],
+            timeout=60,
+        )
         if r.returncode != 0:
             res.error = f"docker cp tests failed: {r.stderr[:300]}"
             return res
-        r = sh(["docker", "exec", cname, "bash", "-c",
-                "mkdir -p /logs/verifier && bash /tests/test.sh"],
-               timeout=900)
+        r = sh(
+            [
+                "docker",
+                "exec",
+                cname,
+                "bash",
+                "-c",
+                "mkdir -p /logs/verifier && bash /tests/test.sh",
+            ],
+            timeout=900,
+        )
         (logs_dir / f"{task.name}-verify.log").write_text(
-            f"exit={r.returncode}\n--- stdout ---\n{r.stdout[-15000:]}\n--- stderr ---\n{r.stderr[-5000:]}\n")
+            f"exit={r.returncode}\n--- stdout ---\n{r.stdout[-15000:]}\n--- stderr ---\n{r.stderr[-5000:]}\n"
+        )
 
-        r = sh(["docker", "exec", cname, "cat", "/logs/verifier/reward.txt"], timeout=30)
+        r = sh(
+            ["docker", "exec", cname, "cat", "/logs/verifier/reward.txt"], timeout=30
+        )
         if r.returncode != 0:
             res.error = f"no reward.txt (verify exit unknown): {r.stderr[:200]}"
             return res
         reward = r.stdout.strip()
-        res.passed = (reward == "1")
+        res.passed = reward == "1"
         return res
     except subprocess.TimeoutExpired:
         res.error = "runner timeout"
         return res
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         res.error = f"{type(e).__name__}: {e}"
         return res
     finally:
         sh(["docker", "rm", "-f", cname], timeout=60)
         res.duration_sec = time.time() - t0
 
-def write_report(path: Path, results: list[TaskResult], model: str,
-                 base_url: str, zen_version: str) -> None:
+
+def write_report(
+    path: Path, results: list[TaskResult], model: str, base_url: str, zen_version: str
+) -> None:
     passed = sum(1 for r in results if r.passed)
     failed = sum(1 for r in results if r.passed is False)
     errored = sum(1 for r in results if r.passed is None)
@@ -189,6 +235,7 @@ def write_report(path: Path, results: list[TaskResult], model: str,
     ]
     path.write_text("\n".join(lines) + "\n")
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run Terminal-Bench subset with zen")
     ap.add_argument("--repo", required=True, help="terminal-bench-2 checkout dir")
@@ -197,8 +244,12 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="output dir for results")
     ap.add_argument("--model", default="qwen3:4b")
     ap.add_argument("--base-url", default="http://host.docker.internal:11434/v1")
-    ap.add_argument("--agent-timeout", type=float, default=None,
-                    help="override per-task agent timeout (sec)")
+    ap.add_argument(
+        "--agent-timeout",
+        type=float,
+        default=None,
+        help="override per-task agent timeout (sec)",
+    )
     args = ap.parse_args()
 
     repo, zen_bin, out = Path(args.repo), Path(args.zen), Path(args.out)
@@ -218,20 +269,33 @@ def main() -> int:
         return 2
 
     r = sh([str(zen_bin), "--version"], timeout=30)
-    zen_version = (r.stdout or r.stderr).strip().splitlines()[0] if r.stdout or r.stderr else "?"
+    zen_version = (
+        (r.stdout or r.stderr).strip().splitlines()[0] if r.stdout or r.stderr else "?"
+    )
 
     results: list[TaskResult] = []
     for name in subset_names:
         task = tasks[name]
-        print(f"[{datetime.datetime.now().isoformat()}] running {name} "
-              f"(difficulty={task.difficulty}, timeout={task.agent_timeout_sec:.0f}s)",
-              flush=True)
-        res = run_task(task, zen_bin, args.model, args.base_url, logs_dir,
-                       agent_timeout=args.agent_timeout)
+        print(
+            f"[{datetime.datetime.now().isoformat()}] running {name} "
+            f"(difficulty={task.difficulty}, timeout={task.agent_timeout_sec:.0f}s)",
+            flush=True,
+        )
+        res = run_task(
+            task,
+            zen_bin,
+            args.model,
+            args.base_url,
+            logs_dir,
+            agent_timeout=args.agent_timeout,
+        )
         results.append(res)
         status = "PASS" if res.passed else ("ERROR" if res.passed is None else "FAIL")
-        print(f"  -> {status} in {res.duration_sec:.0f}s"
-              + (f" ({res.error})" if res.error else ""), flush=True)
+        print(
+            f"  -> {status} in {res.duration_sec:.0f}s"
+            + (f" ({res.error})" if res.error else ""),
+            flush=True,
+        )
 
     with open(out / "results.json", "w") as f:
         json.dump([dataclasses.asdict(r) for r in results], f, indent=2)
@@ -241,6 +305,7 @@ def main() -> int:
     errored = sum(1 for r in results if r.passed is None)
     print(f"\nDone: {passed}/{len(results)} passed, {errored} infra errors")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
