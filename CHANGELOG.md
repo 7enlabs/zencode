@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+-  runs the 10 built-in eval tasks against a scripted solver (no API key, no network) and  sets the exit threshold (default 0.5, unchanged). A new  CI job runs it at 100% on every PR, so a broken eval task, check or tool turns CI red (B7.1).
 - One-command install for Linux, macOS, and Windows (install.sh, install.ps1) with
   `zen update` and `zen update --check` (PR #4): clones the repo or fast-forwards an
   existing checkout, builds the CLI crate in release mode, copies `zen` (`zen.exe` on
