@@ -194,31 +194,45 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         }
     }
 
+    let mut reader = crate::repl_input::LineReader::new(home);
+    let mut last_interrupt: Option<std::time::Instant> = None;
     loop {
         println!("{}", status_line(&cfg.model, cwd));
-        {
+        let prompt = {
             let mut p = repl_polish::prompt_text(repl.theme, &repl.goal);
 
             let badge =
                 crate::planmode::prompt_for(agent.config.permission_mode).trim_end_matches("> ");
             let at = p.rfind('\n').map_or(0, |i| i + 1);
             p.insert_str(at, badge);
-            print!("{}", p);
-        }
-        std::io::stdout().flush().ok();
+            p
+        };
+        reader.set_vi(repl.vim_mode);
 
-        let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        let joined = read_multiline(line, || {
-            let mut next = String::new();
-            match std::io::stdin().read_line(&mut next) {
-                Ok(0) | Err(_) => None,
-                Ok(_) => Some(next),
+        let line = match reader.read(&prompt) {
+            crate::repl_input::ReadOutcome::Line(l) => {
+                last_interrupt = None;
+                l
             }
+            crate::repl_input::ReadOutcome::Eof => break,
+            crate::repl_input::ReadOutcome::Interrupted => {
+                if last_interrupt
+                    .map(|t| t.elapsed() < std::time::Duration::from_secs(2))
+                    .unwrap_or(false)
+                {
+                    eprintln!();
+                    std::process::exit(130);
+                }
+                last_interrupt = Some(std::time::Instant::now());
+                eprintln!("(press Ctrl-C again to exit, or Ctrl-D)");
+                continue;
+            }
+        };
+        let joined = read_multiline(line, || match reader.read("... ") {
+            crate::repl_input::ReadOutcome::Line(next) => Some(next),
+            _ => None,
         });
+        reader.remember(joined.trim_end_matches(['\n', '\r']));
         let trimmed = joined.trim();
         if trimmed.is_empty() {
             continue;
@@ -1067,10 +1081,7 @@ async fn handle_slash(
         "/vim" => {
             repl.vim_mode = !repl.vim_mode;
             if repl.vim_mode {
-                println!(
-                    "vim keybindings: on (preference recorded; the REPL reads plain stdin \
-                     lines, so vi editing motions are not available yet)"
-                );
+                println!("vim keybindings: on (vi editing at the prompt on a terminal)");
             } else {
                 println!("vim keybindings: off");
             }

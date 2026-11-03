@@ -22,6 +22,7 @@ pub mod output;
 pub mod planmode;
 pub mod prompt_budget;
 pub mod repl;
+pub mod repl_input;
 pub mod repl_polish;
 pub mod repomap;
 pub mod review;

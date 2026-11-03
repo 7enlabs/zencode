@@ -32,3 +32,4 @@ tokio.workspace = true
 walkdir.workspace = true
 globset.workspace = true
 uuid.workspace = true
+rustyline = { version = "=18.0.1", default-features = false, features = ["with-file-history"] }
