@@ -85,6 +85,35 @@ pub async fn run_with_home(cli: Cli, cwd: &Path, home: Option<&Path>) -> Result<
         return run_headless(&cli, cwd, home).await;
     }
 
+    // A lone word in prompt position is far more often a mistyped command
+    // than a real prompt: fail fast and teach the fix instead of feeding
+    // the word to the REPL as a first turn (design audit, section 4.7).
+    if cli.prompt.len() == 1 && !cli.continue_session && cli.resume.is_none() {
+        let word = cli.prompt[0].as_str();
+        let command_like = word.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if command_like {
+            eprintln!("error: unrecognized command '{}'", word);
+            eprintln!();
+            eprintln!(
+                "  tip: to send '{}' as a prompt instead, run: zen -p \"{}\"",
+                word, word
+            );
+            eprintln!();
+            eprintln!("Usage: zen [OPTIONS] [PROMPT]... [COMMAND]");
+            eprintln!();
+            eprintln!("Run `zen --help` for the list of commands.");
+            return Ok(2);
+        }
+    }
+
+    // A bare REPL on a non-TTY stdin is deliberately not blocked here:
+    // piping scripted lines into the REPL until EOF is a supported,
+    // tested mode (crates/zen-cli/tests/builtins.rs). The audit hang came
+    // from the unknown-command case above, which now fails fast first.
+
     ask_folder_trust(&cli, cwd, home);
     let cwd_buf = cwd.to_path_buf();
     repl::run_repl(&cli, &cwd_buf, home).await?;
@@ -95,48 +124,79 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
     match sub {
         Commands::Doctor => {
             let cfg = settings::resolve_config_with_home(cli, cwd, home)?;
-            println!("zen doctor");
-            println!("  model: {}", cfg.model);
-            println!("  base_url: {}", cfg.base_url);
-            if cfg.ollama {
-                println!("  provider: ollama (local)");
-            }
-            println!(
-                "  api_key: {}",
-                if cfg.api_key().is_some() {
-                    "configured (hidden)"
-                } else {
-                    "not set"
-                }
-            );
-            println!("  permission_mode: {}", cfg.permission_mode);
-            println!("  folder_trusted: {}", cfg.folder_trusted);
-            for s in &cfg.trust_skipped {
-                println!("    skipped: {}", s);
-            }
-
             let store = home.map(zen_agent::RateGate::default_store_path);
-            for line in zen_agent::rategate::quota_report_for(store.as_deref()).lines() {
-                println!("  {line}");
-            }
-            if cfg.loaded_sources.is_empty() {
-                println!("  settings_sources: (none)");
-            } else {
-                println!("  settings_sources:");
-                for s in &cfg.loaded_sources {
-                    println!("    - {}", s);
+            let quota = zen_agent::rategate::quota_report_for(store.as_deref());
+            match cli.effective_output_format() {
+                OutputFormat::Json | OutputFormat::StreamJson => {
+                    let report = serde_json::json!({
+                        "type": "doctor",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "model": cfg.model,
+                        "base_url": cfg.base_url,
+                        "api_key": if cfg.api_key().is_some() {
+                            "configured (hidden)"
+                        } else {
+                            "not set"
+                        },
+                        "ollama": cfg.ollama,
+                        "permission_mode": cfg.permission_mode.to_string(),
+                        "folder_trusted": cfg.folder_trusted,
+                        "trust_skipped": cfg.trust_skipped,
+                        "quota": quota.lines().collect::<Vec<_>>(),
+                        "settings_sources": cfg.loaded_sources,
+                        "warnings": cfg.warnings,
+                        "safety_checklist": safety::doctor_safety_checklist(
+                            env!("CARGO_PKG_VERSION")
+                        ),
+                    });
+                    println!("{}", serde_json::to_string(&report)?);
+                }
+                OutputFormat::Text => {
+                    if cli.quiet {
+                        return Ok(0);
+                    }
+                    println!("zen doctor");
+                    println!("  model: {}", cfg.model);
+                    println!("  base_url: {}", cfg.base_url);
+                    if cfg.ollama {
+                        println!("  provider: ollama (local)");
+                    }
+                    println!(
+                        "  api_key: {}",
+                        if cfg.api_key().is_some() {
+                            "configured (hidden)"
+                        } else {
+                            "not set"
+                        }
+                    );
+                    println!("  permission_mode: {}", cfg.permission_mode);
+                    println!("  folder_trusted: {}", cfg.folder_trusted);
+                    for s in &cfg.trust_skipped {
+                        println!("    skipped: {}", s);
+                    }
+                    for line in quota.lines() {
+                        println!("  {line}");
+                    }
+                    if cfg.loaded_sources.is_empty() {
+                        println!("  settings_sources: (none)");
+                    } else {
+                        println!("  settings_sources:");
+                        for s in &cfg.loaded_sources {
+                            println!("    - {}", s);
+                        }
+                    }
+                    if !cfg.warnings.is_empty() {
+                        println!("  warnings:");
+                        for w in &cfg.warnings {
+                            println!("    - {}", w);
+                        }
+                    }
+                    print!(
+                        "{}",
+                        safety::doctor_safety_checklist(env!("CARGO_PKG_VERSION"))
+                    );
                 }
             }
-            if !cfg.warnings.is_empty() {
-                println!("  warnings:");
-                for w in &cfg.warnings {
-                    println!("    - {}", w);
-                }
-            }
-            print!(
-                "{}",
-                safety::doctor_safety_checklist(env!("CARGO_PKG_VERSION"))
-            );
             Ok(0)
         }
         Commands::Mcp(mcp) => {
@@ -152,11 +212,27 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             Ok(0)
         }
         Commands::Context(args) => {
-            context::run_context(args.session.as_deref(), &cli.output_format, cwd, home)?;
+            context::run_context(
+                args.session.as_deref(),
+                &cli.effective_output_format(),
+                cwd,
+                home,
+            )?;
             Ok(0)
         }
         Commands::ToolHelp { name } => {
-            println!("{}", commands::tool_help(name));
+            let text = commands::tool_help(name);
+            // tool_help renders an unknown name as "Unknown tool '<name>'.",
+            // which is an error: it belongs on stderr with a non-zero exit,
+            // not on stdout with exit 0 where scripts would read success.
+            if text.starts_with("Unknown tool") {
+                eprintln!("{}", text);
+                eprintln!("next: check the spelling, or pick one of the tools listed above");
+                return Ok(3);
+            }
+            if !cli.quiet {
+                println!("{}", text);
+            }
             Ok(0)
         }
         Commands::Export(e) => {
@@ -171,6 +247,17 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             Ok(0)
         }
         Commands::Import(i) => {
+            if !i.file.exists() {
+                eprintln!(
+                    "error[not_found]: cannot import '{}': file does not exist",
+                    i.file.display()
+                );
+                eprintln!("  why: no file exists at that path");
+                eprintln!(
+                    "  next: check the path for typos, or export a session first with `zen export --format json`"
+                );
+                return Ok(3);
+            }
             export::run_import(cwd, home, &i.file)?;
             Ok(0)
         }
@@ -245,8 +332,16 @@ fn cost_subcommand(
     home: Option<&std::path::Path>,
     args: &CostArgs,
 ) -> anyhow::Result<()> {
+    if cli.quiet {
+        return Ok(());
+    }
     let Some(home) = home else {
         anyhow::bail!("cannot determine home directory");
+    };
+    let format = if cli.json {
+        OutputFormat::Json
+    } else {
+        args.output_format
     };
 
     let session_id = match &args.session {
@@ -263,8 +358,16 @@ fn cost_subcommand(
             .ok_or_else(|| anyhow::anyhow!("no sessions found under ~/.zen/projects"))?,
     };
     let Some(ledger) = cost::load(home, &session_id) else {
-        println!("No cost data recorded for session {}.", session_id);
-        println!("Cost tracking starts with this version; run a session first.");
+        match format {
+            OutputFormat::Json | OutputFormat::StreamJson => {
+                let empty = cost::summarize(&session_id, &[]);
+                println!("{}", serde_json::to_string(&cost::to_json(&empty))?);
+            }
+            OutputFormat::Text => {
+                println!("No cost data recorded for session {}.", session_id);
+                println!("Cost tracking starts with this version; run a session first.");
+            }
+        }
         return Ok(());
     };
     let summary = cost::summarize(&ledger.session_id, &ledger.entries);
@@ -276,7 +379,7 @@ fn cost_subcommand(
         cfg.as_ref().and_then(|c| c.max_budget_usd),
         cfg.as_ref().and_then(|c| c.budget_warn_at),
     );
-    match args.output_format {
+    match format {
         OutputFormat::Text => {
             print!("{}", cost::render_text(&summary));
             if let Some(policy) = &budget {
