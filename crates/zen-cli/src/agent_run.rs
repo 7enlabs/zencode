@@ -34,13 +34,13 @@ pub struct ForwardSink {
 
 impl ForwardSink {
     pub fn set(&self, sink: Arc<dyn EventSink>) {
-        *self.target.lock().unwrap() = Some(sink);
+        *self.target.lock().expect("event sink target lock poisoned: sink registration never panics while holding the lock") = Some(sink);
     }
 }
 
 impl EventSink for ForwardSink {
     fn emit(&self, ev: AgentEvent) {
-        let target = self.target.lock().unwrap().clone();
+        let target = self.target.lock().expect("event sink target lock poisoned: sink registration never panics while holding the lock").clone();
         if let Some(t) = target {
             t.emit(ev);
         }

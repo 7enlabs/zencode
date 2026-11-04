@@ -526,7 +526,7 @@ impl Agent {
         let mut stop_continues: usize = 0;
         let plan_mode = self.config.permission_mode == PermissionMode::Plan;
         let mut turn_guard = guard::TurnGuard::default();
-        turn_guard.set_cwd(self.ctx.cwd.lock().unwrap().clone());
+        turn_guard.set_cwd(self.ctx.cwd.lock().expect("ctx.cwd lock must not be poisoned: holders only clone the working-directory path and never panic while holding it").clone());
         turn_guard.set_scope(self.config.done_scope.clone());
         let mut finish_gate = finish::FinishGate::default();
         let mut empty_requeries = 0usize;
@@ -1375,7 +1375,7 @@ impl Agent {
         if self.model_calls_since_todo < guard::TODO_REINJECT_EVERY {
             return;
         }
-        let todos = self.ctx.todos.lock().unwrap().clone();
+        let todos = self.ctx.todos.lock().expect("ctx.todos lock must not be poisoned: holders only clone the todo list and never panic while holding it").clone();
         let Some(note) = guard::todo_reminder(&todos) else {
             return;
         };

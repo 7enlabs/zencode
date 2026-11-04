@@ -135,7 +135,9 @@ impl AcpSink {
             params: serde_json::to_value(params).unwrap_or(Value::Null),
         };
         if let Ok(line) = serde_json::to_string(&notif) {
-            let mut out = self.out.lock().unwrap();
+            let mut out = self.out.lock().expect(
+                "acp stdout lock poisoned: stdout writes never panic while holding the lock",
+            );
             let _ = writeln!(out, "{line}");
             let _ = out.flush();
         }
@@ -189,7 +191,9 @@ fn emit_assistant(sink: &AcpSink, message: &ChatMessage) {
         });
     }
     if let Some(calls) = message.tool_calls.as_deref() {
-        let mut tools = sink.tools.lock().unwrap();
+        let mut tools = sink.tools.lock().expect(
+            "acp tools lock poisoned: tool registration never panics while holding the lock",
+        );
         for call in calls {
             tools.insert(call.id.clone(), call.function.name.clone());
             sink.notify(SessionUpdate::ToolCall(ToolCallUpdate {
@@ -318,7 +322,9 @@ pub async fn run_acp_server(cli: &Cli) -> Result<i32> {
 
 fn write_response(out: &Arc<Mutex<std::io::Stdout>>, resp: &RpcResponse) -> Result<()> {
     let line = serde_json::to_string(resp)?;
-    let mut out = out.lock().unwrap();
+    let mut out = out
+        .lock()
+        .map_err(|e| anyhow::anyhow!("acp stdout lock poisoned: {e}"))?;
     writeln!(out, "{line}")?;
     out.flush()?;
     Ok(())

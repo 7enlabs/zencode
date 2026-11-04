@@ -43,7 +43,9 @@ impl Recorder {
     }
 
     pub fn set_path(&self, path: PathBuf) {
-        *self.state.lock().unwrap() = State {
+        *self.state.lock().expect(
+            "eventlog state lock poisoned: state updates never panic while holding the lock",
+        ) = State {
             path,
             ..Default::default()
         };
@@ -51,7 +53,10 @@ impl Recorder {
 
     fn record_request(&self, req: &ChatRequest) -> Result<u64> {
         let body = serde_json::to_string(req)?;
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("eventlog state lock poisoned: {e}"))?;
         if !st.scanned {
             let (next, hashes) = scan(&st.path);
             st.next_seq = next;
@@ -115,7 +120,14 @@ impl Recorder {
     }
 
     fn record_response(&self, seq: u64, res: &Result<ChatResponse>) {
-        let path = self.state.lock().unwrap().path.clone();
+        let path = self
+            .state
+            .lock()
+            .expect(
+                "eventlog state lock poisoned: state updates never panic while holding the lock",
+            )
+            .path
+            .clone();
         let rec = match res {
             Ok(r) => json!({
                 "type": "response",
@@ -152,7 +164,9 @@ impl Recorder {
 
 impl Recorder {
     fn journal(&self, rec: Value) {
-        let st = self.state.lock().unwrap();
+        let st = self.state.lock().expect(
+            "eventlog state lock poisoned: state updates never panic while holding the lock",
+        );
         let res = (|| -> Result<()> {
             use std::io::Write;
             if let Some(parent) = st.path.parent() {

@@ -108,19 +108,26 @@ pub fn start_job(
                 JobStatus::Killed
             }
         };
-        *st.lock().unwrap() = end;
+        *st.lock().expect(
+            "job status lock poisoned: holders only assign or clone a JobStatus and cannot panic",
+        ) = end;
     });
 
-    jobs().lock().unwrap().insert(
-        id.clone(),
-        Job {
-            command: command.to_string(),
-            log: log.clone(),
-            read_pos: 0,
-            status,
-            kill_tx: Some(kill_tx),
-        },
-    );
+    jobs()
+        .lock()
+        .expect(
+            "job registry lock poisoned: holders only do HashMap insert/get/keys and cannot panic",
+        )
+        .insert(
+            id.clone(),
+            Job {
+                command: command.to_string(),
+                log: log.clone(),
+                read_pos: 0,
+                status,
+                kill_tx: Some(kill_tx),
+            },
+        );
     Ok(Started { id, pid, log })
 }
 
@@ -147,9 +154,9 @@ fn kill_tree(pid: Option<u32>) {
 fn status_of(id: &str) -> Option<JobStatus> {
     jobs()
         .lock()
-        .unwrap()
+        .expect("job registry lock poisoned: holders only do HashMap insert/get/keys and cannot panic")
         .get(id)
-        .map(|j| j.status.lock().unwrap().clone())
+        .map(|j| j.status.lock().expect("job status lock poisoned: holders only assign or clone a JobStatus and cannot panic").clone())
 }
 
 pub async fn read_new(
@@ -165,12 +172,14 @@ pub async fn read_new(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let found = {
-        let map = jobs().lock().unwrap();
+        let map = jobs().lock().expect(
+            "job registry lock poisoned: holders only do HashMap insert/get/keys and cannot panic",
+        );
         map.get(id).map(|j| {
             (
                 j.log.clone(),
                 j.read_pos,
-                j.status.lock().unwrap().clone(),
+                j.status.lock().expect("job status lock poisoned: holders only assign or clone a JobStatus and cannot panic").clone(),
                 j.command.clone(),
             )
         })
@@ -187,7 +196,13 @@ pub async fn read_new(
     };
     let text = String::from_utf8_lossy(&bytes[..take]).to_string();
     let to = from + take as u64;
-    if let Some(j) = jobs().lock().unwrap().get_mut(id) {
+    if let Some(j) = jobs()
+        .lock()
+        .expect(
+            "job registry lock poisoned: holders only do HashMap insert/get/keys and cannot panic",
+        )
+        .get_mut(id)
+    {
         j.read_pos = to;
     }
     Ok((text, from, to, status, command))
@@ -204,7 +219,9 @@ fn read_from(path: &Path, from: u64) -> std::io::Result<Vec<u8>> {
 
 pub async fn kill_job(id: &str) -> Result<JobStatus, String> {
     let tx = {
-        let mut map = jobs().lock().unwrap();
+        let mut map = jobs().lock().expect(
+            "job registry lock poisoned: holders only do HashMap insert/get/keys and cannot panic",
+        );
         map.get_mut(id).map(|j| j.kill_tx.take())
     };
     let tx = tx.ok_or_else(|| unknown(id))?;
@@ -222,7 +239,14 @@ pub async fn kill_job(id: &str) -> Result<JobStatus, String> {
 }
 
 fn unknown(id: &str) -> String {
-    let mut ids: Vec<String> = jobs().lock().unwrap().keys().cloned().collect();
+    let mut ids: Vec<String> = jobs()
+        .lock()
+        .expect(
+            "job registry lock poisoned: holders only do HashMap insert/get/keys and cannot panic",
+        )
+        .keys()
+        .cloned()
+        .collect();
     ids.sort();
     if ids.is_empty() {
         format!(

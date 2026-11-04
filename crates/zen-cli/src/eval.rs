@@ -235,7 +235,7 @@ impl EventSink for MetricSink {
             AgentEvent::Assistant { message, .. } => {
                 self.requests.fetch_add(1, Ordering::Relaxed);
                 if let Some(calls) = message.tool_calls {
-                    let mut map = self.tool_names.lock().unwrap();
+                    let mut map = self.tool_names.lock().expect("eval tool_names lock poisoned: tool-name recording never panics while holding the lock");
                     for tc in calls {
                         map.insert(tc.id, tc.function.name);
                     }
@@ -252,7 +252,7 @@ impl EventSink for MetricSink {
                 is_error: true,
                 ..
             } => {
-                let map = self.tool_names.lock().unwrap();
+                let map = self.tool_names.lock().expect("eval tool_names lock poisoned: tool-name recording never panics while holding the lock");
                 if let Some(name) = map.get(&tool_use_id) {
                     if EDIT_TOOLS.contains(&name.as_str()) {
                         self.edit_failures.fetch_add(1, Ordering::Relaxed);

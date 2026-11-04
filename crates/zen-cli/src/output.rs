@@ -22,7 +22,10 @@ impl Buffered {
         }
     }
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.out.lock().unwrap()).to_string()
+        String::from_utf8_lossy(&self.out.lock().expect(
+            "buffered output lock poisoned: buffer writes never panic while holding the lock",
+        ))
+        .to_string()
     }
     pub fn write_str(&self, s: &str) {
         self.write_bytes(s.as_bytes());
@@ -34,7 +37,9 @@ impl Buffered {
         self.write_bytes(&line);
     }
     fn write_bytes(&self, bytes: &[u8]) {
-        let mut g = self.out.lock().unwrap();
+        let mut g = self.out.lock().expect(
+            "buffered output lock poisoned: buffer writes never panic while holding the lock",
+        );
         if self.passthrough {
             let mut so = std::io::stdout().lock();
 
@@ -243,15 +248,27 @@ impl StreamJsonSink {
     }
 
     pub fn set_prompt_input(&self, prompt: String) {
-        *self.prompt_input.lock().unwrap() = Some(prompt);
+        *self
+            .prompt_input
+            .lock()
+            .expect("prompt input lock poisoned: prompt input is set from plain assignment only") =
+            Some(prompt);
     }
 
     pub fn set_mcp_errors(&self, errors: Vec<(String, String)>) {
-        *self.mcp_errors.lock().unwrap() = errors;
+        *self
+            .mcp_errors
+            .lock()
+            .expect("mcp errors lock poisoned: error list is set from plain assignment only") =
+            errors;
     }
 
     pub fn set_folder_trusted(&self, trusted: bool) {
-        *self.folder_trusted.lock().unwrap() = Some(trusted);
+        *self
+            .folder_trusted
+            .lock()
+            .expect("folder trusted lock poisoned: trust flag is set from plain assignment only") =
+            Some(trusted);
     }
 
     pub fn init_now(&self) {
@@ -272,10 +289,17 @@ impl StreamJsonSink {
             "permissionMode": self.permission_mode,
             "slash_commands": self.slash_commands,
         });
-        if let Some(t) = *self.folder_trusted.lock().unwrap() {
+        if let Some(t) = *self
+            .folder_trusted
+            .lock()
+            .expect("folder trusted lock poisoned: trust flag is set from plain assignment only")
+        {
             line["folder_trusted"] = t.into();
         }
-        let errors = self.mcp_errors.lock().unwrap();
+        let errors = self
+            .mcp_errors
+            .lock()
+            .expect("mcp errors lock poisoned: error list is set from plain assignment only");
         if !errors.is_empty() {
             line["mcp_server_errors"] = errors
                 .iter()

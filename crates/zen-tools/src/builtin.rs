@@ -377,7 +377,7 @@ impl Tool for ReadTool {
         };
         ctx.read_files
             .lock()
-            .unwrap()
+            .expect("read_files lock poisoned: critical sections only insert/lookup content stamps and cannot panic")
             .insert(path.clone(), content_stamp(text.as_bytes()));
 
         let total = text.lines().count();
@@ -440,7 +440,7 @@ impl Tool for WriteTool {
             if path.is_dir() {
                 return ToolOutput::err(format!("Error: {} is a directory", path.display()));
             }
-            let known = ctx.read_files.lock().unwrap().contains_key(&path);
+            let known = ctx.read_files.lock().expect("read_files lock poisoned: critical sections only insert/lookup content stamps and cannot panic").contains_key(&path);
             if !known {
                 return ToolOutput::err(format!(
                     "Error: {} already exists and has not been read in this session. Read it before overwriting.",
@@ -474,7 +474,7 @@ impl Tool for WriteTool {
                 checkpoint_after(ctx, &path, content.as_bytes());
                 ctx.read_files
                     .lock()
-                    .unwrap()
+                    .expect("read_files lock poisoned: critical sections only insert/lookup content stamps and cannot panic")
                     .insert(path.clone(), content_stamp(content.as_bytes()));
                 ToolOutput::ok(with_warning(
                     with_warning(
@@ -567,7 +567,7 @@ fn content_stamp(bytes: &[u8]) -> u64 {
 }
 
 fn check_fresh(ctx: &ToolContext, path: &Path, current: &[u8]) -> Result<(), ToolOutput> {
-    let seen = ctx.read_files.lock().unwrap().get(path).copied();
+    let seen = ctx.read_files.lock().expect("read_files lock poisoned: critical sections only insert/lookup content stamps and cannot panic").get(path).copied();
     match seen {
         Some(stamp) if stamp != content_stamp(current) => Err(ToolOutput::err(format!(
             "Error: {} changed on disk since you last read it (another command, a formatter or a person modified it). Read it again before editing.",
@@ -585,7 +585,7 @@ async fn load_for_edit(ctx: &ToolContext, fp: &str) -> Result<(PathBuf, String),
             path.display()
         )));
     }
-    if !ctx.read_files.lock().unwrap().contains_key(&path) {
+    if !ctx.read_files.lock().expect("read_files lock poisoned: critical sections only insert/lookup content stamps and cannot panic").contains_key(&path) {
         return Err(ToolOutput::err(format!(
             "Error: {} has not been read in this session. Read it before editing.",
             path.display()
@@ -630,7 +630,7 @@ async fn save_edit(
     checkpoint_after(ctx, path, text.as_bytes());
     ctx.read_files
         .lock()
-        .unwrap()
+        .expect("read_files lock poisoned: critical sections only insert/lookup content stamps and cannot panic")
         .insert(path.to_path_buf(), content_stamp(text.as_bytes()));
     Ok(match (warning, ck_warning) {
         (Some(w), Some(c)) => Some(format!("{w}\n{c}")),
@@ -896,7 +896,7 @@ impl Tool for BashTool {
                     if !new_pwd.is_empty() {
                         let p = native_shell_path(new_pwd);
                         if p.is_dir() {
-                            *ctx.cwd.lock().unwrap() = canonicalize_lenient(&p);
+                            *ctx.cwd.lock().expect("cwd lock poisoned: holders only read or assign a PathBuf and cannot panic") = canonicalize_lenient(&p);
                         }
                     }
                     combined = format!("{}{}", &combined[..pos], rest);
@@ -1815,7 +1815,9 @@ impl Tool for TodoWriteTool {
                 active_form,
             });
         }
-        *ctx.todos.lock().unwrap() = items.clone();
+        *ctx.todos.lock().expect(
+            "todos lock poisoned: holders only assign or clone the todo list and cannot panic",
+        ) = items.clone();
         ToolOutput::ok(render_todos(&items))
     }
 }
