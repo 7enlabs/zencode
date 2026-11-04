@@ -44,6 +44,7 @@ pub fn content_filter_message(partial: &str) -> String {
 const EMPTY_REPLY_NUDGE: &str =
     "[zen: your last reply was empty. Continue the task: call a tool, or give your final answer.]";
 use crate::guard;
+use crate::loop_guard;
 use crate::plan;
 use crate::repair;
 
@@ -58,6 +59,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
 
     pub max_turns: usize,
+
+    pub loop_stuck_k: usize,
 
     pub budget: Option<BudgetPolicy>,
 
@@ -232,6 +235,7 @@ impl Default for AgentConfig {
             fallback_models: vec![],
             system_prompt: String::new(),
             max_turns: 50,
+            loop_stuck_k: crate::loop_guard::DEFAULT_LOOP_STUCK_K,
             budget: None,
             permission_mode: PermissionMode::Default,
             context_window: 128_000,
@@ -528,6 +532,7 @@ impl Agent {
         let mut turn_guard = guard::TurnGuard::default();
         turn_guard.set_cwd(self.ctx.cwd.lock().expect("ctx.cwd lock must not be poisoned: holders only clone the working-directory path and never panic while holding it").clone());
         turn_guard.set_scope(self.config.done_scope.clone());
+        let mut loop_guard = loop_guard::LoopGuard::new(self.config.loop_stuck_k);
         let mut finish_gate = finish::FinishGate::default();
         let mut empty_requeries = 0usize;
 
@@ -902,6 +907,7 @@ impl Agent {
                         &mut stop_run,
                         &mut finish_gate,
                         &mut turn_guard,
+                        &mut loop_guard,
                         &final_text,
                     )
                     .await;
@@ -910,6 +916,7 @@ impl Agent {
                         &mut stop_run,
                         &mut finish_gate,
                         &mut turn_guard,
+                        &mut loop_guard,
                         &final_text,
                     )
                     .await;
@@ -922,9 +929,20 @@ impl Agent {
                 &mut stop_run,
                 &mut finish_gate,
                 &mut turn_guard,
+                &mut loop_guard,
                 &final_text,
             )
             .await;
+            if let Some(stuck) = loop_guard.take_stuck().or_else(|| loop_guard.end_turn()) {
+                return self.run_result(
+                    "loop_stuck",
+                    true,
+                    stuck.message(),
+                    started.elapsed().as_millis() as u64,
+                    duration_api_ms,
+                    num_turns,
+                );
+            }
             if let Some(text) = stop_run {
                 let result_text = if plan_mode {
                     self.plan_text().unwrap_or_else(|| text.clone())
@@ -1134,6 +1152,7 @@ impl Agent {
         stop_run: &mut Option<String>,
         finish_gate: &mut finish::FinishGate,
         turn_guard: &mut guard::TurnGuard,
+        loop_guard: &mut loop_guard::LoopGuard,
         final_text: &str,
     ) {
         if slots.is_empty() {
@@ -1243,7 +1262,7 @@ impl Agent {
                         }
                     };
                     if let Some(reason) = self
-                        .finish_call(p, out, finish_gate, turn_guard, final_text)
+                        .finish_call(p, out, finish_gate, turn_guard, loop_guard, final_text)
                         .await
                     {
                         *stop_run = Some(reason);
@@ -1260,6 +1279,7 @@ impl Agent {
         mut out: ToolOutput,
         finish_gate: &mut finish::FinishGate,
         turn_guard: &mut guard::TurnGuard,
+        loop_guard: &mut loop_guard::LoopGuard,
         final_text: &str,
     ) -> Option<String> {
         let PendingCall {
@@ -1316,6 +1336,7 @@ impl Agent {
             out.content.push_str("\n\n");
             out.content.push_str(&note);
         }
+        loop_guard.observe_call(&tool_name, &args, &out);
         if tool_name == "TodoWrite" && !out.is_error {
             self.model_calls_since_todo = 0;
         }

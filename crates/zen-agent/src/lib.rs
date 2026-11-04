@@ -5,6 +5,7 @@ mod client;
 pub mod compaction;
 pub mod finish;
 pub mod guard;
+pub mod loop_guard;
 pub mod plan;
 pub mod providers;
 pub mod prune;
