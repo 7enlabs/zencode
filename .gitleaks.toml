@@ -1,0 +1,6 @@
+# Gitleaks config for the ZenCode CLI repo (buffer task #8).
+# Extends the upstream default rule set; add repo-specific rules below.
+title = "zencode gitleaks config"
+
+[extend]
+useDefault = true

@@ -1,0 +1,9 @@
+# Gitleaks baseline (buffer task #8): fingerprints of reviewed findings.
+# Format: commit:file:rule:line. Every entry below was triaged as a test
+# fixture, not a real credential. Add an entry only after review, never to
+# silence a real secret (rotate it instead).
+# - export.rs line 951 (4 commits): fake token in the redact_value unit test.
+4e1ffbe21a918c5e9016b0fa4369eea403c14c83:crates/zen-cli/src/export.rs:generic-api-key:951
+7ed74b7465634777c164d72fc5dd8b2360965919:crates/zen-cli/src/export.rs:generic-api-key:951
+ae246041d3bc6291d6b3b3209b9227339569338f:crates/zen-cli/src/export.rs:generic-api-key:951
+ec0539130da4c569ba28f415e3b7b0fb3ca78504:crates/zen-cli/src/export.rs:generic-api-key:951
