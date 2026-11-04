@@ -3,11 +3,11 @@
 //! Two triggers, both driven by the same threshold `K` (configurable, default
 //! [`DEFAULT_LOOP_STUCK_K`]; `K = 0` disables the guard):
 //!
-//! * **Repeated call** — the same tool call (same tool name and identical
+//! * **Repeated call** - the same tool call (same tool name and identical
 //!   JSON arguments; the per-turn call id is ignored) is observed `K` times
 //!   in a row, regardless of whether each call succeeded or failed. A failing
 //!   loop is still a loop.
-//! * **Unchanged turns** — `K` consecutive turns whose working state is
+//! * **Unchanged turns** - `K` consecutive turns whose working state is
 //!   identical: the same ordered list of tool calls with the same result
 //!   fingerprints. This catches multi-call turns that repeat as a batch
 //!   (e.g. `[Read a, Read b]` three times), which the consecutive-call

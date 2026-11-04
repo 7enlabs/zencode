@@ -80,7 +80,7 @@ fn path_rule_matches(cwd: &Path, spec: &str, candidate: &str) -> bool {
     let pattern_slash = slash(&pattern_path);
     let target_slash = slash(&target);
     // A drive-less pattern cannot name a drive, so it must also match a
-    // drive-qualified target by its drive-less remainder — but only when
+    // drive-qualified target by its drive-less remainder - but only when
     // the target sits on the same drive as the cwd (or the cwd itself is
     // drive-less), so a rule that names a drive keeps matching per-drive.
     // (canonicalize_lenient attaches the current drive to drive-less
