@@ -14,6 +14,7 @@ mod subagent;
 
 pub mod agent;
 pub mod rategate;
+pub mod retry;
 pub mod tool_bundles;
 pub use agent::{
     Agent, AgentConfig, DEFAULT_MAX_CONTINUATIONS, DEFAULT_MAX_PARALLEL_TOOL_CALLS,
