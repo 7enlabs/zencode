@@ -85,7 +85,7 @@ pub(crate) async fn compact_impl(
     }
     let mut summary = format!("{}{}", model_summary.trim_end(), files.render());
 
-    let todos = agent.ctx.todos.lock().unwrap().clone();
+    let todos = agent.ctx.todos.lock().expect("todos lock must not be poisoned: holders only clone the todo list and never panic while holding it").clone();
     if let Some(note) = crate::guard::todo_reminder(&todos) {
         summary.push_str("\n\n");
         summary.push_str(&note);

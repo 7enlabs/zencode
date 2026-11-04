@@ -68,7 +68,7 @@ impl StdioTransport {
                     }
                     if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
                         if let Some(id) = val.get("id").and_then(id_to_u64) {
-                            let tx = reader_pending.lock().unwrap().remove(&id);
+                            let tx = reader_pending.lock().expect("reader_pending lock must not be poisoned: holders only remove or drain pending response senders and never panic while holding it").remove(&id);
                             if let Some(tx) = tx {
                                 let _ = tx.send(val);
                             }
@@ -77,7 +77,7 @@ impl StdioTransport {
                 }
             }
 
-            let mut map = reader_pending.lock().unwrap();
+            let mut map = reader_pending.lock().expect("reader_pending lock must not be poisoned: holders only remove or drain pending response senders and never panic while holding it");
             for (_, tx) in map.drain() {
                 let _ = tx.send(
                     json!({"jsonrpc":"2.0","error":{"code":-32000,"message":"MCP server closed"}}),
@@ -99,18 +99,27 @@ impl StdioTransport {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let msg = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending
+            .lock()
+            .map_err(|e| anyhow::anyhow!("pending lock poisoned: {e}"))?
+            .insert(id, tx);
 
         {
             let mut w = self.writer.lock().await;
             let mut line = serde_json::to_string(&msg)?;
             line.push('\n');
             if let Err(e) = w.write_all(line.as_bytes()).await {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("pending lock poisoned: {e}"))?
+                    .remove(&id);
                 return Err(anyhow::anyhow!("write to MCP server failed: {}", e));
             }
             if let Err(e) = w.flush().await {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("pending lock poisoned: {e}"))?
+                    .remove(&id);
                 return Err(anyhow::anyhow!("flush to MCP server failed: {}", e));
             }
         }
@@ -120,7 +129,10 @@ impl StdioTransport {
             Ok(Ok(v)) => v,
             Ok(Err(_)) => return Err(anyhow::anyhow!("MCP server dropped response")),
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("pending lock poisoned: {e}"))?
+                    .remove(&id);
                 return Err(anyhow::anyhow!("MCP request '{}' timed out", method));
             }
         };
@@ -231,7 +243,7 @@ impl HttpTransport {
         for (k, v) in &self.headers {
             rb = rb.header(k.as_str(), v.as_str());
         }
-        if let Some(sid) = self.session_id.lock().unwrap().clone() {
+        if let Some(sid) = self.session_id.lock().expect("session_id lock must not be poisoned: holders only clone or replace the session id string and never panic while holding it").clone() {
             rb = rb.header("Mcp-Session-Id", sid);
         }
         rb
@@ -240,7 +252,7 @@ impl HttpTransport {
     fn capture_session(&self, resp: &reqwest::Response) {
         if let Some(sid) = resp.headers().get("Mcp-Session-Id") {
             if let Ok(s) = sid.to_str() {
-                *self.session_id.lock().unwrap() = Some(s.to_string());
+                *self.session_id.lock().expect("session_id lock must not be poisoned: holders only clone or replace the session id string and never panic while holding it") = Some(s.to_string());
             }
         }
     }

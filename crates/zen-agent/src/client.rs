@@ -251,18 +251,18 @@ impl OpenAiClient {
     }
 
     pub fn recent_429_count(&self) -> usize {
-        let mut v = self.recent_429s.lock().unwrap();
+        let mut v = self.recent_429s.lock().expect("recent_429s lock must not be poisoned: holders only retain or push timestamps and never panic while holding it");
         let cutoff = Instant::now() - Duration::from_secs(5 * 60);
         v.retain(|t| *t >= cutoff);
         v.len()
     }
 
     fn note_429(&self) {
-        self.recent_429s.lock().unwrap().push(Instant::now());
+        self.recent_429s.lock().expect("recent_429s lock must not be poisoned: holders only retain or push timestamps and never panic while holding it").push(Instant::now());
     }
 
     fn update_pacer_from_headers(&self, headers: &reqwest::header::HeaderMap) {
-        let mut guard = self.pacer.lock().unwrap();
+        let mut guard = self.pacer.lock().expect("pacer lock must not be poisoned: holders only read header values and update the rate-limit ceiling and never panic while holding it");
         let Some(pacer) = guard.as_mut() else { return };
         for name in [
             "x-ratelimit-limit-requests",
@@ -520,7 +520,7 @@ impl LlmBackend for OpenAiClient {
             let pace_wait = self
                 .pacer
                 .lock()
-                .unwrap()
+                .map_err(|e| anyhow::anyhow!("pacer lock poisoned: {e}"))?
                 .as_mut()
                 .map(|p| p.acquire())
                 .unwrap_or(Duration::ZERO);
