@@ -562,7 +562,7 @@ impl RulePermissions {
 
     pub fn effective_allow(&self) -> Vec<String> {
         let mut v = self.allow.clone();
-        v.extend(self.dynamic_allow.lock().unwrap().iter().cloned());
+        v.extend(self.dynamic_allow.lock().expect("dynamic_allow lock poisoned: holders only clone or push rule strings and cannot panic").iter().cloned());
         v
     }
 
@@ -697,7 +697,7 @@ impl PermissionChecker for RulePermissions {
             return;
         }
         {
-            let mut dyn_rules = self.dynamic_allow.lock().unwrap();
+            let mut dyn_rules = self.dynamic_allow.lock().expect("dynamic_allow lock poisoned: holders only clone or push rule strings and cannot panic");
             if !dyn_rules.iter().any(|r| r == rule) {
                 dyn_rules.push(rule.to_string());
             }

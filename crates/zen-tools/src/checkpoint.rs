@@ -129,7 +129,7 @@ impl Checkpoints {
     }
 
     pub fn start_turn(&self, prompt: &str) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
         Self::close_current(&mut st);
         let id = st.next_id;
         st.next_id += 1;
@@ -149,13 +149,13 @@ impl Checkpoints {
     }
 
     pub fn last_turn(&self) -> Option<Turn> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
         Self::close_current(&mut st);
         st.done.last().cloned()
     }
 
     pub fn depth(&self) -> usize {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
         Self::close_current(&mut st);
         st.done.len()
     }
@@ -182,7 +182,7 @@ impl Checkpoints {
     }
 
     pub fn undo(&self, force: bool) -> Result<UndoReport, UndoError> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
         Self::close_current(&mut st);
         let Some(turn) = st.done.last() else {
             return Err(UndoError::Nothing);
@@ -273,7 +273,7 @@ impl FileCheckpoints for Checkpoints {
     }
 
     fn before_write(&self, path: &Path) -> Option<String> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
         if st.current.is_none() {
             let id = st.next_id;
             st.next_id += 1;
@@ -305,7 +305,7 @@ impl FileCheckpoints for Checkpoints {
     }
 
     fn after_write(&self, path: &Path, content: &[u8]) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
         if let Some(e) = st
             .current
             .as_mut()
