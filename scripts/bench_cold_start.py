@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Cold-start benchmarks for the `zen` binary.
 
 Measures, with no third-party dependencies (stdlib only, cross-platform):
@@ -61,6 +62,7 @@ MOCK_COMPLETION = {
     "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
 }
 
+
 def stats(samples):
     """Return dict with median/p95/mean/stdev/cv for a sample list."""
     s = sorted(samples)
@@ -80,6 +82,7 @@ def stats(samples):
         "max": s[-1],
     }
 
+
 def run_timed(argv, env, stdin_data=None, timeout=60):
     """Run argv, return (elapsed_ms, returncode, stdout_bytes, stderr_bytes, rss_mb).
 
@@ -92,7 +95,10 @@ def run_timed(argv, env, stdin_data=None, timeout=60):
     start = time.perf_counter()
     stdin_cfg = subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL
     proc = subprocess.Popen(
-        argv, env=env, stdin=stdin_cfg, stdout=subprocess.PIPE,
+        argv,
+        env=env,
+        stdin=stdin_cfg,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     out_chunks, err_chunks = [], []
@@ -124,7 +130,6 @@ def run_timed(argv, env, stdin_data=None, timeout=60):
     ru = None
     status = None
     if not hasattr(os, "wait4"):
-
         try:
             out_b, err_b = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -146,13 +151,18 @@ def run_timed(argv, env, stdin_data=None, timeout=60):
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     t1.join(timeout=5)
     t2.join(timeout=5)
-    rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else proc.poll()
+    rc = (
+        os.waitstatus_to_exitcode(status)
+        if hasattr(os, "waitstatus_to_exitcode")
+        else proc.poll()
+    )
     rss_mb = None
     if ru is not None:
         rss_mb = ru.ru_maxrss / 1024.0
         if sys.platform == "darwin":
             rss_mb = ru.ru_maxrss / (1024.0 * 1024.0)
     return elapsed_ms, rc, b"".join(out_chunks), b"".join(err_chunks), rss_mb
+
 
 def isolated_env(extra=None):
     """Env with HOME etc. pointed at a fresh temp dir."""
@@ -168,6 +178,7 @@ def isolated_env(extra=None):
     if extra:
         env.update(extra)
     return env, home
+
 
 class _MockHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -190,12 +201,14 @@ class _MockHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         type(self).request_count += 1
 
+
 def start_mock_server():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _MockHandler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, port
+
 
 def measure_cold_startup(zen, runs):
     """Fresh copy per iteration -> page cache cold."""
@@ -213,16 +226,18 @@ def measure_cold_startup(zen, runs):
             samples.append(ms)
     return samples
 
+
 def measure_warm(zen, args, runs):
     samples, rss = [], []
     for _ in range(runs):
         env, _ = isolated_env()
-        ms, rc, out, _, r = run_timed([zen] + args, env, timeout=30)
+        ms, rc, _out, _, r = run_timed([zen] + args, env, timeout=30)
         assert rc == 0, f"{' '.join(args)} failed rc={rc}"
         samples.append(ms)
         if r is not None:
             rss.append(r)
     return samples, rss
+
 
 def measure_repl_prompt(zen, runs):
     """Time from spawn until the REPL prints its first '> ' prompt."""
@@ -232,14 +247,17 @@ def measure_repl_prompt(zen, runs):
         workdir = tempfile.mkdtemp(prefix="zen-bench-cwd-")
         start = time.perf_counter()
         proc = subprocess.Popen(
-            [zen, "--bare"], env=env, cwd=workdir,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            [zen, "--bare"],
+            env=env,
+            cwd=workdir,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
         marker_at = None
         buf = b""
         deadline = start + REPL_TIMEOUT_S
         try:
-
             while time.perf_counter() < deadline:
                 chunk = proc.stdout.read(1)
                 if not chunk:
@@ -261,11 +279,14 @@ def measure_repl_prompt(zen, runs):
             except subprocess.TimeoutExpired:
                 proc.kill()
         if marker_at is None:
-            raise RuntimeError(f"REPL exited without printing a prompt (out={buf[-200:]!r})")
+            raise RuntimeError(
+                f"REPL exited without printing a prompt (out={buf[-200:]!r})"
+            )
         samples.append((marker_at - start) * 1000.0)
         shutil.rmtree(workdir, ignore_errors=True)
         shutil.rmtree(home, ignore_errors=True)
     return samples
+
 
 def measure_first_token(zen, runs):
     """Time from spawn until the first stdout byte of `zen -p` vs mock server."""
@@ -273,17 +294,22 @@ def measure_first_token(zen, runs):
     samples = []
     try:
         for _ in range(runs):
-            env, home = isolated_env({
-                "ZEN_BASE_URL": f"http://127.0.0.1:{port}",
-                "ZEN_API_KEY": "bench",
-                "ZEN_MODEL": "bench-model",
-            })
+            env, home = isolated_env(
+                {
+                    "ZEN_BASE_URL": f"http://127.0.0.1:{port}",
+                    "ZEN_API_KEY": "bench",
+                    "ZEN_MODEL": "bench-model",
+                }
+            )
             workdir = tempfile.mkdtemp(prefix="zen-bench-cwd-")
             start = time.perf_counter()
             proc = subprocess.Popen(
                 [zen, "--bare", "-p", "Reply with exactly: hello"],
-                env=env, cwd=workdir, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env=env,
+                cwd=workdir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
             )
             first_at = None
             try:
@@ -308,9 +334,14 @@ def measure_first_token(zen, runs):
         server.shutdown()
     return samples, _MockHandler.request_count
 
+
 def run_all(zen, runs, cold_runs):
-    results = {"binary": zen, "runs": runs, "cold_runs": cold_runs,
-               "platform": sys.platform}
+    results = {
+        "binary": zen,
+        "runs": runs,
+        "cold_runs": cold_runs,
+        "platform": sys.platform,
+    }
 
     print(f"[1/5] cold startup (--version, fresh copy) x{cold_runs} ...", flush=True)
     results["startup_cold_ms"] = stats(measure_cold_startup(zen, cold_runs))
@@ -335,14 +366,21 @@ def run_all(zen, runs, cold_runs):
 
     return results
 
+
 def check_stability(results):
     """Fail (exit 2) if any warm measurement has excessive variance."""
     bad = []
-    for key in ("startup_warm_ms", "doctor_warm_ms", "repl_prompt_ms", "first_token_ms"):
+    for key in (
+        "startup_warm_ms",
+        "doctor_warm_ms",
+        "repl_prompt_ms",
+        "first_token_ms",
+    ):
         cv = results[key]["cv"]
         if cv > CV_LIMIT:
             bad.append(f"{key}: cv={cv:.2f} > {CV_LIMIT}")
     return bad
+
 
 def check_thresholds(results, thresholds):
     """Fail (exit 1) if any median exceeds its threshold."""
@@ -353,6 +391,7 @@ def check_thresholds(results, thresholds):
                 f"{key}: median={results[key]['median']:.1f}ms > threshold={limit}ms"
             )
     return bad
+
 
 def markdown_table(results):
     lines = [
@@ -379,6 +418,7 @@ def markdown_table(results):
         )
     return "\n".join(lines)
 
+
 def self_test(zen):
     """Quick validation: stats math, mock server shape, one smoke timing each."""
     assert stats([10, 20, 30, 40])["median"] == 25
@@ -386,9 +426,12 @@ def self_test(zen):
     server, port = start_mock_server()
     try:
         import urllib.request
+
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/chat/completions",
-            data=b"{}", headers={"Content-Type": "application/json"}, method="POST",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read())
@@ -407,13 +450,16 @@ def self_test(zen):
     assert s[0] > 0 and reqs >= 1
     print("self-test: OK (stats, mock server, --version, doctor, REPL, -p)")
 
+
 def main():
     ap = argparse.ArgumentParser(description="Cold-start benchmarks for zen")
     ap.add_argument("--zen", default="./target/release/zen", help="path to zen binary")
     ap.add_argument("--runs", type=int, default=15, help="warm iterations")
     ap.add_argument("--cold-runs", type=int, default=5, help="cold iterations")
     ap.add_argument("--out-dir", default="bench-results", help="results directory")
-    ap.add_argument("--thresholds", default=None, help="JSON thresholds file (CI guard)")
+    ap.add_argument(
+        "--thresholds", default=None, help="JSON thresholds file (CI guard)"
+    )
     ap.add_argument("--self-test", action="store_true", help="quick validation only")
     args = ap.parse_args()
 
@@ -453,6 +499,7 @@ def main():
 
     print(f"\nresults written to {args.out_dir}/")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
