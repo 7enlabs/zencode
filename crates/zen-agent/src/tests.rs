@@ -314,6 +314,89 @@ async fn max_turns_stops_with_error_subtype() {
 }
 
 #[tokio::test]
+async fn loop_stuck_stops_repeated_bash_at_third_turn() {
+    let args = r#"{"command": "ls"}"#;
+    let llm = MockLlm::new(vec![
+        resp_tool("Bash", args, "1"),
+        resp_tool("Bash", args, "2"),
+        resp_tool("Bash", args, "3"),
+        resp("never reached"),
+    ]);
+    let reg = registry_with(vec![fake("Bash", true, "x")]);
+    let cfg = AgentConfig {
+        max_turns: 50,
+        ..base_cfg()
+    };
+    let (mut agent, _s, _h) = build_agent(llm.clone(), reg, allow(), cfg);
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "loop_stuck");
+    assert!(r.is_error);
+    assert_eq!(r.num_turns, 3);
+    assert!(r.result.contains("loop_stuck"));
+    assert!(r.result.contains("prompt"));
+    assert_eq!(llm.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn loop_stuck_allows_two_repeats() {
+    let args = r#"{"command": "ls"}"#;
+    let llm = MockLlm::new(vec![
+        resp_tool("Bash", args, "1"),
+        resp_tool("Bash", args, "2"),
+        resp("done"),
+    ]);
+    let reg = registry_with(vec![fake("Bash", true, "x")]);
+    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), base_cfg());
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "success");
+    assert_eq!(r.result, "done");
+}
+
+#[tokio::test]
+async fn loop_stuck_stops_unchanged_multi_call_turns() {
+    let scripted = vec![
+        resp_multi_tool(vec![
+            ("Read", r#"{"path": "a.rs"}"#, "a1"),
+            ("Read", r#"{"path": "b.rs"}"#, "b1"),
+        ]),
+        resp_multi_tool(vec![
+            ("Read", r#"{"path": "a.rs"}"#, "a2"),
+            ("Read", r#"{"path": "b.rs"}"#, "b2"),
+        ]),
+        resp_multi_tool(vec![
+            ("Read", r#"{"path": "a.rs"}"#, "a3"),
+            ("Read", r#"{"path": "b.rs"}"#, "b3"),
+        ]),
+    ];
+    let llm = MockLlm::new(scripted);
+    let reg = registry_with(vec![fake("Read", true, "r")]);
+    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), base_cfg());
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "loop_stuck");
+    assert_eq!(r.num_turns, 3);
+}
+
+#[tokio::test]
+async fn loop_stuck_k_is_configurable() {
+    let args = r#"{"command": "ls"}"#;
+    let llm = MockLlm::new(vec![
+        resp_tool("Bash", args, "1"),
+        resp_tool("Bash", args, "2"),
+        resp_tool("Bash", args, "3"),
+        resp("done"),
+    ]);
+    let reg = registry_with(vec![fake("Bash", true, "x")]);
+    let cfg = AgentConfig {
+        loop_stuck_k: 5,
+        ..base_cfg()
+    };
+    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), cfg);
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "success");
+    assert_eq!(r.result, "done");
+}
+
+#[tokio::test]
 async fn model_failure_surfaces_as_error_result() {
     let llm = MockLlm::with_errors(vec![Err(anyhow::anyhow!("boom 500"))]);
     let (mut agent, _s, _h) = build_agent(llm, ToolRegistry::new(), allow(), base_cfg());
@@ -1349,8 +1432,16 @@ fn tool_contents(msgs: &[ChatMessage]) -> Vec<String> {
 
 #[tokio::test]
 async fn r7_fifth_edit_turn_gets_exactly_one_guard_note() {
+    // NOTE: args vary per call so the loop guard does not trip; the
+    // edit nudge under test keys on file_path only.
     let mut script: Vec<ChatResponse> = (0..5)
-        .map(|i| resp_tool("Edit", r#"{"file_path":"a.rs"}"#, &format!("e{}", i)))
+        .map(|i| {
+            resp_tool(
+                "Edit",
+                &format!(r#"{{"file_path":"a.rs","old_string":"x{}"}}"#, i),
+                &format!("e{}", i),
+            )
+        })
         .collect();
     script.push(resp("done"));
     let llm = MockLlm::new(script);
@@ -1367,7 +1458,13 @@ async fn r7_fifth_edit_turn_gets_exactly_one_guard_note() {
     assert_eq!(noted, vec![3], "{:#?}", tools);
 
     let mut script: Vec<ChatResponse> = (0..3)
-        .map(|i| resp_tool("Edit", r#"{"file_path":"a.rs"}"#, &format!("f{}", i)))
+        .map(|i| {
+            resp_tool(
+                "Edit",
+                &format!(r#"{{"file_path":"a.rs","old_string":"y{}"}}"#, i),
+                &format!("f{}", i),
+            )
+        })
         .collect();
     script.push(resp("done"));
     agent.llm = MockLlm::new(script);
@@ -1409,8 +1506,10 @@ async fn r7_three_identical_failures_nudge() {
 
 #[tokio::test]
 async fn r7_todos_reinjected_every_sixth_call_and_after_compaction() {
+    // NOTE: args vary per call so the loop guard does not trip; the
+    // todo reinjection under test keys on call count only.
     let mut script: Vec<ChatResponse> = (0..12)
-        .map(|i| resp_tool("Echo", "{}", &format!("c{}", i)))
+        .map(|i| resp_tool("Echo", &format!(r#"{{"n":{}}}"#, i), &format!("c{}", i)))
         .collect();
     script.push(resp("done"));
     script.push(resp("SUMMARY TEXT"));
@@ -1539,9 +1638,11 @@ async fn r7_no_reminder_without_edits_or_when_disabled() {
 async fn r7_failing_verify_command_stops_after_two_rounds() {
     let mut script = Vec::new();
     for i in 0..3 {
+        // NOTE: args vary per round so the loop guard does not trip;
+        // the verify loop under test does not depend on Edit args.
         script.push(resp_tool(
             "Edit",
-            r#"{"file_path":"a.rs"}"#,
+            &format!(r#"{{"file_path":"a.rs","old_string":"x{}"}}"#, i),
             &format!("e{}", i),
         ));
         script.push(resp(&format!("attempt {}", i)));
