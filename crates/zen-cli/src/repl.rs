@@ -955,7 +955,12 @@ async fn handle_slash(
             }
         }
         "/done" => {
-            let todos = agent.ctx.todos.lock().unwrap().clone();
+            let todos = agent
+                .ctx
+                .todos
+                .lock()
+                .map_err(|e| anyhow::anyhow!("todos lock poisoned: {e}"))?
+                .clone();
             let checks = crate::doneguard::run_done_checks(cwd, &todos).await;
             let changed = crate::doneguard::changed_files(cwd);
             let violations = repl.scope.violations(&changed);
@@ -1335,7 +1340,12 @@ async fn handle_slash(
             println!("{}", zen_ext::memories_report(cwd, home));
         }
         "/todos" => {
-            let todos = agent.ctx.todos.lock().unwrap().clone();
+            let todos = agent
+                .ctx
+                .todos
+                .lock()
+                .map_err(|e| anyhow::anyhow!("todos lock poisoned: {e}"))?
+                .clone();
             if todos.is_empty() {
                 println!("(no todos)");
             } else {

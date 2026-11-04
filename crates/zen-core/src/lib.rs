@@ -240,7 +240,10 @@ impl ToolContext {
         }
     }
     pub fn cwd(&self) -> PathBuf {
-        self.cwd.lock().unwrap().clone()
+        self.cwd
+            .lock()
+            .expect("cwd lock poisoned: cwd is set from plain assignment only")
+            .clone()
     }
 
     pub fn scratch_dir(&self) -> PathBuf {
@@ -843,7 +846,11 @@ pub fn resolve_shell(preferred: &str) -> ShellSpec {
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<HashMap<String, ShellSpec>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(s) = cache.lock().unwrap().get(preferred) {
+    if let Some(s) = cache
+        .lock()
+        .expect("shell cache lock poisoned: cache inserts never panic while holding the lock")
+        .get(preferred)
+    {
         return s.clone();
     }
     let zen_shell = std::env::var("ZEN_SHELL").ok();
@@ -866,7 +873,7 @@ pub fn resolve_shell(preferred: &str) -> ShellSpec {
     }
     cache
         .lock()
-        .unwrap()
+        .expect("shell cache lock poisoned: cache inserts never panic while holding the lock")
         .insert(preferred.to_string(), spec.clone());
     spec
 }

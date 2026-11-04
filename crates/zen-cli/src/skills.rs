@@ -1507,7 +1507,9 @@ impl SkillPermissionGate {
     }
 
     pub fn load_skill(&self, skill: LoadedSkill) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().expect(
+            "skill registry lock poisoned: skill loading never panics while holding the lock",
+        );
         if let Some(pos) = active.iter().position(|s| s.name == skill.name) {
             active[pos] = skill;
         } else {
@@ -1516,7 +1518,12 @@ impl SkillPermissionGate {
     }
 
     pub fn active_skills(&self) -> Vec<LoadedSkill> {
-        self.active.lock().unwrap().clone()
+        self.active
+            .lock()
+            .expect(
+                "skill registry lock poisoned: skill loading never panics while holding the lock",
+            )
+            .clone()
     }
 }
 
@@ -1528,7 +1535,13 @@ impl zen_core::PermissionChecker for SkillPermissionGate {
         read_only: bool,
         ctx: &zen_core::ToolContext,
     ) -> zen_core::PermissionDecision {
-        let active = self.active.lock().unwrap().clone();
+        let active = self
+            .active
+            .lock()
+            .expect(
+                "skill registry lock poisoned: skill loading never panics while holding the lock",
+            )
+            .clone();
         if active.is_empty() {
             return self.inner.check(tool_name, input, read_only, ctx);
         }
