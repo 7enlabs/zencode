@@ -9,11 +9,11 @@ license = "MIT"
 authors = ["7EN Labs <7enlab@gmail.com>"]
 
 [workspace.dependencies]
-zen-core = { path = "crates/zen-core" }
-zen-agent = { path = "crates/zen-agent" }
-zen-tools = { path = "crates/zen-tools" }
-zen-ext = { path = "crates/zen-ext" }
-zen-mcp = { path = "crates/zen-mcp" }
+zen-core = { path = "crates/zen-core", version = "0.1.0" }
+zen-agent = { path = "crates/zen-agent", version = "0.1.0" }
+zen-tools = { path = "crates/zen-tools", version = "0.1.0" }
+zen-ext = { path = "crates/zen-ext", version = "0.1.0" }
+zen-mcp = { path = "crates/zen-mcp", version = "0.1.0" }
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }

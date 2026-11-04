@@ -1,0 +1,41 @@
+# cargo-deny policy for the ZenCode CLI workspace (buffer task #8).
+# Run locally: cargo deny check
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+]
+# MPL-2.0 is file-level copyleft: allowed only for this unmodified dependency,
+# not as a blanket license.
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
