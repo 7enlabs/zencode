@@ -138,9 +138,41 @@ async fn run_tool(
     ctx: ToolContext,
     timeout: (Option<u64>, TimeoutSource),
 ) -> ToolOutput {
+    let eligible = crate::retry::tool_retry_eligible(tool.name());
+    let mut attempt: u32 = 0;
+    loop {
+        let out = run_tool_once(tool.clone(), args.clone(), &ctx, timeout).await;
+        if !out.is_error {
+            return out;
+        }
+        let transient = crate::retry::is_transient_error(&out.content);
+        if !eligible || !transient || attempt >= crate::retry::MAX_TOOL_RETRIES {
+            return out;
+        }
+        let backoff = crate::retry::retry_backoff_ms(attempt);
+        let snippet: String = out.content.chars().take(200).collect();
+        eprintln!(
+            "[retry] tool {} attempt {}/{} failed with transient error, retrying in {} ms: {}",
+            tool.name(),
+            attempt + 1,
+            crate::retry::MAX_TOOL_RETRIES,
+            backoff,
+            snippet
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+        attempt += 1;
+    }
+}
+
+async fn run_tool_once(
+    tool: Arc<dyn Tool>,
+    args: Value,
+    ctx: &ToolContext,
+    timeout: (Option<u64>, TimeoutSource),
+) -> ToolOutput {
     let (timeout_ms, source) = timeout;
     let Some(ms) = timeout_ms else {
-        return tool.call(args, &ctx).await;
+        return tool.call(args, ctx).await;
     };
 
     let src = match source {
@@ -149,7 +181,7 @@ async fn run_tool(
         TimeoutSource::BuiltIn => "the built-in default timeout".to_string(),
         TimeoutSource::None => "a timeout that was then disabled".to_string(),
     };
-    match tokio::time::timeout(std::time::Duration::from_millis(ms), tool.call(args, &ctx)).await {
+    match tokio::time::timeout(std::time::Duration::from_millis(ms), tool.call(args, ctx)).await {
         Ok(out) => out,
         Err(_) => ToolOutput::err(format!(
             "Error: {} timed out after {} ms and was stopped ({})",
