@@ -138,7 +138,7 @@ async fn run_tool(
     ctx: ToolContext,
     timeout: (Option<u64>, TimeoutSource),
 ) -> ToolOutput {
-    let eligible = crate::retry::tool_retry_eligible(tool.name());
+    let eligible = crate::retry::tool_retry_eligible_for(tool.name(), tool.is_read_only());
     let mut attempt: u32 = 0;
     loop {
         let out = run_tool_once(tool.clone(), args.clone(), &ctx, timeout).await;

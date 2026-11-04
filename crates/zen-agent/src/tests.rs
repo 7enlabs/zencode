@@ -2103,6 +2103,7 @@ struct CountingFlakyTool {
     name: String,
     fail_text: String,
     always_fail: bool,
+    read_only: bool,
     calls: std::sync::Mutex<u32>,
 }
 
@@ -2118,7 +2119,7 @@ impl Tool for CountingFlakyTool {
         json!({ "type": "object" })
     }
     fn is_read_only(&self) -> bool {
-        true
+        self.read_only
     }
     async fn call(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {
         let mut guard = self.calls.lock().unwrap();
@@ -2137,11 +2138,13 @@ fn flaky_tool(
     name: &str,
     fail_text: &str,
     always_fail: bool,
+    read_only: bool,
 ) -> (Arc<CountingFlakyTool>, Arc<dyn Tool>) {
     let concrete = Arc::new(CountingFlakyTool {
         name: name.to_string(),
         fail_text: fail_text.to_string(),
         always_fail,
+        read_only,
         calls: std::sync::Mutex::new(0),
     });
     let tool: Arc<dyn Tool> = concrete.clone();
@@ -2165,8 +2168,8 @@ async fn run_flaky_once(tool: Arc<dyn Tool>, name: &str) -> ToolOutput {
 
 #[tokio::test]
 async fn b61_retry_transient_then_success() {
-    let (counter, tool) = flaky_tool("Bash", "Error: connection reset by peer", false);
-    let out = run_flaky_once(tool, "Bash").await;
+    let (counter, tool) = flaky_tool("Read", "Error: connection reset by peer", false, true);
+    let out = run_flaky_once(tool, "Read").await;
     assert!(
         !out.is_error,
         "expected success after retry, got: {}",
@@ -2178,7 +2181,7 @@ async fn b61_retry_transient_then_success() {
 
 #[tokio::test]
 async fn b61_no_retry_deterministic_error() {
-    let (counter, tool) = flaky_tool("Read", "Error: file not found", true);
+    let (counter, tool) = flaky_tool("Read", "Error: file not found", true, true);
     let out = run_flaky_once(tool, "Read").await;
     assert!(out.is_error);
     assert_eq!(*counter.calls.lock().unwrap(), 1);
@@ -2186,7 +2189,7 @@ async fn b61_no_retry_deterministic_error() {
 
 #[tokio::test]
 async fn b61_no_retry_out_of_scope_tool() {
-    let (counter, tool) = flaky_tool("Write", "Error: connection reset by peer", false);
+    let (counter, tool) = flaky_tool("Write", "Error: connection reset by peer", false, true);
     let out = run_flaky_once(tool, "Write").await;
     assert!(out.is_error, "out-of-scope tool must not retry");
     assert_eq!(*counter.calls.lock().unwrap(), 1);
@@ -2194,12 +2197,61 @@ async fn b61_no_retry_out_of_scope_tool() {
 
 #[tokio::test]
 async fn b61_retry_mcp_tool() {
-    let (counter, tool) = flaky_tool("mcp__github__search", "Error: service unavailable", false);
+    let (counter, tool) = flaky_tool(
+        "mcp__github__search",
+        "Error: service unavailable",
+        false,
+        false,
+    );
     let out = run_flaky_once(tool, "mcp__github__search").await;
     assert!(
         !out.is_error,
         "expected success after retry, got: {}",
         out.content
     );
+    assert_eq!(out.content, "flaky done");
     assert_eq!(*counter.calls.lock().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn b61_no_retry_mutating_bash() {
+    let (counter, tool) = flaky_tool("Bash", "Error: connection reset by peer", false, false);
+    let out = run_flaky_once(tool, "Bash").await;
+    assert!(out.is_error, "mutating Bash must not retry");
+    assert_eq!(*counter.calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn b61_no_retry_internal_timeout() {
+    let (counter, tool) = flaky_tool(
+        "Read",
+        "Error: Read timed out after 5000 ms and was stopped (settings toolTimeouts.default)",
+        true,
+        true,
+    );
+    let out = run_flaky_once(tool, "Read").await;
+    assert!(out.is_error, "internal timeout must not retry");
+    assert_eq!(*counter.calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn b61_no_retry_transient_word_in_later_line() {
+    let (counter, tool) = flaky_tool(
+        "Read",
+        "Error: tests failed
+output mentions rate limit",
+        true,
+        true,
+    );
+    let out = run_flaky_once(tool, "Read").await;
+    assert!(out.is_error, "transient word in later line must not retry");
+    assert_eq!(*counter.calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn b61_transient_always_fail_calls_three_times() {
+    let (counter, tool) = flaky_tool("Read", "Error: connection reset by peer", true, true);
+    let out = run_flaky_once(tool, "Read").await;
+    assert!(out.is_error);
+    assert_eq!(*counter.calls.lock().unwrap(), 3);
 }
