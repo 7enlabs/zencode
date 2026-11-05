@@ -357,6 +357,7 @@ pub enum Commands {
     Skill(SkillArgs),
 
     /// Diagnose configuration, credentials and environment
+    #[command(after_help = "Examples:\n  zen doctor\n  zen --json doctor")]
     Doctor,
 
     /// List available models
@@ -409,6 +410,9 @@ pub enum Commands {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen update --check   Only check, do not install\n  zen update           Check and install the update"
+)]
 pub struct UpdateArgs {
     /// Only check for updates; do not install
     #[arg(long)]
@@ -416,6 +420,9 @@ pub struct UpdateArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen models           List available models\n  zen models --best    Print only the best working model\n  zen models --refresh Refresh the list from the provider"
+)]
 pub struct ModelsArgs {
     /// Refresh the model list from the provider
     #[arg(long = "refresh")]
@@ -427,6 +434,9 @@ pub struct ModelsArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen cost                      Cost of the latest session\n  zen cost --session abc123     Cost of one session\n  zen --json cost               Cost report as JSON"
+)]
 pub struct CostArgs {
     /// Session id (default: the latest session)
     #[arg(long = "session")]
@@ -438,6 +448,9 @@ pub struct CostArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen context                   Context of the latest session\n  zen context --session abc123  Context of one session"
+)]
 pub struct ContextArgs {
     /// Session id (default: the latest session)
     #[arg(long = "session")]
@@ -445,6 +458,9 @@ pub struct ContextArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen export                                  Export the latest session as markdown\n  zen export --format json --output s.json    Export as JSON to a file\n  zen export --redact                         Redact secrets from the export"
+)]
 pub struct ExportArgs {
     /// Export format
     #[arg(long, value_enum, default_value_t = crate::export::ExportFormat::Markdown)]
@@ -464,12 +480,18 @@ pub struct ExportArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen import session.md          Import a markdown export\n  zen import ./backup/s.json     Import a JSON export"
+)]
 pub struct ImportArgs {
     /// Export file to import
     pub file: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen sessions list              List sessions\n  zen sessions list --all        Include archived sessions\n  zen sessions archive abc123    Archive a session\n  zen sessions delete abc123 --yes  Delete without prompting\n  zen sessions restore abc123    Restore an archived session"
+)]
 pub struct SessionsArgs {
     #[command(subcommand)]
     pub command: SessionSubcommand,
@@ -508,6 +530,9 @@ pub enum SessionSubcommand {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen eval --mock            Run the built-in tasks against the scripted solver\n  zen eval --task fix-typo   Run one task\n  zen --json eval --mock     Eval report as JSON"
+)]
 pub struct EvalArgs {
     /// Model to evaluate (default: the configured model)
     #[arg(long)]
@@ -534,6 +559,9 @@ pub struct EvalArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen skill list             List installed skills\n  zen skill install pdf-tools  Install a skill\n  zen skill search pdf       Search the registry\n  zen skill remove pdf-tools   Remove a skill"
+)]
 pub struct SkillArgs {
     #[command(subcommand)]
     pub command: SkillSubcommand,
@@ -602,6 +630,9 @@ pub enum SkillSubcommand {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen mcp list               List configured servers\n  zen mcp get my-server      Show one server\n  zen mcp add my-server -- npx my-mcp-server  Add a stdio server\n  zen mcp remove my-server   Remove a server"
+)]
 pub struct McpArgs {
     #[command(subcommand)]
     pub command: McpSubcommand,
@@ -702,6 +733,26 @@ pub struct ReviewArgs {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn subcommand_help_includes_examples() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        for name in [
+            "doctor", "models", "cost", "context", "sessions", "eval", "update", "mcp", "skill",
+            "export", "import",
+        ] {
+            let sub = cmd
+                .get_subcommands()
+                .find(|c| c.get_name() == name)
+                .unwrap_or_else(|| panic!("missing subcommand {name}"));
+            let help = sub.clone().render_long_help().to_string();
+            assert!(
+                help.contains("Examples:"),
+                "{name} help has no Examples section:\n{help}"
+            );
+        }
+    }
 
     fn parse(args: &[&str]) -> Cli {
         let mut base = vec!["zen"];
