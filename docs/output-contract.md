@@ -31,3 +31,9 @@ every subcommand:
   to join a relative path against their own working directory, or match
   on a relative prefix, must treat `file` as already absolute; paths
   the model emits already absolute are left untouched.
+
+- `zen skills search --curated` orders results by match score first
+  (highest first); ties break curated before community, then name
+  ascending. The ordering is score-first: a higher-scoring community
+  hit ranks above a lower-scoring curated one. (Ordering since
+  PR #44.)
