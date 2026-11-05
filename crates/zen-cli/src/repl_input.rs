@@ -135,16 +135,25 @@ fn plain_wanted() -> bool {
         || !std::io::stdout().is_terminal()
 }
 
+/// Editor config for the interactive prompt. `CompletionType::List` is
+/// what makes Esc cancel the completion list (rustyline 18: a lone Esc
+/// is `Cmd::Abort`; while a list is shown it is handed back to the main
+/// loop, which ignores it, so the list is dismissed and the typed line
+/// is kept). Keep this in one place so the test below can pin it.
+fn editor_config() -> Config {
+    Config::builder()
+        .auto_add_history(false)
+        .history_ignore_space(true)
+        .completion_type(CompletionType::List)
+        .build()
+}
+
 impl LineReader {
     pub fn new(home: Option<&std::path::Path>) -> Self {
         if plain_wanted() {
             return Self::plain();
         }
-        let config = Config::builder()
-            .auto_add_history(false)
-            .history_ignore_space(true)
-            .completion_type(CompletionType::List)
-            .build();
+        let config = editor_config();
         let mut editor = match Editor::<SlashHelper, DefaultHistory>::with_config(config) {
             Ok(e) => e,
             Err(_) => return Self::plain(),
@@ -272,6 +281,17 @@ mod tests {
         assert_eq!(slash_hint("hello", 5), None);
         assert_eq!(slash_hint("/mo x", 5), None);
         assert_eq!(slash_hint("/mo", 2), None);
+    }
+
+    #[test]
+    fn esc_cancels_completion_list_because_config_is_list() {
+        // Tab lists the slash-command matches; Esc must dismiss the
+        // list without touching the typed line. That only holds with
+        // CompletionType::List: in Circular mode Tab cycles inline
+        // instead of listing, so Esc would behave differently. If this
+        // config ever changes, the banner promise in repl.rs ("Esc
+        // cancels") breaks with it.
+        assert_eq!(editor_config().completion_type(), CompletionType::List);
     }
 
     #[test]

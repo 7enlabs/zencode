@@ -494,10 +494,10 @@ See [docs/session-format.md](docs/session-format.md) for the format spec.
 
 `zen review` runs the model with a **mechanically enforced read-only tool set**
 (only `Read`, `Glob`, `Grep` are registered - write tools do not exist in the
-session, and a permission checker denies anything not flagged read-only). Findings
-are grouped by severity (`critical` / `high` / `medium` / `low` / `nit`) with
-`file:line`, category (`bugs`, `security`, `perf`, `style`, `tests-missing`) and a
-suggested fix.
+session, and a permission checker denies anything not flagged read-only). Findings are split into the ones needing human judgment and the mechanical
+fixes, severity first inside each group (`critical` / `high` / `medium` /
+`low` / `nit`), with `file:line` (absolute path), category (`bugs`,
+`security`, `perf`, `style`, `tests-missing`) and a suggested fix.
 
 Exit codes are CI-friendly: `0` = no findings at or above `--fail-on` (default
 `high`), `1` = findings at or above the threshold, `2` = tool error (git failure,

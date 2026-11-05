@@ -24,3 +24,10 @@ every subcommand:
   against a cited source; the tool does not re-verify the label. (The
   eval pass line is the exception: it is computed by the tool from
   the per-task results, not assigned by the model.)
+
+- `zen review --json` (and `--format stream-json`) findings carry `file`
+  as an absolute path rooted at the reviewed tree, with `/` separators
+  on every platform (since PR #36, S9 pattern 4). Consumers that used
+  to join a relative path against their own working directory, or match
+  on a relative prefix, must treat `file` as already absolute; paths
+  the model emits already absolute are left untouched.

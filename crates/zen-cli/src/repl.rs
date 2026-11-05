@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use zen_core::{EventSink, RunResult};
+use zen_core::{EventSink, RunResult, UsageStats};
 
 enum LineAction {
     Continue,
@@ -456,6 +456,28 @@ fn read_multiline(first: String, mut next: impl FnMut() -> Option<String>) -> St
     out
 }
 
+/// One-line close of a REPL turn. `input_tokens` already includes the
+/// prompt-cache reads (they are a subset of the prompt tokens the
+/// provider reports), so the total counts them; name the cached part
+/// instead of silently folding it in.
+fn format_turn_summary(duration_ms: u64, usage: &UsageStats) -> String {
+    let total = usage.input_tokens + usage.output_tokens;
+    if usage.cache_read_input_tokens > 0 {
+        format!(
+            "Done in {:.1}s - {} tokens used ({} from cache)",
+            duration_ms as f64 / 1000.0,
+            total,
+            usage.cache_read_input_tokens
+        )
+    } else {
+        format!(
+            "Done in {:.1}s - {} tokens used",
+            duration_ms as f64 / 1000.0,
+            total
+        )
+    }
+}
+
 fn print_turn(result: Option<RunResult>) {
     if let Some(r) = result {
         if r.is_error {
@@ -466,11 +488,7 @@ fn print_turn(result: Option<RunResult>) {
         // S9 pattern 3: close the turn with the real elapsed time and
         // token total from the run result, on stderr like the rest of
         // the live progress so stdout readers are unaffected.
-        eprintln!(
-            "Done in {:.1}s - {} tokens used",
-            r.duration_ms as f64 / 1000.0,
-            r.usage.input_tokens + r.usage.output_tokens
-        );
+        eprintln!("{}", format_turn_summary(r.duration_ms, &r.usage));
     }
 }
 
@@ -1681,5 +1699,44 @@ mod multiline_tests {
     #[test]
     fn one_line_triple_quotes() {
         assert_eq!(run("\"\"\"hi\"\"\"", &[]), "hi");
+    }
+}
+
+#[cfg(test)]
+mod turn_summary_tests {
+    use super::*;
+
+    fn usage(input: u64, output: u64, cache_read: u64) -> UsageStats {
+        UsageStats {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_input_tokens: cache_read,
+        }
+    }
+
+    #[test]
+    fn done_line_names_cached_tokens_when_cache_reads_exist() {
+        assert_eq!(
+            format_turn_summary(1234, &usage(1000, 50, 800)),
+            "Done in 1.2s - 1050 tokens used (800 from cache)"
+        );
+    }
+
+    #[test]
+    fn done_line_omits_cache_note_without_cache_reads() {
+        assert_eq!(
+            format_turn_summary(500, &usage(100, 50, 0)),
+            "Done in 0.5s - 150 tokens used"
+        );
+    }
+
+    #[test]
+    fn cache_reads_are_part_of_the_total_not_added_twice() {
+        // input_tokens already includes the 800 cached tokens, so the
+        // total is 1000 + 50, not 1000 + 800 + 50.
+        assert_eq!(
+            format_turn_summary(100, &usage(1000, 50, 800)),
+            "Done in 0.1s - 1050 tokens used (800 from cache)"
+        );
     }
 }
