@@ -1203,6 +1203,7 @@ fn canonical_tool_name(t: &str) -> String {
 }
 
 pub async fn skill_command(
+    cli: &crate::cli::Cli,
     _cwd: &Path,
     home: Option<&Path>,
     cmd: &crate::cli::SkillSubcommand,
@@ -1213,7 +1214,18 @@ pub async fn skill_command(
         .ok_or_else(|| anyhow!("cannot determine home directory"))?;
     match cmd {
         crate::cli::SkillSubcommand::List => {
-            cmd_list(&home)?;
+            if cli.json_output || cli.raw {
+                if !cli.quiet {
+                    let registry = load_registry(&home);
+                    if cli.raw {
+                        println!("{}", serde_json::to_string(&registry)?);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&registry)?);
+                    }
+                }
+            } else if !cli.quiet {
+                cmd_list(&home)?;
+            }
             Ok(0)
         }
         crate::cli::SkillSubcommand::Install {
@@ -1242,7 +1254,9 @@ pub async fn skill_command(
         }
         crate::cli::SkillSubcommand::Remove { name } => {
             remove_skill(&home, name)?;
-            println!("removed skill {:?}", name);
+            if !cli.quiet {
+                println!("removed skill {:?}", name);
+            }
             Ok(0)
         }
         crate::cli::SkillSubcommand::Test { name } => {
@@ -1251,11 +1265,15 @@ pub async fn skill_command(
         }
         crate::cli::SkillSubcommand::Create { name } => {
             let dir = create_skill(&home, name)?;
-            println!("created skill {:?} at {}", name, dir.display());
-            println!(
-                "next: edit SKILL.md, zen-plugin.json, test.md - then `zen skill test {}`",
-                name
-            );
+            if !cli.quiet {
+                println!("created skill {:?} at {}", name, dir.display());
+            }
+            if !cli.quiet {
+                println!(
+                    "next: edit SKILL.md, zen-plugin.json, test.md - then `zen skill test {}`",
+                    name
+                );
+            }
             Ok(0)
         }
     }

@@ -571,6 +571,7 @@ pub fn run_context(
     session: Option<&str>,
     output_format: &crate::cli::OutputFormat,
     quiet: bool,
+    raw: bool,
     cwd: &Path,
     home: Option<&Path>,
 ) -> Result<()> {
@@ -595,7 +596,11 @@ pub fn run_context(
             print!("{}", render_text(&analysis));
         }
         crate::cli::OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&analysis)?);
+            if raw {
+                println!("{}", serde_json::to_string(&analysis)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&analysis)?);
+            }
         }
         crate::cli::OutputFormat::StreamJson => {
             let mut v = serde_json::to_value(&analysis)?;
