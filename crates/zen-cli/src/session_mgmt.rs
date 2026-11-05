@@ -155,7 +155,10 @@ pub fn archive_session(home: &Path, id: &str) -> Result<PathBuf> {
         )
     })?;
     if archived {
-        return Err(anyhow!("session {} is already archived", short_id(id)));
+        return Err(crate::coded_error(
+            crate::exit_code::CONFLICT,
+            format!("session {} is already archived", short_id(id)),
+        ));
     }
     let proj = path
         .parent()
@@ -364,7 +367,12 @@ mod tests {
         assert_eq!(all[0].message_count, 4);
         assert_eq!(all[0].input_tokens, 100);
 
-        assert!(archive_session(&home, "sess-rt").is_err());
+        let err = archive_session(&home, "sess-rt").unwrap_err();
+        assert_eq!(
+            crate::exit_code_for_error(&err),
+            crate::exit_code::CONFLICT,
+            "archiving an archived session must exit CONFLICT (B2 code 7): {err}"
+        );
 
         let back = restore_session(&home, "sess-rt").unwrap();
         assert_eq!(back, path);

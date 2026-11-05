@@ -649,7 +649,7 @@ pub async fn run_review(
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e}");
-            return Ok(2);
+            return Ok(crate::exit_code::VALIDATION);
         }
     };
 

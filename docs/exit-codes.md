@@ -25,7 +25,7 @@ here instead of being changed silently in unrelated patches.
 | 1 | blanket fallback error from main (anyhow), eval below pass rate, ci-fix failing checks, models --best with no working model, review provider failures, review verdict at/above --fail-on | crates/zen-cli/src/main.rs, lib.rs, models.rs, review.rs |
 | 2 | auth: review with no API key configured; auth-shaped failures from the agent layer (401, unauthorized) mapped in main | review.rs, lib.rs `exit_code_for_error` |
 | 3 | not found: import of a missing file; unknown tool in tool-help; unknown session id in sessions archive/restore/delete; review against a missing ref | lib.rs, session_mgmt.rs, review.rs |
-| 4 | validation: clap usage errors; unrecognized top-level command; --min-pass-rate out of range; review outside a git repository; unparseable model output in review; invalid skill name | main.rs, lib.rs, review.rs, skills.rs |
+| 4 | validation: clap usage errors; unrecognized top-level command; --min-pass-rate out of range; review outside a git repository; unparseable model output in review; invalid review scope arguments (--base together with --commit, empty ref or sha); invalid skill name | main.rs, lib.rs, review.rs, skills.rs |
 | 5 | forbidden: deleting a session without --yes on non-interactive stdin; installing a skill without --yes; evaluating a non-free model | session_mgmt.rs, skills.rs, eval.rs |
 | 6 | rate limit: review provider failures where the provider reports a rate limit (429) | review.rs |
 | 7 | conflict: archiving a session that is already archived; restoring a session that is not archived or whose active copy already exists; creating a skill that already exists | session_mgmt.rs, skills.rs |
