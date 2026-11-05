@@ -39,7 +39,8 @@ fn unknown_single_word_fails_fast_and_does_not_hang() {
     child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
     child.stderr.take().unwrap().read_to_end(&mut err).unwrap();
     let stderr = String::from_utf8_lossy(&err);
-    assert_eq!(status.code(), Some(2), "stderr: {stderr}");
+    // B2 migration Q1: usage errors exit 4 (VALIDATION), not 2.
+    assert_eq!(status.code(), Some(4), "stderr: {stderr}");
     assert!(
         out.is_empty(),
         "stdout must stay empty, got: {}",

@@ -420,8 +420,9 @@ pub fn permission_diff(old: Option<&PluginManifest>, new: &PluginManifest) -> St
 
 pub fn install_skill(home: &Path, source: &InstallSource, yes: bool) -> Result<RegistryEntry> {
     if !yes {
-        return Err(anyhow!(
-            "refusing to install without explicit approval: re-run with --yes after reviewing permissions"
+        return Err(crate::coded_error(
+            crate::exit_code::FORBIDDEN,
+            "refusing to install without explicit approval: re-run with --yes after reviewing permissions",
         ));
     }
     if matches!(source, InstallSource::Builtin) {
@@ -1046,14 +1047,16 @@ pub fn create_skill(home: &Path, name: &str) -> Result<PathBuf> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(anyhow!("skill name must be [a-zA-Z0-9_-]+"));
+        return Err(crate::coded_error(
+            crate::exit_code::VALIDATION,
+            "skill name must be [a-zA-Z0-9_-]+",
+        ));
     }
     let dir = skills_root(home).join(name);
     if dir.exists() {
-        return Err(anyhow!(
-            "skill {:?} already exists at {}",
-            name,
-            dir.display()
+        return Err(crate::coded_error(
+            crate::exit_code::CONFLICT,
+            format!("skill {:?} already exists at {}", name, dir.display()),
         ));
     }
     std::fs::create_dir_all(&dir)?;

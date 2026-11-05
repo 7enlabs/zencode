@@ -148,8 +148,12 @@ fn is_archived_path(home: &Path, path: &Path) -> bool {
 }
 
 pub fn archive_session(home: &Path, id: &str) -> Result<PathBuf> {
-    let (path, archived) =
-        find_managed_session(home, id).ok_or_else(|| anyhow!("no session found: {}", id))?;
+    let (path, archived) = find_managed_session(home, id).ok_or_else(|| {
+        crate::coded_error(
+            crate::exit_code::NOT_FOUND,
+            format!("no session found: {}", id),
+        )
+    })?;
     if archived {
         return Err(anyhow!("session {} is already archived", short_id(id)));
     }
@@ -163,9 +167,12 @@ pub fn archive_session(home: &Path, id: &str) -> Result<PathBuf> {
             .ok_or_else(|| anyhow!("bad session path"))?,
     );
     if dest.exists() {
-        return Err(anyhow!(
-            "session {} already exists in the archive; restore or delete it first",
-            short_id(id)
+        return Err(crate::coded_error(
+            crate::exit_code::CONFLICT,
+            format!(
+                "session {} already exists in the archive; restore or delete it first",
+                short_id(id)
+            ),
         ));
     }
     move_session_files(&path, &dest)?;
@@ -173,12 +180,19 @@ pub fn archive_session(home: &Path, id: &str) -> Result<PathBuf> {
 }
 
 pub fn restore_session(home: &Path, id: &str) -> Result<PathBuf> {
-    let (path, archived) =
-        find_managed_session(home, id).ok_or_else(|| anyhow!("no session found: {}", id))?;
+    let (path, archived) = find_managed_session(home, id).ok_or_else(|| {
+        crate::coded_error(
+            crate::exit_code::NOT_FOUND,
+            format!("no session found: {}", id),
+        )
+    })?;
     if !archived {
-        return Err(anyhow!(
-            "session {} is not archived (nothing to restore)",
-            short_id(id)
+        return Err(crate::coded_error(
+            crate::exit_code::CONFLICT,
+            format!(
+                "session {} is not archived (nothing to restore)",
+                short_id(id)
+            ),
         ));
     }
     let archive = path
@@ -192,9 +206,12 @@ pub fn restore_session(home: &Path, id: &str) -> Result<PathBuf> {
             .ok_or_else(|| anyhow!("bad session path"))?,
     );
     if dest.exists() {
-        return Err(anyhow!(
-            "an active session {} already exists; delete it first",
-            short_id(id)
+        return Err(crate::coded_error(
+            crate::exit_code::CONFLICT,
+            format!(
+                "an active session {} already exists; delete it first",
+                short_id(id)
+            ),
         ));
     }
     move_session_files(&path, &dest)?;
@@ -202,8 +219,12 @@ pub fn restore_session(home: &Path, id: &str) -> Result<PathBuf> {
 }
 
 pub fn delete_session(home: &Path, id: &str) -> Result<()> {
-    let (path, _) =
-        find_managed_session(home, id).ok_or_else(|| anyhow!("no session found: {}", id))?;
+    let (path, _) = find_managed_session(home, id).ok_or_else(|| {
+        crate::coded_error(
+            crate::exit_code::NOT_FOUND,
+            format!("no session found: {}", id),
+        )
+    })?;
 
     let scratch = path.with_extension("");
     if path.exists() {
@@ -269,7 +290,10 @@ pub fn parse_confirmation_answer(answer: &str) -> bool {
 pub fn confirm_delete_prompt(id: &str) -> Result<bool> {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
-        anyhow::bail!("refusing to delete session without --yes on non-interactive stdin");
+        return Err(crate::coded_error(
+            crate::exit_code::FORBIDDEN,
+            "refusing to delete session without --yes on non-interactive stdin",
+        ));
     }
     eprint!(
         "Permanently delete session {}? This cannot be undone. [y/N] ",
