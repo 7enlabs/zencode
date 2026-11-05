@@ -2,11 +2,11 @@
 
 **Status:** DRAFT for Leader review (design only - no code in this change)
 **Task:** DS-4, assigned by ZC Leader (Telegram tin 5718), due 19/11/2026
-**Branch:** `design/ds-bot-chat-search`, from `main` 647fcc0
+**Branch:** `design/zenbot-chat-search`, from `main` 647fcc0 (renamed from `design/ds-bot-chat-search` per Leader tin 5730, ZenBot; file moved from `docs/design/ds-bot/` to `docs/design/zenbot/`)
 **Scope:** design only. No implementation, no dependency change, no behaviour
 change ships with this document.
 
-## 0. Dossier cross-check - READ FIRST (mismatch)
+## 0. Dossier cross-check - READ FIRST (resolved by Leader tin 5742 §3)
 
 The assignment cites "dossier section 7 / section 8" for the search design.
 **That reference does not match the dossier on file.** The dossier
@@ -31,10 +31,13 @@ What the dossier *does* contain that is relevant here:
 
 This design therefore does **not** rest on the dossier for the search
 mechanics. Section 2 below is new primary-source work: the upstream source
-was read directly for this design (commit cited there). **Leader to confirm:**
-which dossier sections the assignment meant, or whether the section 7/8
-reference was to a different document. Until confirmed, treat every
-"dossier section 7/8" claim in the assignment as unverified.
+was read directly for this design (commit cited there). **Resolved by Leader
+tin 5742 §3:** the section 7/8 reference was to the main dossier
+`study-ds-bot-2026-11-05.md` (§7 Áp dụng cho ZenCode, §8 Verdict), not to the
+fei2411 file above; the unclear reference was the Leader's error, corrected
+there. That main dossier file has not reached this VM yet, so its §7/§8 were
+not read for this design. Treat every "dossier section 7/8" claim in the
+assignment as referring to the main dossier, not the fei2411 file.
 
 ## 1. Goal
 
