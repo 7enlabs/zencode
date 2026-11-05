@@ -1255,15 +1255,16 @@ pub async fn skill_command(
             registry,
             curated,
         } => {
-            // Wired like List (B9/export ruling): --quiet prints
-            // nothing, --json/--raw print the hits as JSON instead
-            // of the text rendering.
-            if cli.quiet {
-                return Ok(0);
-            }
+            // --quiet suppresses stdout only (M1, same family as
+            // D1): the search still runs and its errors still
+            // propagate - a missing --registry file or an invalid
+            // curated entry must fail identically with --quiet.
             if *curated {
                 if cli.json_output || cli.raw {
                     let hits = crate::curation::search_hits(query, true, Some(&home))?;
+                    if cli.quiet {
+                        return Ok(0);
+                    }
                     let results: Vec<serde_json::Value> = hits
                         .iter()
                         .map(|h| {
@@ -1282,12 +1283,20 @@ pub async fn skill_command(
                         &serde_json::json!({ "query": query, "results": results }),
                     )?;
                     Ok(0)
+                } else if cli.quiet {
+                    crate::curation::search_hits(query, true, Some(&home))?;
+                    Ok(0)
                 } else {
                     crate::curation::run_skill_search(query, true, Some(&home))
                 }
             } else if cli.json_output || cli.raw {
                 let v = crate::skill_registry::search_json(query, registry.as_deref())?;
-                print_json_value(cli, &v)?;
+                if !cli.quiet {
+                    print_json_value(cli, &v)?;
+                }
+                Ok(0)
+            } else if cli.quiet {
+                crate::skill_registry::search_json(query, registry.as_deref())?;
                 Ok(0)
             } else {
                 crate::skill_registry::cmd_search(query, registry.as_deref())?;
@@ -1295,12 +1304,17 @@ pub async fn skill_command(
             }
         }
         crate::cli::SkillSubcommand::Info { name, registry } => {
-            if cli.quiet {
-                return Ok(0);
-            }
+            // --quiet suppresses stdout only (M1, same family as
+            // D1): the lookup still runs, so an unknown skill name
+            // errors identically with --quiet. info_json shares
+            // cmd_info's lookup and not-found error.
             if cli.json_output || cli.raw {
                 let v = crate::skill_registry::info_json(name, registry.as_deref())?;
-                print_json_value(cli, &v)?;
+                if !cli.quiet {
+                    print_json_value(cli, &v)?;
+                }
+            } else if cli.quiet {
+                crate::skill_registry::info_json(name, registry.as_deref())?;
             } else {
                 crate::skill_registry::cmd_info(name, registry.as_deref())?;
             }
