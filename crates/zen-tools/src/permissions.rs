@@ -39,12 +39,21 @@ fn rule_pattern_path(cwd: &Path, spec: &str) -> (PathBuf, bool) {
     } else if let Some(rest) = spec.strip_prefix("~/") {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
         (home.join(rest), dir_hint)
-    } else if let Some(rest) = spec.strip_prefix("./").or_else(|| spec.strip_prefix('/')) {
-        (cwd.join(rest), dir_hint)
-    } else if !spec.contains('/') {
-        (cwd.join("**").join(spec), dir_hint)
     } else {
-        (cwd.join(spec), dir_hint)
+        // The target side of the match is canonicalized (see
+        // path_rule_matches), so the pattern side must be built from
+        // the canonical cwd too. A raw cwd spelled with an 8.3 short
+        // name, a symlink, or `..` segments would never meet the
+        // canonical target, and the rule would be silently skipped
+        // (PR #38: a settings deny lost to a CLI allow on Windows).
+        let cwd = canonicalize_lenient(cwd);
+        if let Some(rest) = spec.strip_prefix("./").or_else(|| spec.strip_prefix('/')) {
+            (cwd.join(rest), dir_hint)
+        } else if !spec.contains('/') {
+            (cwd.join("**").join(spec), dir_hint)
+        } else {
+            (cwd.join(spec), dir_hint)
+        }
     }
 }
 
@@ -1160,6 +1169,65 @@ mod permission_tests {
             &f("src/x"),
             &cwd
         ));
+    }
+
+    #[test]
+    fn path_rules_match_when_cwd_spelling_is_not_canonical() {
+        // Regression (PR #38 windows-check): the pattern side was built
+        // from the raw cwd while the target side is canonicalized, so
+        // when the cwd spelling was not the canonical one (a `..`
+        // segment, a symlink, or an 8.3 short name on Windows) the glob
+        // never met the target and a path deny rule was silently
+        // skipped - settings deny lost to a CLI allow.
+        let dir = tmpdir("noncanon");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("test.txt"), "x").unwrap();
+        let alias = dir.join("sub").join("..");
+        assert!(
+            path_rule_matches(&alias, "test.txt", "test.txt"),
+            "deny pattern built from a non-canonical cwd must still match"
+        );
+        assert!(path_rule_matches(&alias, "./test.txt", "test.txt"));
+        // A different file must still not match.
+        assert!(!path_rule_matches(&alias, "other.txt", "test.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_rules_match_with_windows_short_path_cwd() {
+        // Regression (PR #38): on the GitHub Windows runner the process
+        // cwd is spelled with an 8.3 short name (e.g. RUNNER~1) while
+        // targets canonicalize to the long name (runneradmin), so deny
+        // rules built from the raw cwd never matched.
+        use std::os::windows::ffi::OsStrExt;
+        extern "system" {
+            fn GetShortPathNameW(long: *const u16, short: *mut u16, len: u32) -> u32;
+        }
+        let dir = tmpdir("short83");
+        let long_dir = dir.join("longdirectoryname");
+        std::fs::create_dir_all(&long_dir).unwrap();
+        std::fs::write(long_dir.join("test.txt"), "x").unwrap();
+        let wide: Vec<u16> = long_dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut buf = vec![0u16; 1024];
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        assert!(n > 0, "GetShortPathNameW failed");
+        let short = String::from_utf16_lossy(&buf[..n as usize]);
+        if short == long_dir.to_string_lossy() {
+            // 8.3 name generation is disabled on this machine; the
+            // non-canonical-spelling test above covers the mechanism.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert!(
+            path_rule_matches(Path::new(&short), "test.txt", "test.txt"),
+            "deny pattern built from the 8.3 cwd {short} must match the canonical target"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
