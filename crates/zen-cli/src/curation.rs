@@ -252,7 +252,9 @@ pub fn search_entries(
     curated: &CuratedRegistry,
     community: &[RegistryEntry],
 ) -> Vec<SearchHit> {
-    let q = query.to_ascii_lowercase();
+    // Trim like `search_registry` (skill_registry.rs) so a padded
+    // query matches and scores the same in both search paths.
+    let q = query.trim().to_ascii_lowercase();
     let matches = |e: &RegistryEntry| {
         e.name.to_ascii_lowercase().contains(&q)
             || e.description.to_ascii_lowercase().contains(&q)
@@ -508,6 +510,18 @@ mod tests {
         assert_eq!(search_entries("zencode", false, &reg, &[]).len(), 2);
         assert_eq!(search_entries("TDD", false, &reg, &[]).len(), 1);
         assert!(search_entries("zzz-no-match", false, &reg, &[]).is_empty());
+    }
+
+    #[test]
+    fn search_trims_query_like_search_registry() {
+        let reg = sample_registry();
+        let plain = search_entries("tdd", false, &reg, &[]);
+        let padded = search_entries("  tdd  ", false, &reg, &[]);
+        assert_eq!(padded.len(), plain.len());
+        assert_eq!(padded[0].name, plain[0].name);
+        assert_eq!(padded[0].score, plain[0].score);
+        assert_eq!(search_entries("\tTDD\n", false, &reg, &[]).len(), 1);
+        assert!(search_entries("  zzz-no-match  ", false, &reg, &[]).is_empty());
     }
 
     #[test]
