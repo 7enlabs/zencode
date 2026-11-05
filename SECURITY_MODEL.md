@@ -88,8 +88,9 @@ Checked against `main` at 647fcc0.
    - `zen export` redaction is off by default; it needs `--redact`.
    Decision (Leader, msg 5770): YES. Session files must be 0600 because they hold conversation content that may include secrets.
    Requirement recorded here; the code change is a separate work item and does not block merging this doc.
-6. Folder trust prompt is too thin. The prompt is two lines: `This folder has project config that can run commands: <list>` (`crates/zen-cli/src/lib.rs:551-554`) followed by `Trust this folder? [y/N]` (`crates/zen-cli/src/lib.rs:555`). The list names only files and config keys (`hooks`, `permissions.allow`, `permissions.additionalDirectories`, `env`, `verify`, `baseUrl`), not their contents.
-   It does not list which hooks, MCP servers, allow rules or env vars will load, so a yes is not an informed one.
+6. Folder trust prompt is too thin. The prompt is two lines on stderr: `This folder has project config that can run commands: <list>` (`crates/zen-cli/src/lib.rs:551-554`), then `Trust this folder? [y/N]` (`crates/zen-cli/src/lib.rs:555`).
+   The list (`gated_project_config`, `crates/zen-ext/src/trust.rs:147`) names only file paths and config keys: for `.zen/settings.json` and `.zen/settings.local.json`, the keys `hooks`, `permissions.allow`, `permissions.additionalDirectories`, `env`, `verify`, `baseUrl`, `apiKeyEnv` and `allowPrivateNetwork` (`trust.rs:89-123`); `.mcp.json` and `.zen/mcp.json` by file name only; `.zen/hooks.json` and `.zen/hooks.local.json` as `hooks`.
+   It does not show their contents (which hook commands, MCP servers, allow rules or env values will load), so a yes is not an informed one.
    Decision (Leader, msg 5770): the prompt MUST list what will load (which hooks, MCP servers, allow rules and env vars)
    before asking. A yes without seeing that content is not an informed decision. Prompt change is a separate work item.
    The trust store `~/.zen/trusted-folders.json` (`crates/zen-ext/src/trust.rs:17`) is also an asset: anyone who can
