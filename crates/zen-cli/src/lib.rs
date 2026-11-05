@@ -66,6 +66,78 @@ fn resolve_home() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
+/// Exit codes from the B2 table (docs/exit-codes.md). Named so call
+/// sites read as the table row they implement.
+pub mod exit_code {
+    pub const OK: i32 = 0;
+    pub const GENERAL: i32 = 1;
+    pub const AUTH: i32 = 2;
+    pub const NOT_FOUND: i32 = 3;
+    pub const VALIDATION: i32 = 4;
+    pub const FORBIDDEN: i32 = 5;
+    pub const RATE_LIMIT: i32 = 6;
+    pub const CONFLICT: i32 = 7;
+}
+
+/// An error that carries its own process exit code from the B2 table.
+///
+/// Migration queue Q5 (docs/exit-codes.md): new error paths pick their
+/// table code at the source with this type instead of relying on the
+/// blanket exit 1 in main. `main` reads the code back through
+/// [`exit_code_for_error`].
+#[derive(Debug)]
+pub struct CodedError {
+    code: i32,
+    message: String,
+}
+
+impl CodedError {
+    pub fn new(code: i32, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn code(&self) -> i32 {
+        self.code
+    }
+}
+
+impl std::fmt::Display for CodedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for CodedError {}
+
+/// Build an anyhow error carrying a B2 exit code.
+pub fn coded_error(code: i32, message: impl Into<String>) -> anyhow::Error {
+    CodedError::new(code, message).into()
+}
+
+/// The exit code `main` should use for an error returned from `run`:
+/// a [`CodedError`] keeps the code it picked at the source; an
+/// auth-shaped failure maps to AUTH (queue Q2: provider 401s and
+/// missing credentials surface as anyhow errors from the agent layer);
+/// everything else stays at the blanket GENERAL fallback.
+pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    if let Some(coded) = err.downcast_ref::<CodedError>() {
+        return coded.code();
+    }
+    let text = format!("{err:#}").to_lowercase();
+    if text.contains("401")
+        || text.contains("unauthorized")
+        || text.contains("no auth credentials")
+        || text.contains("invalid api key")
+        || text.contains("authentication failed")
+    {
+        return exit_code::AUTH;
+    }
+    exit_code::GENERAL
+}
+
 pub async fn run(cli: Cli) -> Result<i32> {
     let cwd = std::env::current_dir()?;
     let home = resolve_home();
@@ -110,7 +182,7 @@ pub async fn run_with_home(cli: Cli, cwd: &Path, home: Option<&Path>) -> Result<
             eprintln!("Usage: zen [OPTIONS] [PROMPT]... [COMMAND]");
             eprintln!();
             eprintln!("Run `zen --help` for the list of commands.");
-            return Ok(2);
+            return Ok(exit_code::VALIDATION);
         }
     }
 
@@ -293,7 +365,10 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
         }
         Commands::Eval(args) => {
             if !(0.0..=1.0).contains(&args.min_pass_rate) {
-                anyhow::bail!("--min-pass-rate must be between 0.0 and 1.0");
+                return Err(coded_error(
+                    exit_code::VALIDATION,
+                    "--min-pass-rate must be between 0.0 and 1.0",
+                ));
             }
             let cfg = settings::resolve_config_with_home(cli, cwd, home)?;
             let model = args.model.clone().unwrap_or_else(|| cfg.model.clone());

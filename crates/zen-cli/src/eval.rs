@@ -520,10 +520,13 @@ async fn run_one_task(
 
 pub async fn run_eval(opts: &EvalOptions) -> Result<EvalReport> {
     if !opts.mock && !opts.model.contains(":free") {
-        bail!(
-            "refusing to eval non-free model '{}': only `:free` models are allowed",
-            opts.model
-        );
+        return Err(crate::coded_error(
+            crate::exit_code::FORBIDDEN,
+            format!(
+                "refusing to eval non-free model '{}': only `:free` models are allowed",
+                opts.model
+            ),
+        ));
     }
     let tasks: Vec<&EvalTask> = EVAL_TASKS
         .iter()

@@ -29,7 +29,17 @@ impl Theme {
     }
 
     pub fn colors_disabled() -> bool {
-        std::env::var_os("NO_COLOR").is_some()
+        Self::colors_disabled_for(
+            std::env::var_os("NO_COLOR").is_some(),
+            std::env::var("TERM").ok().as_deref(),
+        )
+    }
+
+    fn colors_disabled_for(no_color: bool, term: Option<&str>) -> bool {
+        // TERM=dumb is the other standard switch (law B5): a dumb
+        // terminal cannot render ANSI color, so color stays off even
+        // when output is a real TTY.
+        no_color || term == Some("dumb")
     }
 
     pub fn effective(self) -> Self {
@@ -276,5 +286,14 @@ mod tests {
         let out = prompt_text(Theme::None, &Some(long));
         assert!(out.contains("…"), "got: {out:?}");
         assert!(!out.contains(&"x".repeat(100)));
+    }
+
+    #[test]
+    fn colors_disabled_for_no_color_or_dumb_term() {
+        assert!(Theme::colors_disabled_for(true, None));
+        assert!(Theme::colors_disabled_for(true, Some("xterm-256color")));
+        assert!(Theme::colors_disabled_for(false, Some("dumb")));
+        assert!(!Theme::colors_disabled_for(false, Some("xterm-256color")));
+        assert!(!Theme::colors_disabled_for(false, None));
     }
 }

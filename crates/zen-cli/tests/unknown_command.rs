@@ -39,7 +39,8 @@ fn unknown_single_word_fails_fast_and_does_not_hang() {
     child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
     child.stderr.take().unwrap().read_to_end(&mut err).unwrap();
     let stderr = String::from_utf8_lossy(&err);
-    assert_eq!(status.code(), Some(2), "stderr: {stderr}");
+    // B2 migration Q1: usage errors exit 4 (VALIDATION), not 2.
+    assert_eq!(status.code(), Some(4), "stderr: {stderr}");
     assert!(
         out.is_empty(),
         "stdout must stay empty, got: {}",
@@ -114,4 +115,17 @@ fn doctor_json_flag_after_subcommand_emits_json() {
     let v: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("zen doctor --json must emit valid JSON");
     assert_eq!(v["type"], "doctor");
+}
+
+#[test]
+fn review_with_base_and_commit_exits_validation() {
+    let home = TempDir::new("uc_home");
+    let cwd = TempDir::new("uc_cwd");
+    // Review scope errors are validation failures (B2 code 4), not auth
+    // (code 2): --base and --commit are mutually exclusive.
+    let (_stdout, stderr, code) = ZenRun::new("uc7", &home, &cwd)
+        .args(["review", "--base", "main", "--commit", "HEAD"])
+        .run_output();
+    assert_eq!(code, 4, "stderr: {stderr}");
+    assert!(stderr.contains("mutually exclusive"), "stderr: {stderr}");
 }
