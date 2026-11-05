@@ -1,0 +1,32 @@
+name: Windows test
+
+# Free, no-card Windows test signal on a GitHub-hosted Windows Server
+# runner. Complements PC testing (which needs a developer machine without
+# an Application Control block on freshly built binaries): every PR and
+# every push to main gets fmt + clippy + the full workspace test suite on
+# Windows, without any paid runner or stored credential.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-check:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
