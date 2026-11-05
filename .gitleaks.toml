@@ -4,3 +4,13 @@ title = "zencode gitleaks config"
 
 [extend]
 useDefault = true
+
+# Narrow allowlist (DS-Bot item 3, ruling 5729): one exact fake token in one
+# unit test file. Both conditions must hold (AND), so a real secret anywhere
+# else, or any other value in export.rs, is still reported. It keeps the
+# fixture allowed across rebases without tracking commit fingerprints.
+[[allowlists]]
+description = "Fake sk-ant token used by the redact_value unit test in export.rs"
+condition = "AND"
+paths = ['''(^|/)crates/zen-cli/src/export\.rs$''']
+regexes = ['''sk-ant-abcdef0123456789XYZ''']
