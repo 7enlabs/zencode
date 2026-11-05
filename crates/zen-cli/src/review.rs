@@ -86,6 +86,11 @@ pub struct Finding {
     pub detail: String,
     #[serde(default)]
     pub suggestion: String,
+    /// True when the fix needs a human decision (behavior, API shape,
+    /// design, or a security tradeoff); false for a mechanical fix. The
+    /// rendered report splits the two groups (S9 pattern 5).
+    #[serde(default)]
+    pub human_judgment: bool,
 }
 
 fn default_category() -> String {
@@ -331,8 +336,15 @@ pub fn collect_diff(cwd: &Path, scope: &ReviewScope, max_bytes: usize) -> Result
     })
 }
 
+/// Extra output contract for the review prompt (S9 pattern 5): every
+/// finding must say whether its fix needs a human decision or is
+/// mechanical, so the rendered report can split the two groups instead of
+/// mixing them together.
+const HUMAN_JUDGMENT_GUIDANCE: &str = "\n\nEach finding MUST also include \"human_judgment\": true when fixing it needs a human decision (behavior, API shape, design, or a security tradeoff), or false when the fix is mechanical (formatting, naming, an obvious missing check, a one-right-answer correction).";
+
 pub fn review_system_prompt() -> String {
-    "You are a senior code reviewer. Review the provided diff carefully and report \
+    let mut prompt =
+        "You are a senior code reviewer. Review the provided diff carefully and report \
      concrete, actionable findings. You have read-only tools (Read, Glob, Grep) to \
      inspect surrounding code when a diff hunk lacks context. You CANNOT modify \
      anything: no write tools exist in this session.\n\n\
@@ -351,7 +363,9 @@ pub fn review_system_prompt() -> String {
      - low: minor clarity or maintainability note\n\
      - nit: formatting, naming, trivial style\n\n\
      Be strict but fair: do not invent problems. If the diff is clean, output []."
-        .to_string()
+            .to_string();
+    prompt.push_str(HUMAN_JUDGMENT_GUIDANCE);
+    prompt
 }
 
 pub fn build_review_prompt(diff: &CollectedDiff) -> String {
@@ -471,38 +485,63 @@ impl PermissionChecker for ReviewPermissions {
     }
 }
 
+/// Make every finding path absolute against the reviewed tree (S9 pattern
+/// 4): reports must carry the full path as evidence for each finding, in
+/// text, JSON and stream-json alike, not the relative path the model
+/// happened to emit.
+fn absolutize_paths(findings: &mut [Finding], root: &Path) {
+    for f in findings {
+        let p = Path::new(&f.file);
+        if !p.is_absolute() {
+            f.file = root.join(p).display().to_string();
+        }
+    }
+}
+
 fn render_text(report: &ReviewReport, threshold: Severity) -> String {
     let mut out = String::new();
     out.push_str(&format!("zen review - {}\n", report.scope));
+    let human = report.findings.iter().filter(|f| f.human_judgment).count();
+    let mechanical = report.summary.total - human;
     out.push_str(&format!(
-        "model: {} · findings: {}\n\n",
-        report.model, report.summary.total
+        "model: {} - findings: {} ({} need human judgment, {} mechanical)\n\n",
+        report.model, report.summary.total, human, mechanical
     ));
     if report.findings.is_empty() {
         out.push_str("No findings. Diff looks clean.\n");
         return out;
     }
-    for sev in Severity::ordered() {
-        let group: Vec<&Finding> = report
+    // S9 patterns 4 and 5: one numbered list split into the findings a
+    // human must judge and the mechanical fixes, severity first inside
+    // each group, every finding carrying its full path as evidence.
+    let mut n = 0usize;
+    for (title, want_human) in [("Needs human judgment", true), ("Mechanical fixes", false)] {
+        let mut group: Vec<&Finding> = report
             .findings
             .iter()
-            .filter(|f| f.severity == sev)
+            .filter(|f| f.human_judgment == want_human)
             .collect();
         if group.is_empty() {
             continue;
         }
-        let marker = if sev.rank() >= threshold.rank() {
-            " [fails --fail-on]"
-        } else {
-            ""
-        };
-        out.push_str(&format!("== {} ({}):{} ==\n", sev, group.len(), marker));
+        group.sort_by_key(|f| std::cmp::Reverse(f.severity.rank()));
+        out.push_str(&format!("== {} ({}) ==\n", title, group.len()));
         for f in group {
+            n += 1;
             let loc = match f.line {
                 Some(l) => format!("{}:{}", f.file, l),
                 None => f.file.clone(),
             };
-            out.push_str(&format!("- [{}] {} - {}\n", f.category, loc, f.title));
+            let marker = if f.severity.rank() >= threshold.rank() {
+                " [fails --fail-on]"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "{n}. [{} / {}] {}{}\n",
+                f.severity, f.category, f.title, marker
+            ));
+            out.push_str(&format!("    evidence: {loc}\n"));
             if !f.detail.is_empty() {
                 out.push_str(&format!("    {}\n", f.detail));
             }
@@ -652,7 +691,7 @@ pub async fn run_review(
         return Ok(2);
     }
 
-    let findings = match extract_findings(&result.result) {
+    let mut findings = match extract_findings(&result.result) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error: {e:#}");
@@ -661,6 +700,7 @@ pub async fn run_review(
             return Ok(2);
         }
     };
+    absolutize_paths(&mut findings, cwd);
     let report = ReviewReport::new(diff.scope_description, cfg.model.clone(), findings);
     let failed = !report.at_or_above(threshold).is_empty();
     let exit_code = if failed { 1 } else { 0 };
@@ -785,6 +825,7 @@ mod tests {
             title: "t".into(),
             detail: "".into(),
             suggestion: "".into(),
+            human_judgment: false,
         };
         let report = ReviewReport::new(
             "s".into(),
@@ -1025,6 +1066,7 @@ mod tests {
             title: "slow".into(),
             detail: "d".into(),
             suggestion: "s".into(),
+            human_judgment: false,
         };
         let report = ReviewReport::new("s".into(), "m".into(), vec![f]);
         let v = render_json_value(&report);
@@ -1036,8 +1078,8 @@ mod tests {
     }
 
     #[test]
-    fn text_groups_by_severity() {
-        let mk = |s: Severity, t: &str| Finding {
+    fn text_splits_judgment_groups_numbered_with_evidence() {
+        let mk = |s: Severity, t: &str, h: bool| Finding {
             severity: s,
             category: "bugs".into(),
             file: "f.rs".into(),
@@ -1045,17 +1087,77 @@ mod tests {
             title: t.into(),
             detail: "".into(),
             suggestion: "".into(),
+            human_judgment: h,
         };
         let report = ReviewReport::new(
             "s".into(),
             "m".into(),
-            vec![mk(Severity::Low, "l"), mk(Severity::Critical, "c")],
+            vec![
+                mk(Severity::Low, "mech-low", false),
+                mk(Severity::Critical, "judge-crit", true),
+                mk(Severity::High, "mech-high", false),
+            ],
         );
         let text = render_text(&report, Severity::High);
-        let crit_pos = text.find("critical").unwrap();
-        let low_pos = text.find("low (1)").unwrap();
-        assert!(crit_pos < low_pos, "critical group must come first");
-        assert!(text.contains("[fails --fail-on]"));
+        let hpos = text.find("Needs human judgment (1)").unwrap();
+        let mpos = text.find("Mechanical fixes (2)").unwrap();
+        assert!(hpos < mpos, "human judgment section first: {text}");
+        assert!(
+            text.contains("(1 need human judgment, 2 mechanical)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("1. [critical / bugs] judge-crit [fails --fail-on]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("2. [high / bugs] mech-high [fails --fail-on]"),
+            "{text}"
+        );
+        assert!(text.contains("3. [low / bugs] mech-low"), "{text}");
+        assert_eq!(text.matches("evidence: f.rs:1").count(), 3, "{text}");
+    }
+
+    #[test]
+    fn findings_default_and_parse_human_judgment() {
+        let text = "\u{60}\u{60}\u{60}json\n[{\"severity\":\"high\",\"category\":\"bugs\",\"file\":\"a.rs\",\"title\":\"t\"},{\"severity\":\"low\",\"category\":\"style\",\"file\":\"b.rs\",\"title\":\"u\",\"human_judgment\":true}]\n\u{60}\u{60}\u{60}";
+        let f = extract_findings(text).unwrap();
+        assert!(!f[0].human_judgment);
+        assert!(f[1].human_judgment);
+    }
+
+    #[test]
+    fn absolutize_paths_makes_relative_paths_full() {
+        let mut findings = vec![
+            Finding {
+                severity: Severity::Low,
+                category: "bugs".into(),
+                file: "src/a.rs".into(),
+                line: None,
+                title: "t".into(),
+                detail: "".into(),
+                suggestion: "".into(),
+                human_judgment: false,
+            },
+            Finding {
+                severity: Severity::Low,
+                category: "bugs".into(),
+                file: "/already/abs.rs".into(),
+                line: None,
+                title: "t".into(),
+                detail: "".into(),
+                suggestion: "".into(),
+                human_judgment: true,
+            },
+        ];
+        absolutize_paths(&mut findings, Path::new("/repo"));
+        assert_eq!(findings[0].file, "/repo/src/a.rs");
+        assert_eq!(findings[1].file, "/already/abs.rs");
+    }
+
+    #[test]
+    fn system_prompt_asks_for_human_judgment_split() {
+        assert!(review_system_prompt().contains("human_judgment"));
     }
 
     #[test]

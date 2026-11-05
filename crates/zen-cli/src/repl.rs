@@ -68,7 +68,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     if cli.ephemeral {
         println!("EPHEMERAL MODE - nothing will be saved");
     }
-    println!("Type /help for commands, !cmd for shell, @file to attach files, #note to remember, Ctrl-D to exit.");
+    println!("Type /help for commands, !cmd for shell, @file to attach files, #note to remember, Ctrl-D to exit. While typing a /command, Tab lists the matches and Esc cancels.");
 
     let assembly = crate::agent_run::assemble(
         cli,
@@ -80,7 +80,8 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     )
     .await?;
 
-    let progress: Arc<dyn EventSink> = Arc::new(crate::repl_progress::ReplProgressSink::new());
+    let progress_sink = Arc::new(crate::repl_progress::ReplProgressSink::new());
+    let progress: Arc<dyn EventSink> = progress_sink.clone();
     let llm = crate::eventlog::wrap(
         cfg.gated_llm_client(progress.clone(), home),
         assembly.recorder.as_ref(),
@@ -149,6 +150,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         scope: crate::doneguard::ScopeGuard::default(),
         scope_seeded: false,
         checkpoints,
+        progress: progress_sink.clone(),
     };
 
     // Honour -c/-r and a positional prompt: resume first, then run the
@@ -298,6 +300,8 @@ struct ReplState<'a> {
     scope_seeded: bool,
 
     checkpoints: Arc<zen_tools::checkpoint::Checkpoints>,
+
+    progress: Arc<crate::repl_progress::ReplProgressSink>,
 }
 
 struct ReplInterrupts {
@@ -351,6 +355,9 @@ async fn run_turn_interruptible(
     prompt: &str,
     interrupts: Option<&mut ReplInterrupts>,
 ) -> Option<RunResult> {
+    // S9 pattern 3: a friendly thinking status on stderr the moment a turn
+    // starts; stderr keeps the stdout answer channel clean.
+    eprintln!("Thinking...");
     if let Some(c) = &agent.ctx.checkpoints {
         c.begin_turn(prompt);
     }
@@ -450,10 +457,20 @@ fn read_multiline(first: String, mut next: impl FnMut() -> Option<String>) -> St
 }
 
 fn print_turn(result: Option<RunResult>) {
-    match result {
-        Some(r) if r.is_error => eprintln!("error: {}", r.result),
-        Some(r) if !r.result.is_empty() => println!("{}", r.result),
-        _ => {}
+    if let Some(r) = result {
+        if r.is_error {
+            eprintln!("error: {}", r.result);
+        } else if !r.result.is_empty() {
+            println!("{}", r.result);
+        }
+        // S9 pattern 3: close the turn with the real elapsed time and
+        // token total from the run result, on stderr like the rest of
+        // the live progress so stdout readers are unaffected.
+        eprintln!(
+            "Done in {:.1}s - {} tokens used",
+            r.duration_ms as f64 / 1000.0,
+            r.usage.input_tokens + r.usage.output_tokens
+        );
     }
 }
 
@@ -865,6 +882,19 @@ async fn handle_slash(
                 agent.last_prompt_tokens,
             )
         ),
+        "/expand" => {
+            let parsed = if arg.is_empty() {
+                Ok(None)
+            } else {
+                arg.parse::<usize>()
+                    .map(Some)
+                    .map_err(|_| "usage: /expand [card-number]")
+            };
+            match parsed {
+                Ok(n) => println!("{}", repl.progress.toggle_expand(n)),
+                Err(msg) => println!("{msg}"),
+            }
+        }
         "/undo" => match arg.as_str() {
             "" | "--force" => undo_last_turn(repl, agent, arg == "--force"),
             _ => eprintln!("usage: /undo [--force]"),

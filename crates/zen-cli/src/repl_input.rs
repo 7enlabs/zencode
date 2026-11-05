@@ -5,9 +5,15 @@
 //! When stdin or stdout is not a terminal (pipes, tests, CI) or `ZEN_PLAIN_INPUT` is set, the
 //! plain one-line `read_line` is used as before.
 
+use rustyline::completion::{Completer, Pair};
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
-use rustyline::{Config, DefaultEditor, EditMode};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{CompletionType, Config, Context, EditMode, Editor, Helper};
+use std::borrow::Cow;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
@@ -20,7 +26,7 @@ pub enum ReadOutcome {
 }
 
 pub struct LineReader {
-    editor: Option<DefaultEditor>,
+    editor: Option<Editor<SlashHelper, DefaultHistory>>,
     history: Option<PathBuf>,
 }
 
@@ -37,6 +43,92 @@ pub fn split_prompt(prompt: &str) -> (&str, &str) {
     }
 }
 
+/// Prompt helper for slash commands (S9 pattern 1): typing a slash prefix
+/// offers the matching commands right at the typing point. Tab lists every
+/// match with its one-line description, the best match is ghosted after the
+/// cursor as a hint, and Esc cancels the list; both keys are named in the
+/// REPL banner.
+#[derive(Clone, Copy, Default)]
+pub struct SlashHelper;
+
+/// The word being completed is a slash command when the text before the
+/// cursor starts with a slash and has no whitespace yet (arguments are not
+/// completed).
+fn slash_prefix(line: &str, pos: usize) -> Option<&str> {
+    let before = &line[..pos];
+    if before.starts_with('/') && !before.contains(char::is_whitespace) {
+        Some(before)
+    } else {
+        None
+    }
+}
+
+/// Completion candidates for a slash prefix, in catalog order.
+pub fn slash_candidates(prefix: &str) -> Vec<Pair> {
+    crate::commands::slash_command_catalog()
+        .into_iter()
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(name, desc)| Pair {
+            display: format!("{name}  {desc}"),
+            replacement: name.to_string(),
+        })
+        .collect()
+}
+
+/// Ghost text for the line being typed: the remainder of the first catalog
+/// command that extends what is already typed.
+pub fn slash_hint(line: &str, pos: usize) -> Option<String> {
+    let prefix = slash_prefix(line, pos)?;
+    if pos != line.len() {
+        return None;
+    }
+    crate::commands::slash_command_catalog()
+        .into_iter()
+        .map(|(name, _)| name)
+        .find(|name| name.len() > prefix.len() && name.starts_with(prefix))
+        .map(|name| name[prefix.len()..].to_string())
+}
+
+impl Completer for SlashHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        match slash_prefix(line, pos) {
+            Some(prefix) => Ok((0, slash_candidates(prefix))),
+            None => Ok((pos, Vec::new())),
+        }
+    }
+}
+
+impl Hinter for SlashHelper {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
+        slash_hint(line, pos)
+    }
+}
+
+impl Highlighter for SlashHelper {
+    // The ghosted suggestion is the selected item at the typing point, so it
+    // is painted bold (brighter) instead of the default dim ghost style.
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        if crate::repl_polish::Theme::colors_disabled() {
+            Cow::Borrowed(hint)
+        } else {
+            Cow::Owned(format!("\u{1b}[1m{hint}\u{1b}[0m"))
+        }
+    }
+}
+
+impl Validator for SlashHelper {}
+
+impl Helper for SlashHelper {}
+
 fn plain_wanted() -> bool {
     std::env::var_os("ZEN_PLAIN_INPUT").is_some()
         || !std::io::stdin().is_terminal()
@@ -51,11 +143,13 @@ impl LineReader {
         let config = Config::builder()
             .auto_add_history(false)
             .history_ignore_space(true)
+            .completion_type(CompletionType::List)
             .build();
-        let mut editor = match DefaultEditor::with_config(config) {
+        let mut editor = match Editor::<SlashHelper, DefaultHistory>::with_config(config) {
             Ok(e) => e,
             Err(_) => return Self::plain(),
         };
+        editor.set_helper(Some(SlashHelper));
         let _ = editor.set_max_history_size(HISTORY_MAX);
         let _ = editor.set_history_ignore_dups(true);
         let history = history_path(home);
@@ -153,6 +247,31 @@ mod tests {
         let p = history_path(Some(std::path::Path::new("/h"))).unwrap();
         assert_eq!(p, std::path::Path::new("/h/.zen/repl_history"));
         assert!(history_path(None).is_none());
+    }
+
+    #[test]
+    fn slash_candidates_match_prefix_with_descriptions() {
+        let all = slash_candidates("/");
+        assert!(all.len() >= 40, "catalog too small: {}", all.len());
+        assert!(all.iter().all(|p| p.replacement.starts_with('/')));
+        let mo = slash_candidates("/mo");
+        assert_eq!(mo.len(), 1);
+        assert_eq!(mo[0].replacement, "/model");
+        assert!(
+            mo[0].display.contains("switch"),
+            "display: {}",
+            mo[0].display
+        );
+        assert!(slash_candidates("/zzz").is_empty());
+    }
+
+    #[test]
+    fn slash_hint_extends_first_match_only_at_line_end() {
+        assert_eq!(slash_hint("/mo", 3).as_deref(), Some("del"));
+        assert_eq!(slash_hint("/model", 6), None);
+        assert_eq!(slash_hint("hello", 5), None);
+        assert_eq!(slash_hint("/mo x", 5), None);
+        assert_eq!(slash_hint("/mo", 2), None);
     }
 
     #[test]
