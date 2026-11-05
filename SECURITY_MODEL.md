@@ -86,16 +86,19 @@ Checked against `main` at 647fcc0.
      `:362`), so mode follows umask, typically 0644, not 0600.
    - Only the REPL history file gets 0600, Unix only, best effort (`crates/zen-cli/src/repl_input.rs:229`).
    - `zen export` redaction is off by default; it needs `--redact`.
-   Decision needed: should session files be created 0600?
+   Decision (Leader, msg 5770): YES. Session files must be 0600 because they hold conversation content that may include secrets.
+   Requirement recorded here; the code change is a separate work item and does not block merging this doc.
 6. Folder trust prompt is too thin. The only prompt is `Trust this folder? [y/N]` (`crates/zen-cli/src/lib.rs:555`).
    It does not list which hooks, MCP servers, allow rules or env vars will load, so a yes is not an informed one.
-   Decision needed: list what will load before the prompt, or record this as an accepted risk.
+   Decision (Leader, msg 5770): the prompt MUST list what will load (which hooks, MCP servers, allow rules and env vars)
+   before asking. A yes without seeing that content is not an informed decision. Prompt change is a separate work item.
    The trust store `~/.zen/trusted-folders.json` (`crates/zen-ext/src/trust.rs:17`) is also an asset: anyone who can
    write it makes a hostile folder trusted, and its project config then loads.
 7. Prompt injection through MCP and web fetch results. Verified: no sentence in `crates/zen-cli/src/system_prompt.rs`
    or `crates/zen-agent` tells the model that MCP results, web fetch output or file contents are untrusted data
    rather than instructions; EVIDENCE_LABELING treats tool results as the model's own evidence. No technical
-   separation is documented either. Decision needed: add such a sentence, or record the gap.
+   separation is documented either. Decision (Leader, msg 5770): YES, add a sentence stating that MCP, web and file results
+   are untrusted data, not instructions (basic prompt-injection defense). The system prompt change is a separate work item.
 8. gitleaks is installed without verification: `ci.yml:66-69` downloads the gitleaks 8.30.1 tarball with curl and
    does not check its sha256. Fix (pin sha256) is approved in msg 5716 item (3) and goes on its own branch;
    it does not block this PR.
