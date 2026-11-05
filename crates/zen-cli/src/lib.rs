@@ -327,13 +327,25 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             Ok(0)
         }
         Commands::Export(e) => {
+            // B9/export ruling: an explicit --format always wins; the
+            // global JSON switch (--json/--raw/--output-format json)
+            // selects the JSON export format only when --format is
+            // absent, and markdown stays the default otherwise.
+            let format =
+                e.format
+                    .unwrap_or(if cli.effective_output_format() == OutputFormat::Json {
+                        export::ExportFormat::Json
+                    } else {
+                        export::ExportFormat::Markdown
+                    });
             export::run_export(
                 cwd,
                 home,
-                e.format,
+                format,
                 e.session.as_deref(),
                 e.output.as_deref(),
                 e.redact,
+                cli.quiet,
             )?;
             Ok(0)
         }

@@ -632,6 +632,7 @@ pub fn run_export(
     session: Option<&str>,
     output: Option<&Path>,
     redact: bool,
+    quiet: bool,
 ) -> Result<()> {
     let path = resolve_session_path(cwd, home, session)?;
     let exp = export_session(&path, redact)?;
@@ -643,7 +644,13 @@ pub fn run_export(
     match output {
         Some(p) => {
             std::fs::write(p, rendered).with_context(|| format!("cannot write {}", p.display()))?;
-            println!("session exported to {}", p.display());
+            // The confirmation is a status notice, not payload: it
+            // goes to stderr so it never mixes into a stdout payload,
+            // and --quiet turns it off. The payload itself is never
+            // suppressed (B9/export ruling).
+            if !quiet {
+                eprintln!("session exported to {}", p.display());
+            }
         }
         None => print!("{}", rendered),
     }
@@ -1014,6 +1021,7 @@ mod tests {
             Some("nope"),
             None,
             false,
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("session not found"));
@@ -1023,6 +1031,7 @@ mod tests {
             ExportFormat::Json,
             None,
             None,
+            false,
             false,
         )
         .unwrap_err();
