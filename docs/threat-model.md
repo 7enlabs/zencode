@@ -41,8 +41,10 @@ shell commands proposed by a language model.
 ## In scope for testing
 
 - Permission/approval gating for shell execution and file writes.
-- Secret storage: OS keyring usage, file fallback permissions (0600), redaction
-  in logs and error messages.
+- Credential handling: API keys are read from environment variables only (no OS
+  keyring, no `zen auth` command, no key file written by ZenCode). In scope:
+  keys leaking into logs, error messages or session files, and the best-effort
+  pattern redaction used by `zen export --redact`.
 - Path handling: traversal outside the working directory, symlink following,
   Windows/macOS/Linux path differences (cross-platform parity is a hard rule).
 - Command construction: shell injection via filenames, arguments, or config.

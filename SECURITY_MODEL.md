@@ -68,10 +68,10 @@ or enforced; a control with no such pointer is listed under open questions, not 
 Each one is a gap between what a document says and what was verified, or a risk with no control yet.
 Checked against `main` at 647fcc0.
 
-1. Secret storage. `docs/faq.md` says `zen auth login` stores keys in the OS keyring, and
-   `docs/threat-model.md` lists keyring use and 0600 fallback as in scope. A search of `crates/`
-   finds no keyring dependency and no `zen auth` subcommand in `cli.rs`; keys are read through
-   `apiKeyEnv`. Which is the truth? The docs or the code need to change.
+1. Secret storage. Resolved by Leader ruling (msg 5734): the docs were wrong, not the code. Keys come from
+   environment variables only (`ZEN_API_KEY`, `OPENAI_API_KEY`, or the variable named by `apiKeyEnv`).
+   `docs/faq.md` and `docs/threat-model.md` now say so. OS keyring support, if wanted, is a separate
+   roadmap item.
 2. Install source is unpinned. `install.sh` builds the tip of `main` by default (`ZENCODE_BRANCH`),
    and `zen update` rebuilds from source. There is no tag, commit or checksum check.
 3. No binary releases yet, so no SHA256SUMS and no signature to verify. The release checklist
