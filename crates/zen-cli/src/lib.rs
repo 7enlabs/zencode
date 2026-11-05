@@ -128,6 +128,9 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             let quota = zen_agent::rategate::quota_report_for(store.as_deref());
             match cli.effective_output_format() {
                 OutputFormat::Json | OutputFormat::StreamJson => {
+                    if cli.quiet {
+                        return Ok(0);
+                    }
                     let report = serde_json::json!({
                         "type": "doctor",
                         "version": env!("CARGO_PKG_VERSION"),
@@ -215,6 +218,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             context::run_context(
                 args.session.as_deref(),
                 &cli.effective_output_format(),
+                cli.quiet,
                 cwd,
                 home,
             )?;
@@ -287,10 +291,12 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 mock: args.mock,
             };
             let report = eval::run_eval(&opts).await?;
-            if args.json {
-                println!("{}", report.to_json()?);
-            } else {
-                println!("{}", report.to_markdown());
+            if !cli.quiet {
+                if cli.json_output {
+                    println!("{}", report.to_json()?);
+                } else {
+                    println!("{}", report.to_markdown());
+                }
             }
 
             Ok(
@@ -303,22 +309,26 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 },
             )
         }
-        Commands::PrComments { pr, json } => {
+        Commands::PrComments { pr } => {
             let fetched = github::fetch_pr_comments(cwd, pr.as_deref())?;
-            if *json {
-                println!("{}", serde_json::to_string_pretty(&fetched)?);
-            } else {
-                println!("{}", github::format_comments_text(&fetched));
+            if !cli.quiet {
+                if cli.json_output {
+                    println!("{}", serde_json::to_string_pretty(&fetched)?);
+                } else {
+                    println!("{}", github::format_comments_text(&fetched));
+                }
             }
             Ok(0)
         }
         Commands::Update(args) => update::run_update(args.check, home),
-        Commands::CiFix { json } => {
+        Commands::CiFix {} => {
             let status = github::fetch_ci_status(cwd)?;
-            if *json {
-                println!("{}", serde_json::to_string_pretty(&status)?);
-            } else {
-                println!("{}", github::format_ci_text(&status));
+            if !cli.quiet {
+                if cli.json_output {
+                    println!("{}", serde_json::to_string_pretty(&status)?);
+                } else {
+                    println!("{}", github::format_ci_text(&status));
+                }
             }
 
             Ok(if status.failing.is_empty() { 0 } else { 1 })
@@ -338,7 +348,7 @@ fn cost_subcommand(
     let Some(home) = home else {
         anyhow::bail!("cannot determine home directory");
     };
-    let format = if cli.json {
+    let format = if cli.json_output {
         OutputFormat::Json
     } else {
         args.output_format

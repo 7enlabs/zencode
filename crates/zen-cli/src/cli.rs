@@ -123,8 +123,11 @@ pub struct Cli {
     pub output_format: OutputFormat,
 
     /// Emit JSON output (alias for --output-format json).
-    #[arg(long = "json")]
-    pub json: bool,
+    // The field is named json_output, not json, so the clap arg id does not
+    // collide with the json positional (a String) of the mcp add-json
+    // subcommand now that this flag is global and reaches every subcommand.
+    #[arg(long = "json", global = true)]
+    pub json_output: bool,
 
     /// Silence informational output on stdout; errors still go to stderr.
     #[arg(long = "quiet", global = true)]
@@ -332,7 +335,7 @@ pub struct Cli {
 impl Cli {
     /// The output format to honor for this run: --json aliases JSON output.
     pub fn effective_output_format(&self) -> OutputFormat {
-        if self.json {
+        if self.json_output {
             OutputFormat::Json
         } else {
             self.output_format
@@ -387,18 +390,13 @@ pub enum Commands {
     PrComments {
         /// Pull request number or URL (default: current branch)
         pr: Option<String>,
-
-        /// Print the result as JSON
-        #[arg(long)]
-        json: bool,
+        // JSON output is the global --json flag on Cli (json_output).
     },
 
     /// Inspect CI check failures and suggest fixes
     #[command(name = "ci-fix")]
     CiFix {
-        /// Print the result as JSON
-        #[arg(long)]
-        json: bool,
+        // JSON output is the global --json flag on Cli (json_output).
     },
 
     /// Check for and install zen updates
@@ -514,10 +512,8 @@ pub struct EvalArgs {
     #[arg(long)]
     pub task: Option<String>,
 
-    /// Print the report as JSON
-    #[arg(long)]
-    pub json: bool,
-
+    // The report-as-JSON switch is the global --json flag on Cli
+    // (json_output); eval no longer defines its own copy.
     /// Turn limit per task
     #[arg(long, default_value_t = 25)]
     pub max_turns: usize,
@@ -749,10 +745,25 @@ mod tests {
         let cli = parse(&["--raw", "doctor"]);
         assert!(cli.raw);
         let cli = parse(&["--json", "doctor"]);
-        assert!(cli.json);
+        assert!(cli.json_output);
         assert_eq!(cli.effective_output_format(), OutputFormat::Json);
         let cli = parse(&["doctor"]);
         assert_eq!(cli.effective_output_format(), OutputFormat::Text);
+    }
+
+    #[test]
+    fn parse_global_flags_after_subcommand() {
+        // --json/--quiet/--raw are global: they must also parse when placed
+        // after the subcommand (zen doctor --json), not only before it.
+        let cli = parse(&["doctor", "--json"]);
+        assert!(cli.json_output);
+        assert_eq!(cli.effective_output_format(), OutputFormat::Json);
+        let cli = parse(&["doctor", "--quiet"]);
+        assert!(cli.quiet);
+        let cli = parse(&["doctor", "--raw"]);
+        assert!(cli.raw);
+        let cli = parse(&["cost", "--json"]);
+        assert!(cli.json_output);
     }
 
     #[test]
@@ -1288,7 +1299,7 @@ mod tests {
             Some(Commands::Eval(a)) => {
                 assert_eq!(a.model.as_deref(), Some("x:free"));
                 assert_eq!(a.task.as_deref(), Some("create"));
-                assert!(a.json);
+                assert!(cli.json_output);
                 assert_eq!(a.max_turns, 25);
             }
             other => panic!("expected Eval, got {:?}", other),
