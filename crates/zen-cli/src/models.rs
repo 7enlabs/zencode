@@ -168,8 +168,8 @@ pub fn cache_is_stale(cache: &ModelsCache) -> bool {
 //  1. the pool diff (added / removed / score-changed / best) is shown and
 //     written to the radar log;
 //  2. switching the pool needs the user's approval (default No);
-//  3. the old pool is backed up before it is overwritten, and can be
-//     restored with `zen models --restore`.
+//  3. the old pool is backed up before it is overwritten (a failed backup
+//     refuses the switch), and can be restored with `zen models --restore`.
 
 /// What changed between the cached pool and a freshly probed pool.
 #[derive(Debug, Default, PartialEq)]
@@ -180,11 +180,17 @@ pub struct PoolDiff {
     pub removed: Vec<String>,
     /// Models present in both whose score moved: (model, old score, new score).
     pub score_changed: Vec<(String, f64, f64)>,
+    /// Models present in both whose free status flipped:
+    /// (model, was free, is free now).
+    pub free_changed: Vec<(String, bool, bool)>,
 }
 
 impl PoolDiff {
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.score_changed.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.score_changed.is_empty()
+            && self.free_changed.is_empty()
     }
 }
 
@@ -199,6 +205,9 @@ pub fn diff_pools(old: &[ModelProbe], new: &[ModelProbe]) -> PoolDiff {
             Some(o) => {
                 if (o.score - n.score).abs() > SCORE_CHANGE_EPSILON {
                     diff.score_changed.push((n.model.clone(), o.score, n.score));
+                }
+                if o.free != n.free {
+                    diff.free_changed.push((n.model.clone(), o.free, n.free));
                 }
             }
         }
@@ -225,6 +234,14 @@ pub fn format_pool_diff(diff: &PoolDiff, old_best: Option<&str>, new_best: Optio
     }
     for (m, o, n) in &diff.score_changed {
         lines.push(format!("  ~ score: {} {:.2} -> {:.2}", m, o, n));
+    }
+    for (m, was_free, is_free) in &diff.free_changed {
+        lines.push(format!(
+            "  ~ free: {} {} -> {}",
+            m,
+            if *was_free { "free" } else { "paid" },
+            if *is_free { "free" } else { "paid" }
+        ));
     }
     if old_best != new_best {
         lines.push(format!(
@@ -257,17 +274,24 @@ pub fn backup_cache(home: Option<&Path>) -> Result<bool> {
 }
 
 /// Restore the pool from its backup file, returning the restored cache.
+///
+/// The backup is parsed and validated BEFORE the live cache is touched:
+/// a corrupt `.bak` must not destroy a good pool. A failed restore leaves
+/// the current cache exactly as it was.
 pub fn restore_cache(home: Option<&Path>) -> Result<ModelsCache> {
     let bak = backup_path(home).context("home directory not available")?;
     if !bak.is_file() {
         anyhow::bail!("no model pool backup found (expected {})", bak.display());
     }
+    let text = std::fs::read_to_string(&bak)?;
+    let restored: ModelsCache =
+        serde_json::from_str(&text).context("backup file is not a valid models cache")?;
     let path = cache_path(home).context("home directory not available")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::copy(&bak, &path)?;
-    load_cache(home).context("backup file is not a valid models cache")
+    Ok(restored)
 }
 
 /// Path of the append-only radar log: `~/.zen/models-radar.log`.
@@ -316,15 +340,23 @@ pub enum SwitchOutcome {
     UseOld(Vec<ModelProbe>),
 }
 
-fn back_up_old_pool(home: Option<&Path>) {
+/// Back up the old pool before it may be overwritten.
+/// Returns false when the backup failed: the caller must then refuse the
+/// switch, because overwriting without a backup would lose the old pool.
+/// Returns true when the backup was saved or there was nothing to back up.
+fn back_up_old_pool(home: Option<&Path>) -> bool {
     match backup_cache(home) {
         Ok(true) => {
             if let Err(e) = append_radar_log(home, "pool backup saved") {
                 eprintln!("warning: could not write radar log: {:#}", e);
             }
+            true
         }
-        Ok(false) => {}
-        Err(e) => eprintln!("warning: could not back up old model pool: {:#}", e),
+        Ok(false) => true,
+        Err(e) => {
+            eprintln!("warning: could not back up old model pool: {:#}", e);
+            false
+        }
     }
 }
 
@@ -337,12 +369,14 @@ fn log_radar(home: Option<&Path>, event: &str) {
 /// Apply the P0-2 radar discipline to a freshly probed pool.
 ///
 /// Shows the diff, writes it to the radar log, asks for approval when the
-/// best model or the free catalog changed, and backs up the old pool before
-/// it may be overwritten. `auto_approve` (`--yes`) records an approval
-/// without prompting; it never approves a switch to a paid model because
-/// `best_model` only ever picks free models. The `confirm` callback is the
-/// prompt used when approval is needed (pass `confirm_pool_switch` in
-/// production; tests pass a scripted answer).
+/// best model, the free catalog, or the provider changed, and backs up the
+/// old pool before it may be overwritten. A failed backup refuses the
+/// switch: the old pool is never overwritten without a backup.
+/// `auto_approve` (`--yes`) records an approval without prompting; it never
+/// approves a switch to a paid model because `best_model` only ever picks
+/// free models. The `confirm` callback is the prompt used when approval is
+/// needed (pass `confirm_pool_switch` in production; tests pass a scripted
+/// answer).
 pub fn maybe_switch_pool(
     home: Option<&Path>,
     cached: Option<&ModelsCache>,
@@ -353,12 +387,10 @@ pub fn maybe_switch_pool(
     let Some(old) = cached else {
         return SwitchOutcome::UseFresh;
     };
-    if old.base_url != fresh.base_url {
-        // A different provider's pool: nothing to compare against, but
-        // preserve it before the caller overwrites the file.
-        back_up_old_pool(home);
-        return SwitchOutcome::UseFresh;
-    }
+    // A provider switch replaces the whole pool, but the diff is still real
+    // information (all added / all removed) and the switch still needs
+    // approval like any other pool change — never silently.
+    let provider_switched = old.base_url != fresh.base_url;
 
     let old_best = best_model(&old.results).map(|m| m.model.clone());
     let new_best = best_model(&fresh.results).map(|m| m.model.clone());
@@ -377,11 +409,15 @@ pub fn maybe_switch_pool(
     if old_best == new_best && !catalog_changed {
         // Scores moved only: no pool switch to approve, but still preserve
         // the old pool before the caller overwrites it.
-        back_up_old_pool(home);
+        if !back_up_old_pool(home) {
+            eprintln!("pool switch refused; could not back up the cached pool");
+            log_radar(home, "pool switch refused: backup failed");
+            return SwitchOutcome::UseOld(old.results.clone());
+        }
         return SwitchOutcome::UseFresh;
     }
 
-    let reason = if old_best != new_best {
+    let change = if old_best != new_best {
         format!(
             "best changes '{}' -> '{}'",
             old_best.as_deref().unwrap_or("(none)"),
@@ -394,6 +430,14 @@ pub fn maybe_switch_pool(
             diff.removed.len()
         )
     };
+    let reason = if provider_switched {
+        format!(
+            "provider switch '{}' -> '{}': {}",
+            old.base_url, fresh.base_url, change
+        )
+    } else {
+        change
+    };
     let approved = auto_approve || confirm(&reason);
     let decision = if approved {
         if auto_approve {
@@ -404,15 +448,20 @@ pub fn maybe_switch_pool(
     } else {
         "refused (default No; re-run with --yes to approve)"
     };
-    log_radar(home, &format!("pool switch {}: {}", decision, reason));
     if !approved {
+        log_radar(home, &format!("pool switch {}: {}", decision, reason));
         eprintln!(
             "pool switch refused; keeping cached pool (best: {})",
             old_best.as_deref().unwrap_or("(none)")
         );
         return SwitchOutcome::UseOld(old.results.clone());
     }
-    back_up_old_pool(home);
+    if !back_up_old_pool(home) {
+        eprintln!("pool switch refused; could not back up the cached pool");
+        log_radar(home, "pool switch refused: backup failed");
+        return SwitchOutcome::UseOld(old.results.clone());
+    }
+    log_radar(home, &format!("pool switch {}: {}", decision, reason));
     SwitchOutcome::UseFresh
 }
 
@@ -669,7 +718,13 @@ pub fn merge_candidates(
         })
         .collect();
     for d in discovered {
-        if out.iter().any(|c| c.id == d.id) {
+        if let Some(existing) = out.iter_mut().find(|c| c.id == d.id) {
+            // The live discovery signal wins over the static catalog: an id
+            // the provider now reports as paid must not keep probing (and
+            // ranking) as free.
+            if !d.free {
+                existing.free = false;
+            }
             continue;
         }
 
@@ -1202,6 +1257,7 @@ mod tests {
             added: vec!["a".to_string()],
             removed: vec![],
             score_changed: vec![],
+            free_changed: vec![],
         };
         let text = format_pool_diff(&diff, Some("old"), Some("new"));
         assert!(text.contains("+ added: a"));
@@ -1312,6 +1368,171 @@ mod tests {
         });
         assert!(matches!(outcome, SwitchOutcome::UseFresh));
         assert!(backup_path(Some(&dir)).unwrap().is_file());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn diff_pools_reports_free_status_change() {
+        let old = vec![probe("m", true, 0.8)];
+        let mut flipped = probe("m", true, 0.8);
+        flipped.free = false;
+        let diff = diff_pools(&old, &[flipped]);
+        assert_eq!(diff.free_changed.len(), 1);
+        assert_eq!(diff.free_changed[0].0, "m");
+        assert!(diff.free_changed[0].1);
+        assert!(!diff.free_changed[0].2);
+        assert!(!diff.is_empty());
+        let text = format_pool_diff(&diff, Some("m"), Some("m"));
+        assert!(
+            text.contains("~ free: m free -> paid"),
+            "diff must explain the free-status change: {}",
+            text
+        );
+        assert!(diff_pools(&old, &old).free_changed.is_empty());
+    }
+
+    #[test]
+    fn catalog_id_reported_paid_by_discovery_is_not_best() {
+        // Critic #2: a catalog id the provider now reports as paid must
+        // lose its free status, so it can never be picked as best even
+        // when it scores highest.
+        let discovered = vec![
+            DiscoveredModel {
+                id: "qwen/qwen3-coder:free".to_string(),
+                free: false,
+            },
+            DiscoveredModel {
+                id: "other/model:free".to_string(),
+                free: true,
+            },
+        ];
+        let merged = merge_candidates(FREE_MODEL_CATALOG, &discovered);
+        let qwen = merged
+            .iter()
+            .find(|c| c.id == "qwen/qwen3-coder:free")
+            .unwrap();
+        assert!(
+            !qwen.free,
+            "discovery reporting paid must flip the catalog entry"
+        );
+        let other = merged.iter().find(|c| c.id == "other/model:free").unwrap();
+        assert!(other.free);
+        let results = vec![
+            paid_probe("qwen/qwen3-coder:free", 0.99),
+            probe("other/model:free", true, 0.5),
+        ];
+        assert_eq!(
+            best_model(&results).unwrap().model,
+            "other/model:free",
+            "the paid catalog entry must not be best"
+        );
+    }
+
+    #[test]
+    fn provider_switch_needs_approval_and_shows_diff() {
+        // Critic #1: a base_url change goes through the same diff + approval
+        // gate as any other pool change.
+        let dir = test_dir("provider-switch");
+        let old = cache_for("https://old-provider", vec![probe("old-best", true, 0.9)]);
+        save_cache(Some(&dir), &old).unwrap();
+        let fresh = cache_for("https://new-provider", vec![probe("new-best", true, 0.95)]);
+        let outcome = maybe_switch_pool(Some(&dir), Some(&old), &fresh, false, &|_| false);
+        let kept = match outcome {
+            SwitchOutcome::UseOld(r) => r,
+            SwitchOutcome::UseFresh => panic!("refused provider switch must keep the old pool"),
+        };
+        assert_eq!(kept[0].model, "old-best");
+        assert_eq!(load_cache(Some(&dir)).unwrap().results[0].model, "old-best");
+        assert!(!backup_path(Some(&dir)).unwrap().is_file());
+        let log = std::fs::read_to_string(radar_log_path(Some(&dir)).unwrap()).unwrap();
+        assert!(
+            log.contains("provider switch"),
+            "radar log must record the provider switch: {}",
+            log
+        );
+        assert!(
+            log.contains("+ added: new-best"),
+            "log must show the diff: {}",
+            log
+        );
+        assert!(
+            log.contains("- removed: old-best"),
+            "log must show the diff: {}",
+            log
+        );
+        assert!(
+            log.contains("refused"),
+            "radar log must record the refusal: {}",
+            log
+        );
+
+        let outcome = maybe_switch_pool(Some(&dir), Some(&old), &fresh, false, &|_| true);
+        assert!(matches!(outcome, SwitchOutcome::UseFresh));
+        assert!(backup_path(Some(&dir)).unwrap().is_file());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pool_switch_refused_when_backup_fails() {
+        // Critic #4: a failed backup is fail-closed — the switch is refused
+        // instead of overwriting the pool without a backup.
+        let dir = test_dir("backup-fails");
+        let old = cache_for("https://x", vec![probe("old-best", true, 0.9)]);
+        save_cache(Some(&dir), &old).unwrap();
+        // Make the backup path a directory so the copy fails.
+        std::fs::create_dir_all(backup_path(Some(&dir)).unwrap()).unwrap();
+        let fresh = cache_for("https://x", vec![probe("new-best", true, 0.95)]);
+        let outcome = maybe_switch_pool(Some(&dir), Some(&old), &fresh, false, &|_| true);
+        let kept = match outcome {
+            SwitchOutcome::UseOld(r) => r,
+            SwitchOutcome::UseFresh => panic!("switch must be refused when the backup fails"),
+        };
+        assert_eq!(kept[0].model, "old-best");
+        assert_eq!(load_cache(Some(&dir)).unwrap().results[0].model, "old-best");
+        let log = std::fs::read_to_string(radar_log_path(Some(&dir)).unwrap()).unwrap();
+        assert!(
+            log.contains("backup failed"),
+            "radar log must record the backup failure: {}",
+            log
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn score_only_change_refused_when_backup_fails() {
+        // Critic #4 on the score-only path: same fail-closed rule.
+        let dir = test_dir("backup-fails-score");
+        let old = cache_for("https://x", vec![probe("m", true, 0.8)]);
+        save_cache(Some(&dir), &old).unwrap();
+        std::fs::create_dir_all(backup_path(Some(&dir)).unwrap()).unwrap();
+        let fresh = cache_for("https://x", vec![probe("m", true, 0.6)]);
+        let outcome = maybe_switch_pool(Some(&dir), Some(&old), &fresh, false, &|_| {
+            panic!("score-only change must not prompt")
+        });
+        let kept = match outcome {
+            SwitchOutcome::UseOld(r) => r,
+            SwitchOutcome::UseFresh => panic!("switch must be refused when the backup fails"),
+        };
+        assert!((kept[0].score - 0.8).abs() < 1e-9, "old score must be kept");
+        assert!((load_cache(Some(&dir)).unwrap().results[0].score - 0.8).abs() < 1e-9);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn restore_with_corrupt_backup_keeps_current_cache() {
+        // Critic #5: the backup is validated before the live cache is
+        // touched, so a corrupt .bak leaves the current pool intact.
+        let dir = test_dir("restore-corrupt");
+        let current = cache_for("https://x", vec![probe("current-best", true, 0.9)]);
+        save_cache(Some(&dir), &current).unwrap();
+        let bak = backup_path(Some(&dir)).unwrap();
+        std::fs::write(&bak, "not json{").unwrap();
+        assert!(restore_cache(Some(&dir)).is_err());
+        assert_eq!(
+            load_cache(Some(&dir)).unwrap().results[0].model,
+            "current-best",
+            "corrupt backup must not destroy the current cache"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
