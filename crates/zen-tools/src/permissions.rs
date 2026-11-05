@@ -96,6 +96,11 @@ fn path_rule_matches(cwd: &Path, spec: &str, candidate: &str) -> bool {
             targets.push(target_slash[2..].to_string());
         }
     }
+    // TEMP DEBUG PR #38 windows-check - revert after diagnosis.
+    eprintln!(
+        "ZEN_PERM_DEBUG spec={:?} cwd={:?} pattern={:?} targets={:?}",
+        spec, cwd, pattern_slash, targets
+    );
     let mut globs = vec![pattern_slash.clone()];
     if dir_hint {
         globs.push(format!("{}/**", pattern_slash));

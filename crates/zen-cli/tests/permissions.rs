@@ -358,7 +358,15 @@ async fn settings_deny_beats_cli_allow() {
     let denials = v["permission_denials"]
         .as_array()
         .expect("permission_denials array");
-    assert!(!denials.is_empty(), "settings deny should beat CLI allow");
+    // TEMP DEBUG PR #38 windows-check - revert after diagnosis.
+    assert!(
+        !denials.is_empty(),
+        "settings deny should beat CLI allow\ntemp_dir={:?} canon_cwd={:?}\nresult={}\nstderr={}",
+        std::env::temp_dir(),
+        std::fs::canonicalize(cwd.path()),
+        v,
+        stderr
+    );
     let denied_tool = denials[0]["tool_name"].as_str().expect("tool_name string");
     assert_eq!(denied_tool, "Write");
 }
