@@ -48,7 +48,82 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "/commit",
 ];
 
-pub const REPL_ONLY_COMMANDS: &[&str] = &["/undo"];
+pub const REPL_ONLY_COMMANDS: &[&str] = &["/undo", "/expand"];
+
+// One-line English description for every slash command, kept next to the
+// command tables so a new command gains its description in the same change.
+// The REPL prompt completion and hinting read this table; a test asserts
+// every builtin and REPL-only command has an entry.
+pub const COMMAND_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("/help", "List the built-in commands"),
+    ("/clear", "Clear the conversation context"),
+    ("/compact", "Compact the conversation to free context space"),
+    ("/model", "Show or switch the current model"),
+    ("/resume", "Resume a saved session"),
+    (
+        "/continue",
+        "Resume the most recent session (alias of /resume)",
+    ),
+    ("/cost", "Show token usage and cost for this session"),
+    ("/status", "Show session status"),
+    ("/permissions", "Show or change the permission mode"),
+    ("/config", "Show the resolved configuration"),
+    ("/memory", "Show the memory files in effect"),
+    ("/memories", "List saved memories"),
+    ("/init", "Create or refresh the project memory file"),
+    ("/todos", "Show the current todo list"),
+    ("/agents", "List subagent definitions"),
+    ("/mcp", "Show MCP server status"),
+    ("/hooks", "Show configured hooks"),
+    ("/skills", "List available skills"),
+    ("/exit", "Exit the REPL"),
+    ("/quit", "Exit the REPL (alias of /exit)"),
+    ("/undo", "Undo the last file-changing turn"),
+    ("/expand", "Expand or collapse a tool result card by number"),
+    ("/context", "Show what is filling the context window"),
+    ("/add-dir", "Add a working directory for this session"),
+    ("/export", "Export the conversation"),
+    ("/review", "Review the current diff with the agent"),
+    ("/rename", "Rename the current session"),
+    ("/quota", "Show provider quota status"),
+    ("/diff", "Show uncommitted changes"),
+    ("/plan", "Toggle plan mode (read-only planning)"),
+    ("/loop", "Run a prompt repeatedly"),
+    ("/goal", "Set a session goal"),
+    ("/personality", "Switch the assistant personality"),
+    ("/vim", "Toggle vi key bindings"),
+    ("/theme", "Switch the color theme"),
+    ("/btw", "Ask a side question outside the main thread"),
+    ("/terse", "Toggle terse output mode"),
+    ("/map", "Show a map of the repository"),
+    ("/map-refresh", "Rebuild the repository map"),
+    ("/deep-research", "Run a deep research pass on a topic"),
+    ("/pr_comments", "Fetch PR review comments and address them"),
+    ("/ci-fix", "Check CI status and offer to fix failures"),
+    ("/done", "Mark the current work as done"),
+    ("/scope", "Show or set the session scope guard"),
+    ("/worktree", "Manage git worktrees for this session"),
+    ("/commit", "Commit changes with the agent's help"),
+];
+
+/// Every slash command offered at the REPL prompt - builtins, REPL-only
+/// commands and the two accepted aliases - each with its description, in
+/// catalog order. Commands without a description are dropped here, which the
+/// coverage test treats as a failure.
+pub fn slash_command_catalog() -> Vec<(&'static str, &'static str)> {
+    let names = BUILTIN_COMMANDS
+        .iter()
+        .chain(REPL_ONLY_COMMANDS.iter())
+        .chain(["/quit", "/continue"].iter())
+        .copied();
+    let mut out = Vec::new();
+    for name in names {
+        if let Some((_, desc)) = COMMAND_DESCRIPTIONS.iter().find(|(n, _)| *n == name) {
+            out.push((name, *desc));
+        }
+    }
+    out
+}
 
 pub const HEADLESS_BUILTINS: &[&str] = &[
     "compact", "model", "cost", "mcp", "context", "review", "init", "done",
@@ -793,6 +868,19 @@ pub async fn sessions_command(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn every_command_has_a_description() {
+        let catalog = slash_command_catalog();
+        let expected = BUILTIN_COMMANDS.len() + REPL_ONLY_COMMANDS.len() + 2;
+        assert_eq!(catalog.len(), expected, "catalog: {catalog:?}");
+        for c in BUILTIN_COMMANDS.iter().chain(REPL_ONLY_COMMANDS) {
+            assert!(
+                COMMAND_DESCRIPTIONS.iter().any(|(n, _)| n == c),
+                "missing description for {c}"
+            );
+        }
+    }
 
     fn sample_messages() -> Vec<zen_core::ChatMessage> {
         use zen_core::{ChatMessage, FunctionCall, ToolCall};
