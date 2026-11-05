@@ -618,6 +618,14 @@ pub async fn run_review(
     };
 
     let cfg = crate::settings::resolve_config_with_home(cli, cwd, home)?;
+    // The global --json/--raw flags select the JSON report form here
+    // too; --quiet suppresses the report on stdout (exit code keeps
+    // the verdict).
+    let output_format = if cli.json_output || cli.raw {
+        OutputFormat::Json
+    } else {
+        args.output_format
+    };
 
     let diff = match collect_diff(cwd, &scope, args.max_diff_bytes) {
         Ok(d) => d,
@@ -627,23 +635,31 @@ pub async fn run_review(
         }
     };
     if diff.diff_text.trim().is_empty() {
-        match args.output_format {
-            OutputFormat::Text => {
-                println!(
-                    "zen review - {}: no changes to review.",
-                    diff.scope_description
-                );
-            }
-            OutputFormat::Json => {
-                let report = ReviewReport::new(diff.scope_description, cfg.model.clone(), vec![]);
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&render_json_value(&report))?
-                );
-            }
-            OutputFormat::StreamJson => {
-                let report = ReviewReport::new(diff.scope_description, cfg.model.clone(), vec![]);
-                print_stream_json(&report, threshold, 0);
+        if !cli.quiet {
+            match output_format {
+                OutputFormat::Text => {
+                    println!(
+                        "zen review - {}: no changes to review.",
+                        diff.scope_description
+                    );
+                }
+                OutputFormat::Json => {
+                    let report =
+                        ReviewReport::new(diff.scope_description, cfg.model.clone(), vec![]);
+                    println!(
+                        "{}",
+                        if cli.raw {
+                            serde_json::to_string(&render_json_value(&report))?
+                        } else {
+                            serde_json::to_string_pretty(&render_json_value(&report))?
+                        }
+                    );
+                }
+                OutputFormat::StreamJson => {
+                    let report =
+                        ReviewReport::new(diff.scope_description, cfg.model.clone(), vec![]);
+                    print_stream_json(&report, threshold, 0);
+                }
             }
         }
         return Ok(0);
@@ -709,25 +725,31 @@ pub async fn run_review(
     let failed = !report.at_or_above(threshold).is_empty();
     let exit_code = if failed { 1 } else { 0 };
 
-    match args.output_format {
-        OutputFormat::Text => {
-            print!("{}", render_text(&report, threshold));
-            if failed {
+    if !cli.quiet {
+        match output_format {
+            OutputFormat::Text => {
+                print!("{}", render_text(&report, threshold));
+                if failed {
+                    println!(
+                        "{} finding(s) at or above --fail-on={} → exit 1",
+                        report.at_or_above(threshold).len(),
+                        threshold
+                    );
+                }
+            }
+            OutputFormat::Json => {
                 println!(
-                    "{} finding(s) at or above --fail-on={} → exit 1",
-                    report.at_or_above(threshold).len(),
-                    threshold
+                    "{}",
+                    if cli.raw {
+                        serde_json::to_string(&render_json_value(&report))?
+                    } else {
+                        serde_json::to_string_pretty(&render_json_value(&report))?
+                    }
                 );
             }
-        }
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&render_json_value(&report))?
-            );
-        }
-        OutputFormat::StreamJson => {
-            print_stream_json(&report, threshold, exit_code);
+            OutputFormat::StreamJson => {
+                print_stream_json(&report, threshold, exit_code);
+            }
         }
     }
     Ok(exit_code)

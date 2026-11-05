@@ -667,6 +667,7 @@ fn write_mcp_file(path: &Path, root: &Value) -> Result<()> {
 }
 
 pub async fn mcp_command(
+    cli: &crate::cli::Cli,
     cwd: &Path,
     home: Option<&Path>,
     args: &crate::cli::McpArgs,
@@ -674,6 +675,7 @@ pub async fn mcp_command(
     use crate::cli::McpSubcommand;
     match &args.command {
         McpSubcommand::List => {
+            let mut scopes: Vec<(String, Vec<String>, String)> = Vec::new();
             for scope in ["user", "project", "local"] {
                 let path = mcp_scope_path(scope, cwd, home)?;
                 let names: Vec<String> = std::fs::read_to_string(&path)
@@ -682,10 +684,30 @@ pub async fn mcp_command(
                     .and_then(|v| v.get("mcpServers").and_then(|s| s.as_object()).cloned())
                     .map(|o| o.keys().cloned().collect())
                     .unwrap_or_default();
-                if names.is_empty() {
-                    println!("{}: (none)  {}", scope, path.display());
+                scopes.push((scope.to_string(), names, path.display().to_string()));
+            }
+            if cli.quiet {
+                return Ok(());
+            }
+            if cli.json_output || cli.raw {
+                let v = serde_json::json!(scopes
+                    .iter()
+                    .map(|(scope, names, path)| {
+                        serde_json::json!({"scope": scope, "servers": names, "path": path})
+                    })
+                    .collect::<Vec<_>>());
+                if cli.raw {
+                    println!("{}", serde_json::to_string(&v)?);
                 } else {
-                    println!("{}: {}  {}", scope, names.join(", "), path.display());
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+                return Ok(());
+            }
+            for (scope, names, path) in &scopes {
+                if names.is_empty() {
+                    println!("{}: (none)  {}", scope, path);
+                } else {
+                    println!("{}: {}  {}", scope, names.join(", "), path);
                 }
             }
             Ok(())
@@ -741,7 +763,9 @@ pub async fn mcp_command(
             }
             root["mcpServers"][name] = cfg;
             write_mcp_file(&path, &root)?;
-            println!("added MCP server {:?} to {}", name, path.display());
+            if !cli.quiet {
+                println!("added MCP server {:?} to {}", name, path.display());
+            }
             Ok(())
         }
         McpSubcommand::Get { scope, name } => {
@@ -754,7 +778,13 @@ pub async fn mcp_command(
                 let path = mcp_scope_path(sc, cwd, home)?;
                 let root = read_mcp_file(&path);
                 if let Some(server) = root["mcpServers"].get(name) {
-                    println!("{}", serde_json::to_string_pretty(server)?);
+                    if !cli.quiet {
+                        if cli.raw {
+                            println!("{}", serde_json::to_string(server)?);
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(server)?);
+                        }
+                    }
                     return Ok(());
                 }
             }
@@ -771,7 +801,9 @@ pub async fn mcp_command(
                 .map_err(|e| anyhow!("invalid MCP server JSON: {}", e))?;
             root["mcpServers"][name] = cfg;
             write_mcp_file(&path, &root)?;
-            println!("added MCP server {:?} to {}", name, path.display());
+            if !cli.quiet {
+                println!("added MCP server {:?} to {}", name, path.display());
+            }
             Ok(())
         }
         McpSubcommand::Remove { scope, name } => {
@@ -783,7 +815,9 @@ pub async fn mcp_command(
                 .unwrap_or(false);
             if removed {
                 write_mcp_file(&path, &root)?;
-                println!("removed MCP server {:?} from {}", name, path.display());
+                if !cli.quiet {
+                    println!("removed MCP server {:?} from {}", name, path.display());
+                }
             } else {
                 eprintln!("no MCP server {:?} in {}", name, path.display());
             }
@@ -806,18 +840,50 @@ pub async fn sessions_command(
     let cfg = crate::settings::resolve_config_with_home(cli, cwd, Some(home))?;
     if cfg.auto_archive_days > 0 {
         for id in sm::auto_archive_old(home, cfg.auto_archive_days)? {
-            println!(
-                "auto-archived session {} (older than {}d)",
-                sm::short_id(&id),
-                cfg.auto_archive_days
-            );
+            if !cli.quiet && !cli.json_output && !cli.raw {
+                println!(
+                    "auto-archived session {} (older than {}d)",
+                    sm::short_id(&id),
+                    cfg.auto_archive_days
+                );
+            }
         }
     }
     match &args.command {
         SessionSubcommand::List { all } => {
             let sessions = sm::list_all_sessions(home, *all);
+            if cli.json_output || cli.raw {
+                if !cli.quiet {
+                    let v = serde_json::json!(sessions
+                        .iter()
+                        .map(|x| {
+                            serde_json::json!({
+                                "id": x.id,
+                                "path": x.path.display().to_string(),
+                                "archived": x.archived,
+                                "modified": sm::fmt_mtime(x.modified),
+                                "messages": x.message_count,
+                                "input_tokens": x.input_tokens,
+                                "output_tokens": x.output_tokens,
+                                "title": x.title,
+                            })
+                        })
+                        .collect::<Vec<_>>());
+                    if cli.raw {
+                        println!("{}", serde_json::to_string(&v)?);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&v)?);
+                    }
+                }
+                return Ok(());
+            }
             if sessions.is_empty() {
-                println!("no sessions yet");
+                if !cli.quiet {
+                    println!("no sessions yet");
+                }
+                return Ok(());
+            }
+            if cli.quiet {
                 return Ok(());
             }
             println!("ID         MODIFIED (UTC)    MSGS   TOKENS in/out  STATUS    TITLE");
@@ -836,29 +902,37 @@ pub async fn sessions_command(
         }
         SessionSubcommand::Archive { id } => {
             let dest = sm::archive_session(home, id)?;
-            println!(
-                "archived session {} -> {}",
-                sm::short_id(id),
-                dest.display()
-            );
+            if !cli.quiet {
+                println!(
+                    "archived session {} -> {}",
+                    sm::short_id(id),
+                    dest.display()
+                );
+            }
             Ok(())
         }
         SessionSubcommand::Delete { id, yes } => {
             if !yes && !sm::confirm_delete_prompt(id)? {
-                println!("delete cancelled");
+                if !cli.quiet {
+                    println!("delete cancelled");
+                }
                 return Ok(());
             }
             sm::delete_session(home, id)?;
-            println!("deleted session {}", sm::short_id(id));
+            if !cli.quiet {
+                println!("deleted session {}", sm::short_id(id));
+            }
             Ok(())
         }
         SessionSubcommand::Restore { id } => {
             let dest = sm::restore_session(home, id)?;
-            println!(
-                "restored session {} -> {}",
-                sm::short_id(id),
-                dest.display()
-            );
+            if !cli.quiet {
+                println!(
+                    "restored session {} -> {}",
+                    sm::short_id(id),
+                    dest.display()
+                );
+            }
             Ok(())
         }
     }

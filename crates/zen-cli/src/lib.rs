@@ -73,6 +73,11 @@ pub async fn run(cli: Cli) -> Result<i32> {
 }
 
 pub async fn run_with_home(cli: Cli, cwd: &Path, home: Option<&Path>) -> Result<i32> {
+    if cli.no_color {
+        // --no-color is the flag form of NO_COLOR: the color checks in
+        // the REPL and the diff paths already honor the env var.
+        std::env::set_var("NO_COLOR", "1");
+    }
     if cli.acp {
         return acp::run_acp_server(&cli).await;
     }
@@ -203,7 +208,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             Ok(0)
         }
         Commands::Mcp(mcp) => {
-            commands::mcp_command(cwd, home, mcp).await?;
+            commands::mcp_command(cli, cwd, home, mcp).await?;
             Ok(0)
         }
         Commands::Models(args) => {
@@ -219,6 +224,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 args.session.as_deref(),
                 &cli.effective_output_format(),
                 cli.quiet,
+                cli.raw,
                 cwd,
                 home,
             )?;
@@ -235,7 +241,16 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 return Ok(3);
             }
             if !cli.quiet {
-                println!("{}", text);
+                if cli.effective_output_format() == OutputFormat::Json {
+                    let v = serde_json::json!({"tool": name, "help": text});
+                    if cli.raw {
+                        println!("{}", serde_json::to_string(&v)?);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&v)?);
+                    }
+                } else {
+                    println!("{}", text);
+                }
             }
             Ok(0)
         }
@@ -266,7 +281,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             Ok(0)
         }
         Commands::Skill(skill) => {
-            skills::skill_command(cwd, home, &skill.command).await?;
+            skills::skill_command(cli, cwd, home, &skill.command).await?;
             Ok(0)
         }
         Commands::Review(args) => {
@@ -292,10 +307,17 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             };
             let report = eval::run_eval(&opts).await?;
             if !cli.quiet {
-                if cli.json_output {
-                    println!("{}", report.to_json()?);
-                } else {
-                    println!("{}", report.to_markdown());
+                match cli.effective_output_format() {
+                    OutputFormat::Json | OutputFormat::StreamJson => {
+                        if cli.raw {
+                            println!("{}", serde_json::to_string(&report)?);
+                        } else {
+                            println!("{}", report.to_json()?);
+                        }
+                    }
+                    OutputFormat::Text => {
+                        println!("{}", report.to_markdown());
+                    }
                 }
             }
 
@@ -312,20 +334,34 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
         Commands::PrComments { pr } => {
             let fetched = github::fetch_pr_comments(cwd, pr.as_deref())?;
             if !cli.quiet {
-                if cli.json_output {
-                    println!("{}", serde_json::to_string_pretty(&fetched)?);
+                if cli.effective_output_format() == OutputFormat::Json {
+                    if cli.raw {
+                        println!("{}", serde_json::to_string(&fetched)?);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&fetched)?);
+                    }
                 } else {
                     println!("{}", github::format_comments_text(&fetched));
                 }
             }
             Ok(0)
         }
-        Commands::Update(args) => update::run_update(args.check, home),
+        Commands::Update(args) => update::run_update(
+            args.check,
+            home,
+            cli.quiet,
+            cli.effective_output_format() == OutputFormat::Json,
+            cli.raw,
+        ),
         Commands::CiFix {} => {
             let status = github::fetch_ci_status(cwd)?;
             if !cli.quiet {
-                if cli.json_output {
-                    println!("{}", serde_json::to_string_pretty(&status)?);
+                if cli.effective_output_format() == OutputFormat::Json {
+                    if cli.raw {
+                        println!("{}", serde_json::to_string(&status)?);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&status)?);
+                    }
                 } else {
                     println!("{}", github::format_ci_text(&status));
                 }
@@ -348,10 +384,9 @@ fn cost_subcommand(
     let Some(home) = home else {
         anyhow::bail!("cannot determine home directory");
     };
-    let format = if cli.json_output {
-        OutputFormat::Json
-    } else {
-        args.output_format
+    let format = match cli.effective_output_format() {
+        OutputFormat::Text => args.output_format,
+        f => f,
     };
 
     let session_id = match &args.session {

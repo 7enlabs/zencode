@@ -507,7 +507,9 @@ pub async fn models_command(
     if args.best {
         match best_model(&results) {
             Some(m) => {
-                println!("{}", m.model);
+                if !cli.quiet {
+                    println!("{}", m.model);
+                }
                 Ok(())
             }
             None => {
@@ -518,8 +520,17 @@ pub async fn models_command(
                 std::process::exit(1);
             }
         }
+    } else if (cli.json_output || cli.raw) && !cli.quiet {
+        if cli.raw {
+            println!("{}", serde_json::to_string(&results)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        }
+        Ok(())
     } else {
-        print_table(&results, &cfg.base_url);
+        if !cli.quiet {
+            print_table(&results, &cfg.base_url);
+        }
         Ok(())
     }
 }
