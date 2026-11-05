@@ -939,7 +939,7 @@ async fn handle_slash(
                     crate::git::DiffMode::WorkingTree
                 };
                 let color = std::io::IsTerminal::is_terminal(&std::io::stdout())
-                    && std::env::var_os("NO_COLOR").is_none();
+                    && !crate::repl_polish::Theme::colors_disabled();
                 match crate::git::git_diff(cwd, mode, color) {
                     Some(out) if !out.trim().is_empty() => print!("{out}"),
                     _ => println!("(no changes)"),
