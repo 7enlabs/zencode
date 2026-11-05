@@ -88,7 +88,7 @@ Checked against `main` at 647fcc0.
    - `zen export` redaction is off by default; it needs `--redact`.
    Decision (Leader, msg 5770): YES. Session files must be 0600 because they hold conversation content that may include secrets.
    Requirement recorded here; the code change is a separate work item and does not block merging this doc.
-6. Folder trust prompt is too thin. The only prompt is `Trust this folder? [y/N]` (`crates/zen-cli/src/lib.rs:555`).
+6. Folder trust prompt is too thin. The prompt is two lines: `This folder has project config that can run commands: <list>` (`crates/zen-cli/src/lib.rs:551-554`) followed by `Trust this folder? [y/N]` (`crates/zen-cli/src/lib.rs:555`). The list names only files and config keys (`hooks`, `permissions.allow`, `permissions.additionalDirectories`, `env`, `verify`, `baseUrl`), not their contents.
    It does not list which hooks, MCP servers, allow rules or env vars will load, so a yes is not an informed one.
    Decision (Leader, msg 5770): the prompt MUST list what will load (which hooks, MCP servers, allow rules and env vars)
    before asking. A yes without seeing that content is not an informed decision. Prompt change is a separate work item.
