@@ -90,7 +90,7 @@ API - 11+ providers configured out of the box, plus any custom endpoint:
 - **Local:** Ollama - Qwen3-Coder, Kimi K2, GLM-5.2, Devstral, gpt-oss. Fully
   offline, fully private.
 - **Paid (your choice):** OpenAI, Anthropic, Google, DeepSeek, Z.ai, Moonshot -
-  `zen auth login` stores keys in your OS keyring. Paid is supported, never required.
+  set the key in an environment variable (`ZEN_API_KEY`, `OPENAI_API_KEY`, or the variable named by `apiKeyEnv` in settings). ZenCode does not store keys itself. Paid is supported, never required.
 
 `zen models` shows what's available; fallback chains fail over automatically when
 a free quota is exhausted.
