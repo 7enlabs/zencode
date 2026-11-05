@@ -91,6 +91,27 @@ pub struct Finding {
     /// rendered report splits the two groups (S9 pattern 5).
     #[serde(default)]
     pub human_judgment: bool,
+    /// B9 evidence label for the claim in this finding, as emitted by
+    /// the reviewer model: "confirmed", "inferred" or "unverified"
+    /// (decision 5526). Defaults to "unverified" when the model omits
+    /// it, because an unlabelled claim must never read as confirmed.
+    #[serde(default = "default_label")]
+    pub label: String,
+}
+
+fn default_label() -> String {
+    "unverified".to_string()
+}
+
+impl Finding {
+    /// Short B9 tag rendered at the head of the finding line.
+    pub fn label_tag(&self) -> &'static str {
+        match self.label.trim().to_ascii_lowercase().as_str() {
+            "confirmed" => "[CONFIRMED]",
+            "inferred" => "[INFERRED]",
+            _ => "[UNVERIFIED]",
+        }
+    }
 }
 
 fn default_category() -> String {
@@ -342,6 +363,8 @@ pub fn collect_diff(cwd: &Path, scope: &ReviewScope, max_bytes: usize) -> Result
 /// mixing them together.
 const HUMAN_JUDGMENT_GUIDANCE: &str = "\n\nEach finding MUST also include \"human_judgment\": true when fixing it needs a human decision (behavior, API shape, design, or a security tradeoff), or false when the fix is mechanical (formatting, naming, an obvious missing check, a one-right-answer correction).";
 
+const EVIDENCE_LABEL_GUIDANCE: &str = "\n\nEach finding MUST also include \"label\": \"confirmed\" when the evidence cited inside the finding proves the claim, \"inferred\" when the claim follows from the code shown but is not directly proven, or \"unverified\" when it rests on anything outside the diff. Never label a claim confirmed without evidence inside the finding.";
+
 pub fn review_system_prompt() -> String {
     let mut prompt =
         "You are a senior code reviewer. Review the provided diff carefully and report \
@@ -355,7 +378,7 @@ pub fn review_system_prompt() -> String {
       \"file\": \"path/relative\", \"line\": 123 or null, \
       \"title\": \"short rule name\", \
       \"detail\": \"what is wrong and why it matters\", \
-      \"suggestion\": \"concrete fix\"}\n\n\
+      \"suggestion\": \"concrete fix\", \"label\": \"confirmed|inferred|unverified\"}\n\n\
      Severity guide:\n\
      - critical: data loss, exploitable security issue, crash on a normal path\n\
      - high: likely bug, broken error handling, race condition, wrong API use\n\
@@ -365,6 +388,7 @@ pub fn review_system_prompt() -> String {
      Be strict but fair: do not invent problems. If the diff is clean, output []."
             .to_string();
     prompt.push_str(HUMAN_JUDGMENT_GUIDANCE);
+    prompt.push_str(EVIDENCE_LABEL_GUIDANCE);
     prompt
 }
 
@@ -542,8 +566,12 @@ fn render_text(report: &ReviewReport, threshold: Severity) -> String {
                 ""
             };
             out.push_str(&format!(
-                "{n}. [{} / {}] {}{}\n",
-                f.severity, f.category, f.title, marker
+                "{n}. {} [{} / {}] {}{}\n",
+                f.label_tag(),
+                f.severity,
+                f.category,
+                f.title,
+                marker
             ));
             out.push_str(&format!("    evidence: {loc}\n"));
             if !f.detail.is_empty() {
@@ -890,6 +918,7 @@ mod tests {
             detail: "".into(),
             suggestion: "".into(),
             human_judgment: false,
+            label: "unverified".to_string(),
         };
         let report = ReviewReport::new(
             "s".into(),
@@ -1173,6 +1202,7 @@ mod tests {
             detail: "d".into(),
             suggestion: "s".into(),
             human_judgment: false,
+            label: "unverified".to_string(),
         };
         let report = ReviewReport::new("s".into(), "m".into(), vec![f]);
         let v = render_json_value(&report);
@@ -1194,6 +1224,7 @@ mod tests {
             detail: "".into(),
             suggestion: "".into(),
             human_judgment: h,
+            label: "unverified".to_string(),
         };
         let report = ReviewReport::new(
             "s".into(),
@@ -1213,14 +1244,17 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("1. [critical / bugs] judge-crit [fails --fail-on]"),
+            text.contains("1. [UNVERIFIED] [critical / bugs] judge-crit [fails --fail-on]"),
             "{text}"
         );
         assert!(
-            text.contains("2. [high / bugs] mech-high [fails --fail-on]"),
+            text.contains("2. [UNVERIFIED] [high / bugs] mech-high [fails --fail-on]"),
             "{text}"
         );
-        assert!(text.contains("3. [low / bugs] mech-low"), "{text}");
+        assert!(
+            text.contains("3. [UNVERIFIED] [low / bugs] mech-low"),
+            "{text}"
+        );
         assert_eq!(text.matches("evidence: f.rs:1").count(), 3, "{text}");
     }
 
@@ -1244,6 +1278,7 @@ mod tests {
                 detail: "".into(),
                 suggestion: "".into(),
                 human_judgment: false,
+                label: "unverified".to_string(),
             },
             Finding {
                 severity: Severity::Low,
@@ -1254,6 +1289,7 @@ mod tests {
                 detail: "".into(),
                 suggestion: "".into(),
                 human_judgment: true,
+                label: "unverified".to_string(),
             },
         ];
         absolutize_paths(&mut findings, Path::new("/repo"));
@@ -1264,6 +1300,44 @@ mod tests {
     #[test]
     fn system_prompt_asks_for_human_judgment_split() {
         assert!(review_system_prompt().contains("human_judgment"));
+    }
+
+    #[test]
+    fn system_prompt_asks_for_evidence_label() {
+        let p = review_system_prompt();
+        assert!(p.contains("label"));
+        assert!(p.contains("confirmed|inferred|unverified"));
+        assert!(p.contains("Never label a claim confirmed"));
+    }
+
+    #[test]
+    fn findings_parse_label_and_default_to_unverified() {
+        let text = "\u{60}\u{60}\u{60}json\n[{\"severity\":\"high\",\"category\":\"bugs\",\"file\":\"a.rs\",\"title\":\"t\",\"label\":\"confirmed\"},{\"severity\":\"low\",\"category\":\"style\",\"file\":\"b.rs\",\"title\":\"u\"}]\n\u{60}\u{60}\u{60}";
+        let f = extract_findings(text).unwrap();
+        assert_eq!(f[0].label, "confirmed");
+        assert_eq!(f[0].label_tag(), "[CONFIRMED]");
+        // B9: a finding the model did not label defaults to unverified,
+        // never to confirmed.
+        assert_eq!(f[1].label, "unverified");
+        assert_eq!(f[1].label_tag(), "[UNVERIFIED]");
+    }
+
+    #[test]
+    fn text_render_puts_label_tag_at_head_of_finding() {
+        let f = Finding {
+            severity: Severity::High,
+            category: "bugs".into(),
+            file: "f.rs".into(),
+            line: Some(1),
+            title: "boom".into(),
+            detail: "".into(),
+            suggestion: "".into(),
+            human_judgment: false,
+            label: "inferred".to_string(),
+        };
+        let report = ReviewReport::new("s".into(), "m".into(), vec![f]);
+        let text = render_text(&report, Severity::High);
+        assert!(text.contains("1. [INFERRED] [high / bugs] boom"), "{text}");
     }
 
     #[test]
