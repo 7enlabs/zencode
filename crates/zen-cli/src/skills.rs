@@ -1205,6 +1205,17 @@ fn canonical_tool_name(t: &str) -> String {
     }
 }
 
+/// Print a JSON payload the way List does: compact with --raw,
+/// pretty otherwise.
+fn print_json_value(cli: &crate::cli::Cli, v: &serde_json::Value) -> Result<()> {
+    if cli.raw {
+        println!("{}", serde_json::to_string(v)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(v)?);
+    }
+    Ok(())
+}
+
 pub async fn skill_command(
     cli: &crate::cli::Cli,
     _cwd: &Path,
@@ -1244,15 +1255,69 @@ pub async fn skill_command(
             registry,
             curated,
         } => {
+            // --quiet suppresses stdout only (M1, same family as
+            // D1): the search still runs and its errors still
+            // propagate - a missing --registry file or an invalid
+            // curated entry must fail identically with --quiet.
             if *curated {
-                crate::curation::run_skill_search(query, true, Some(&home))
+                if cli.json_output || cli.raw {
+                    let hits = crate::curation::search_hits(query, true, Some(&home))?;
+                    if cli.quiet {
+                        return Ok(0);
+                    }
+                    let results: Vec<serde_json::Value> = hits
+                        .iter()
+                        .map(|h| {
+                            serde_json::json!({
+                                "name": h.name,
+                                "description": h.description,
+                                "version": h.version,
+                                "author": h.author,
+                                "tier": h.tier,
+                                "review_summary": h.review_summary,
+                            })
+                        })
+                        .collect();
+                    print_json_value(
+                        cli,
+                        &serde_json::json!({ "query": query, "results": results }),
+                    )?;
+                    Ok(0)
+                } else if cli.quiet {
+                    crate::curation::search_hits(query, true, Some(&home))?;
+                    Ok(0)
+                } else {
+                    crate::curation::run_skill_search(query, true, Some(&home))
+                }
+            } else if cli.json_output || cli.raw {
+                let v = crate::skill_registry::search_json(query, registry.as_deref())?;
+                if !cli.quiet {
+                    print_json_value(cli, &v)?;
+                }
+                Ok(0)
+            } else if cli.quiet {
+                crate::skill_registry::search_json(query, registry.as_deref())?;
+                Ok(0)
             } else {
                 crate::skill_registry::cmd_search(query, registry.as_deref())?;
                 Ok(0)
             }
         }
         crate::cli::SkillSubcommand::Info { name, registry } => {
-            crate::skill_registry::cmd_info(name, registry.as_deref())?;
+            // --quiet suppresses stdout only (M1, same family as
+            // D1): the lookup still runs, so an unknown skill name
+            // errors identically with --quiet. info_json shares
+            // cmd_info's lookup and not-found error.
+            if cli.json_output || cli.raw {
+                let v = crate::skill_registry::info_json(name, registry.as_deref())?;
+                if !cli.quiet {
+                    print_json_value(cli, &v)?;
+                }
+            } else if cli.quiet {
+                crate::skill_registry::info_json(name, registry.as_deref())?;
+            } else {
+                crate::skill_registry::cmd_info(name, registry.as_deref())?;
+            }
             Ok(0)
         }
         crate::cli::SkillSubcommand::Remove { name } => {

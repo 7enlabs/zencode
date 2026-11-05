@@ -157,3 +157,17 @@ fn cost_json_quiet_without_session_keeps_error_and_exit_code() {
     assert!(stdout.is_empty(), "stdout: {stdout}");
     assert!(stderr.contains("no sessions found"), "stderr: {stderr}");
 }
+
+#[test]
+fn skill_info_unknown_name_with_quiet_still_errors() {
+    let home = TempDir::new("uc_home");
+    let cwd = TempDir::new("uc_cwd");
+    // M1: --quiet suppresses stdout only; the not-found error of
+    // skill info must still surface with exit 1.
+    let (stdout, stderr, code) = ZenRun::new("uc9", &home, &cwd)
+        .args(["skill", "info", "no-such-skill-zzz", "--quiet"])
+        .run_output();
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert!(stderr.contains("no skill"), "stderr: {stderr}");
+}

@@ -462,9 +462,9 @@ pub struct ContextArgs {
     after_help = "Examples:\n  zen export                                  Export the latest session as markdown\n  zen export --format json --output s.json    Export as JSON to a file\n  zen export --redact                         Redact secrets from the export"
 )]
 pub struct ExportArgs {
-    /// Export format
-    #[arg(long, value_enum, default_value_t = crate::export::ExportFormat::Markdown)]
-    pub format: crate::export::ExportFormat,
+    /// Export format (default: markdown, or json when --json is given)
+    #[arg(long, value_enum)]
+    pub format: Option<crate::export::ExportFormat>,
 
     /// Session id (default: the latest session)
     #[arg(long)]
@@ -765,7 +765,7 @@ mod tests {
         let cli = parse(&["export", "--format", "json", "--session", "abc", "--redact"]);
         match cli.subcommand {
             Some(Commands::Export(e)) => {
-                assert_eq!(e.format, crate::export::ExportFormat::Json);
+                assert_eq!(e.format, Some(crate::export::ExportFormat::Json));
                 assert_eq!(e.session.as_deref(), Some("abc"));
                 assert!(e.redact);
                 assert!(e.output.is_none());
@@ -775,7 +775,7 @@ mod tests {
         let cli = parse(&["export", "-o", "s.md"]);
         match cli.subcommand {
             Some(Commands::Export(e)) => {
-                assert_eq!(e.format, crate::export::ExportFormat::Markdown);
+                assert_eq!(e.format, None);
                 assert_eq!(e.output, Some(PathBuf::from("s.md")));
             }
             _ => panic!("expected Export"),

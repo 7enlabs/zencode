@@ -68,6 +68,7 @@ pub fn build_system_prompt(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result
         }
 
         parts.push(DONE_GUIDANCE.to_string());
+        parts.push(EVIDENCE_LABELING.to_string());
     }
 
     if let Some(extra) = &cli.append_system_prompt {
@@ -123,6 +124,23 @@ Definition of done:
 - Stay inside the task's scope: do not add features, files, or public APIs that were
   not requested. If the work genuinely needs a wider scope, say so and get confirmation.
 - Editing a file you have not read is refused by the harness -- read before changing.";
+
+/// B9 evidence labeling for agent answers (Leader ruling on the
+/// 2026-11-05 CLI reaudit): informational claims get a short label,
+/// deterministic output does not. Kept out of DEFAULT_SYSTEM_PROMPT,
+/// whose distilled size is locked by a test.
+pub const EVIDENCE_LABELING: &str = "\
+# Evidence labels for factual claims
+When you state a fact about something outside this session's own work - a \
+version, an upstream document, how a tool or library behaves - start the \
+claim with one label: [CONFIRMED] when you verified it against a source \
+you read (cite the file path, URL, or document, and its date when it has \
+one), [INFERRED] when it is your inference, [UNVERIFIED] when you have \
+no source; never present an unsourced claim as confirmed. A claim that \
+would change a decision (blocking a merge, security, architecture) needs \
+two independent pieces of evidence, not one. Deterministic output needs \
+no label: tool results, file contents, test results, JSON data, listings, \
+diffs, and code are their own evidence.";
 
 pub fn environment_block(cwd: &Path) -> String {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
