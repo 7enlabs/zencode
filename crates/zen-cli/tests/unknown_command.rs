@@ -185,7 +185,10 @@ fn skill_search_curated_json_carries_score() {
     let v: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("curated search --json must emit valid JSON");
     let results = v["results"].as_array().expect("results must be an array");
-    assert!(!results.is_empty(), "expected at least one curated hit for tdd");
+    assert!(
+        !results.is_empty(),
+        "expected at least one curated hit for tdd"
+    );
     for r in results {
         assert!(
             r.get("score").and_then(|s| s.as_u64()).is_some(),
