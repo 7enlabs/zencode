@@ -294,7 +294,9 @@ pub fn format_hits(hits: &[SearchHit], curated_only: bool) -> String {
     out
 }
 
-pub fn run_skill_search(query: &str, curated_only: bool, home: Option<&Path>) -> Result<i32> {
+/// The hits behind run_skill_search, without printing, so the
+/// command layer can render them as JSON as well as text.
+pub fn search_hits(query: &str, curated_only: bool, home: Option<&Path>) -> Result<Vec<SearchHit>> {
     let curated = load_curated_registry(home)?;
 
     for entry in &curated.entries {
@@ -313,7 +315,11 @@ pub fn run_skill_search(query: &str, curated_only: bool, home: Option<&Path>) ->
     } else {
         load_community_registry(home)?
     };
-    let hits = search_entries(query, curated_only, &curated, &community);
+    Ok(search_entries(query, curated_only, &curated, &community))
+}
+
+pub fn run_skill_search(query: &str, curated_only: bool, home: Option<&Path>) -> Result<i32> {
+    let hits = search_hits(query, curated_only, home)?;
     print!("{}", format_hits(&hits, curated_only));
     Ok(0)
 }

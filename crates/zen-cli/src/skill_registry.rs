@@ -233,6 +233,36 @@ pub fn cmd_search(query: &str, registry_override: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Search hits as a JSON payload for `zen skill search --json`: the
+/// registry entries with their match scores.
+pub fn search_json(query: &str, registry_override: Option<&str>) -> Result<serde_json::Value> {
+    let reg = load_community_registry(registry_override)?;
+    let hits = search_registry(&reg, query);
+    let results: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|(score, skill)| {
+            let mut v = serde_json::to_value(skill).unwrap_or(serde_json::Value::Null);
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("score".to_string(), serde_json::json!(score));
+            }
+            v
+        })
+        .collect();
+    Ok(serde_json::json!({ "query": query, "results": results }))
+}
+
+/// One skill as a JSON payload for `zen skill info --json`; the
+/// not-found error matches cmd_info's.
+pub fn info_json(name: &str, registry_override: Option<&str>) -> Result<serde_json::Value> {
+    let reg = load_community_registry(registry_override)?;
+    match find_in_registry(&reg, name) {
+        Some(skill) => Ok(serde_json::to_value(skill)?),
+        None => Err(anyhow!(
+            "no skill {name:?} in the community registry (try `zen skill search {name}`)"
+        )),
+    }
+}
+
 pub fn cmd_info(name: &str, registry_override: Option<&str>) -> Result<()> {
     let reg = load_community_registry(registry_override)?;
     match find_in_registry(&reg, name) {
@@ -296,6 +326,24 @@ mod tests {
         let hits = search_registry(&reg, "sec");
         assert_eq!(hits[0].1.name, "security-review");
         assert_eq!(hits[0].0, 75);
+    }
+
+    #[test]
+    fn search_json_carries_hits_with_scores() {
+        let v = search_json("testing", None).unwrap();
+        assert_eq!(v["query"], "testing");
+        let results = v["results"].as_array().unwrap();
+        assert!(results
+            .iter()
+            .any(|r| r["name"] == "tdd" && r["score"] == 40));
+    }
+
+    #[test]
+    fn info_json_finds_and_rejects() {
+        let v = info_json("tdd", None).unwrap();
+        assert_eq!(v["name"], "tdd");
+        let err = info_json("no-such-skill-xyz", None).unwrap_err();
+        assert!(err.to_string().contains("no skill"));
     }
 
     #[test]
