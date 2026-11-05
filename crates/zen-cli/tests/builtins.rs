@@ -1,7 +1,9 @@
 mod common;
 
 use common::*;
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 fn run_p(

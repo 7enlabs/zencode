@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use zen_core::{Tool, ToolContext};
 
 use crate::atomic::TEMP_PREFIX;
-use crate::builtin::{EditTool, MultiEditTool, ReadTool, WriteTool};
+#[cfg(unix)]
+use crate::builtin::ReadTool;
+use crate::builtin::{EditTool, MultiEditTool, WriteTool};
 
 fn tmpdir(tag: &str) -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
