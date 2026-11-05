@@ -171,3 +171,28 @@ fn skill_info_unknown_name_with_quiet_still_errors() {
     assert!(stdout.is_empty(), "stdout: {stdout}");
     assert!(stderr.contains("no skill"), "stderr: {stderr}");
 }
+
+#[test]
+fn skill_search_curated_json_carries_score() {
+    let home = TempDir::new("uc_home");
+    let cwd = TempDir::new("uc_cwd");
+    // PR #42 follow-up: curated JSON search carries the same score
+    // field as community JSON search.
+    let (stdout, stderr, code) = ZenRun::new("uc10", &home, &cwd)
+        .args(["skill", "search", "tdd", "--curated", "--json"])
+        .run_output();
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("curated search --json must emit valid JSON");
+    let results = v["results"].as_array().expect("results must be an array");
+    assert!(
+        !results.is_empty(),
+        "expected at least one curated hit for tdd"
+    );
+    for r in results {
+        assert!(
+            r.get("score").and_then(|s| s.as_u64()).is_some(),
+            "hit without score: {r}"
+        );
+    }
+}

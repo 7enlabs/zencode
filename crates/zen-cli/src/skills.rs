@@ -1275,6 +1275,7 @@ pub async fn skill_command(
                                 "author": h.author,
                                 "tier": h.tier,
                                 "review_summary": h.review_summary,
+                                "score": h.score,
                             })
                         })
                         .collect();
