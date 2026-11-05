@@ -303,8 +303,12 @@ pub struct EvalReport {
 impl EvalReport {
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
+        // B9: the pass line is the report's conclusion, so it carries
+        // the confirmed label - it is computed from the per-task
+        // results tabulated below, which are its evidence. The table
+        // itself is deterministic output and stays unlabeled.
         out.push_str(&format!(
-            "# zencode eval - {}\n\n{}/{} tasks passed\n\n",
+            "# zencode eval - {}\n\n[ĐÃ XÁC NHẬN] {}/{} tasks passed\n\n",
             self.model, self.passed_count, self.task_count
         ));
         out.push_str(
