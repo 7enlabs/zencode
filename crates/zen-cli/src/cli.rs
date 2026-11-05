@@ -133,9 +133,13 @@ pub struct Cli {
     #[arg(long = "quiet", global = true)]
     pub quiet: bool,
 
-    /// Print output without decoration or extra framing.
+    /// Emit compact one-line JSON output (the raw output mode).
     #[arg(long = "raw", global = true)]
     pub raw: bool,
+
+    /// Disable colored output (same effect as the NO_COLOR env var).
+    #[arg(long = "no-color", global = true)]
+    pub no_color: bool,
 
     /// Format for prompts read from stdin
     #[arg(long = "input-format", value_enum, default_value_t = InputFormat::Text)]
@@ -333,9 +337,10 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// The output format to honor for this run: --json aliases JSON output.
+    /// The output format to honor for this run: --json aliases JSON
+    /// output, and --raw selects the compact one-line JSON form.
     pub fn effective_output_format(&self) -> OutputFormat {
-        if self.json_output {
+        if self.json_output || self.raw {
             OutputFormat::Json
         } else {
             self.output_format
@@ -744,6 +749,9 @@ mod tests {
         assert!(cli.quiet);
         let cli = parse(&["--raw", "doctor"]);
         assert!(cli.raw);
+        assert_eq!(cli.effective_output_format(), OutputFormat::Json);
+        let cli = parse(&["--no-color", "doctor"]);
+        assert!(cli.no_color);
         let cli = parse(&["--json", "doctor"]);
         assert!(cli.json_output);
         assert_eq!(cli.effective_output_format(), OutputFormat::Json);

@@ -104,7 +104,13 @@ fn built_binary_name() -> &'static str {
     }
 }
 
-pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
+pub fn run_update(
+    check: bool,
+    home: Option<&Path>,
+    quiet: bool,
+    json: bool,
+    raw: bool,
+) -> Result<i32> {
     let Some(src_dir) = default_src_dir(home) else {
         anyhow::bail!("cannot determine home directory; set ZENCODE_SRC_DIR");
     };
@@ -115,16 +121,27 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
 
     if !src_dir.join(".git").is_dir() {
         if check {
-            println!("no local checkout found at {}", src_dir.display());
-            println!("run zen update without --check to install from source");
+            if json {
+                let v = serde_json::json!({"status": "no_local_checkout", "path": src_dir.display().to_string()});
+                if raw {
+                    println!("{}", serde_json::to_string(&v)?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+            } else if !quiet {
+                println!("no local checkout found at {}", src_dir.display());
+                println!("run zen update without --check to install from source");
+            }
             return Ok(0);
         }
-        println!(
-            "Cloning {} ({}) into {}",
-            repo_url(),
-            DEFAULT_BRANCH,
-            src_dir.display()
-        );
+        if !quiet && !json {
+            println!(
+                "Cloning {} ({}) into {}",
+                repo_url(),
+                DEFAULT_BRANCH,
+                src_dir.display()
+            );
+        }
         if let Some(parent) = src_dir.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -159,18 +176,38 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
         let remote = parse_ls_remote_head(&remote_out)
             .ok_or_else(|| anyhow!("could not read remote HEAD"))?;
         if check {
-            if local == remote {
-                println!("up to date: {local}");
-            } else {
-                println!("update available: local {local}, remote {remote}");
+            if json {
+                let v = serde_json::json!({"status": if local == remote { "up_to_date" } else { "update_available" }, "local": local, "remote": remote});
+                if raw {
+                    println!("{}", serde_json::to_string(&v)?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+            } else if !quiet {
+                if local == remote {
+                    println!("up to date: {local}");
+                } else {
+                    println!("update available: local {local}, remote {remote}");
+                }
             }
             return Ok(0);
         }
         if local == remote {
-            println!("already up to date: {local}");
+            if json {
+                let v = serde_json::json!({"status": "up_to_date", "local": local});
+                if raw {
+                    println!("{}", serde_json::to_string(&v)?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+            } else if !quiet {
+                println!("already up to date: {local}");
+            }
             return Ok(0);
         }
-        println!("Updating checkout from {local} to {remote}");
+        if !quiet && !json {
+            println!("Updating checkout from {local} to {remote}");
+        }
         run(
             Path::new(git),
             &["fetch", "origin", DEFAULT_BRANCH],
@@ -193,7 +230,9 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
     let Some(cargo) = find_cargo(home) else {
         anyhow::bail!("cargo not found; install Rust first, for example from https://rustup.rs");
     };
-    println!("Building zen-cli in release mode (this can take a few minutes)");
+    if !quiet && !json {
+        println!("Building zen-cli in release mode (this can take a few minutes)");
+    }
     run(
         &cargo,
         &[
@@ -220,7 +259,9 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
     let current = std::env::current_exe()?;
     let target = current.with_file_name(built_binary_name());
     if built.canonicalize().ok() == target.canonicalize().ok() {
-        println!("already running the freshly built binary");
+        if !quiet && !json {
+            println!("already running the freshly built binary");
+        }
         return Ok(0);
     }
     // Self-replacement: the running binary is moved aside to a `.old`
@@ -245,7 +286,16 @@ pub fn run_update(check: bool, home: Option<&Path>) -> Result<i32> {
         let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
     }
     let head = run_output(git, &["rev-parse", "--short", "HEAD"], &src_dir)?;
-    println!("Updated zen to {} at {}", head.trim(), target.display());
+    if json {
+        let v = serde_json::json!({"status": "updated", "rev": head.trim(), "path": target.display().to_string()});
+        if raw {
+            println!("{}", serde_json::to_string(&v)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        }
+    } else if !quiet {
+        println!("Updated zen to {} at {}", head.trim(), target.display());
+    }
     Ok(0)
 }
 
