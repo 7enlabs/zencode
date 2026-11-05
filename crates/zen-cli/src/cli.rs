@@ -431,6 +431,14 @@ pub struct ModelsArgs {
     /// Print only the best working model
     #[arg(long = "best")]
     pub best: bool,
+
+    /// Approve a model pool switch without prompting (default is to ask)
+    #[arg(long = "yes")]
+    pub yes: bool,
+
+    /// Restore the model pool from its backup file and exit
+    #[arg(long = "restore")]
+    pub restore: bool,
 }
 
 #[derive(Args, Debug, Clone)]
