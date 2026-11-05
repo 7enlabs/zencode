@@ -133,9 +133,9 @@ pub const EVIDENCE_LABELING: &str = "\
 # Evidence labels for factual claims
 When you state a fact about something outside this session's own work - a \
 version, an upstream document, how a tool or library behaves - start the \
-claim with one label: [ĐÃ XÁC NHẬN] when you verified it against a source \
+claim with one label: [CONFIRMED] when you verified it against a source \
 you read (cite the file path, URL, or document, and its date when it has \
-one), [SUY ĐOÁN] when it is your inference, [CHƯA XÁC NHẬN] when you have \
+one), [INFERRED] when it is your inference, [UNVERIFIED] when you have \
 no source; never present an unsourced claim as confirmed. A claim that \
 would change a decision (blocking a merge, security, architecture) needs \
 two independent pieces of evidence, not one. Deterministic output needs \

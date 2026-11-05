@@ -308,7 +308,7 @@ impl EvalReport {
         // results tabulated below, which are its evidence. The table
         // itself is deterministic output and stays unlabeled.
         out.push_str(&format!(
-            "# zencode eval - {}\n\n[ĐÃ XÁC NHẬN] {}/{} tasks passed\n\n",
+            "# zencode eval - {}\n\n[CONFIRMED] {}/{} tasks passed\n\n",
             self.model, self.passed_count, self.task_count
         ));
         out.push_str(
