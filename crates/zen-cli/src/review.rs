@@ -562,37 +562,73 @@ fn render_json_value(report: &ReviewReport) -> serde_json::Value {
     serde_json::to_value(report).unwrap_or(serde_json::Value::Null)
 }
 
-fn print_stream_json(report: &ReviewReport, threshold: Severity, exit_code: i32) {
+/// Build the stream-json records for a review run. Every record carries
+/// the contract version field `v`, matching the agent stream in
+/// output.rs (STREAM_JSON_VERSION); consumers key on it to pick a parser.
+fn stream_json_records(
+    report: &ReviewReport,
+    threshold: Severity,
+    exit_code: i32,
+) -> Vec<serde_json::Value> {
     let failed = !report.at_or_above(threshold).is_empty();
-    println!(
-        "{}",
-        serde_json::json!({
-            "type": "review",
-            "event": "start",
-            "scope": report.scope,
-            "model": report.model,
-        })
-    );
+    let mut records = vec![serde_json::json!({
+        "v": crate::output::STREAM_JSON_VERSION,
+        "type": "review",
+        "event": "start",
+        "scope": report.scope,
+        "model": report.model,
+    })];
     for f in &report.findings {
-        println!(
-            "{}",
-            serde_json::json!({
-                "type": "review",
-                "event": "finding",
-                "finding": f,
-            })
-        );
-    }
-    println!(
-        "{}",
-        serde_json::json!({
+        records.push(serde_json::json!({
+            "v": crate::output::STREAM_JSON_VERSION,
             "type": "review",
-            "event": "complete",
-            "summary": report.summary,
-            "failed": failed,
-            "exit_code": exit_code,
-        })
-    );
+            "event": "finding",
+            "finding": f,
+        }));
+    }
+    records.push(serde_json::json!({
+        "v": crate::output::STREAM_JSON_VERSION,
+        "type": "review",
+        "event": "complete",
+        "summary": report.summary,
+        "failed": failed,
+        "exit_code": exit_code,
+    }));
+    records
+}
+
+/// Exit code for a `collect_diff` failure (migration queue Q3,
+/// docs/exit-codes.md): not a git repository is a validation error, a
+/// missing ref is not found, anything else stays general.
+fn diff_error_exit_code(err: &anyhow::Error) -> i32 {
+    let text = format!("{err:#}").to_lowercase();
+    if text.contains("not a git repository") {
+        crate::exit_code::VALIDATION
+    } else if text.contains("unknown revision")
+        || text.contains("unknown ref")
+        || text.contains("not found")
+    {
+        crate::exit_code::NOT_FOUND
+    } else {
+        crate::exit_code::GENERAL
+    }
+}
+
+/// Exit code for a failed review run against the provider (queue Q3):
+/// rate limit only when the provider says so, otherwise general.
+fn provider_error_exit_code(text: &str) -> i32 {
+    let text = text.to_lowercase();
+    if text.contains("rate limit") || text.contains("rate_limit") || text.contains("429") {
+        crate::exit_code::RATE_LIMIT
+    } else {
+        crate::exit_code::GENERAL
+    }
+}
+
+fn print_stream_json(report: &ReviewReport, threshold: Severity, exit_code: i32) {
+    for record in stream_json_records(report, threshold, exit_code) {
+        println!("{record}");
+    }
 }
 
 pub async fn run_review(
@@ -630,8 +666,9 @@ pub async fn run_review(
     let diff = match collect_diff(cwd, &scope, args.max_diff_bytes) {
         Ok(d) => d,
         Err(e) => {
+            let code = diff_error_exit_code(&e);
             eprintln!("error: {e:#}");
-            return Ok(2);
+            return Ok(code);
         }
     };
     if diff.diff_text.trim().is_empty() {
@@ -669,14 +706,14 @@ pub async fn run_review(
         eprintln!(
             "error: no API key configured (set it via `zen auth login` or env); cannot run review"
         );
-        return Ok(2);
+        return Ok(crate::exit_code::AUTH);
     }
 
     let registry = match read_only_registry() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e:#}");
-            return Ok(2);
+            return Ok(crate::exit_code::GENERAL);
         }
     };
     let sink: Arc<dyn EventSink> = Arc::new(NullSink);
@@ -704,11 +741,12 @@ pub async fn run_review(
 
     let result = agent.run_turn(&build_review_prompt(&diff)).await;
     if result.is_error {
+        let code = provider_error_exit_code(&format!("{} {}", result.subtype, result.result));
         eprintln!(
             "error: review run failed ({}): {}",
             result.subtype, result.result
         );
-        return Ok(2);
+        return Ok(code);
     }
 
     let mut findings = match extract_findings(&result.result) {
@@ -717,7 +755,7 @@ pub async fn run_review(
             eprintln!("error: {e:#}");
             eprintln!("--- model output (unparseable) ---");
             eprintln!("{}", result.result);
-            return Ok(2);
+            return Ok(crate::exit_code::VALIDATION);
         }
     };
     absolutize_paths(&mut findings, cwd);
@@ -894,6 +932,48 @@ mod tests {
         assert!(a.uncommitted);
         assert_eq!(a.fail_on, "medium");
         assert_eq!(a.output_format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn stream_json_records_carry_contract_version() {
+        let report = ReviewReport::new("uncommitted".into(), "test-model".into(), vec![]);
+        let records = stream_json_records(&report, Severity::High, 0);
+        assert_eq!(records.len(), 2);
+        for record in &records {
+            assert_eq!(
+                record["v"],
+                serde_json::json!(crate::output::STREAM_JSON_VERSION),
+                "review stream-json record missing v: {record}"
+            );
+            assert_eq!(record["type"], "review");
+        }
+        assert_eq!(records[0]["event"], "start");
+        assert_eq!(records[1]["event"], "complete");
+    }
+
+    #[test]
+    fn diff_error_exit_code_classifies_by_cause() {
+        let not_repo = anyhow::anyhow!("fatal: not a git repository (or any parent)");
+        assert_eq!(
+            diff_error_exit_code(&not_repo),
+            crate::exit_code::VALIDATION
+        );
+        let bad_ref = anyhow::anyhow!("fatal: ambiguous argument 'xyz': unknown revision");
+        assert_eq!(diff_error_exit_code(&bad_ref), crate::exit_code::NOT_FOUND);
+        let other = anyhow::anyhow!("io error");
+        assert_eq!(diff_error_exit_code(&other), crate::exit_code::GENERAL);
+    }
+
+    #[test]
+    fn provider_error_exit_code_only_rate_limits_on_provider_word() {
+        assert_eq!(
+            provider_error_exit_code("HTTP 429: rate limit exceeded"),
+            crate::exit_code::RATE_LIMIT
+        );
+        assert_eq!(
+            provider_error_exit_code("connection reset by peer"),
+            crate::exit_code::GENERAL
+        );
     }
 
     #[test]
