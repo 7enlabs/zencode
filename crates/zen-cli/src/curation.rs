@@ -16,6 +16,9 @@ pub struct RegistryEntry {
     pub permissions: Vec<String>,
 
     #[serde(default)]
+    pub tags: Vec<String>,
+
+    #[serde(default)]
     pub source: Option<String>,
 }
 
@@ -208,6 +211,39 @@ pub struct SearchHit {
     pub author: String,
     pub tier: String,
     pub review_summary: Option<String>,
+    /// Match score, same tiers as the community registry
+    /// (`search_registry` in skill_registry.rs).
+    pub score: u32,
+}
+
+/// Match score for one registry entry, using the same tiers as the
+/// community registry (`search_registry`): exact name 100, name prefix
+/// 75, name contains 50, exact tag 40, description contains 20. The
+/// author tier (10) is curated-search only: `search_entries` also
+/// matches on author, which community scoring does not cover. No
+/// curated entry carries tags today, so the tag tier is inert until
+/// one does; it is kept so the tiers stay identical.
+fn match_score(e: &RegistryEntry, q: &str) -> u32 {
+    let name = e.name.to_ascii_lowercase();
+    let desc = e.description.to_ascii_lowercase();
+    let mut score = 0u32;
+    if name == q {
+        score = score.max(100);
+    } else if name.starts_with(q) {
+        score = score.max(75);
+    } else if name.contains(q) {
+        score = score.max(50);
+    }
+    if e.tags.iter().any(|t| t.to_ascii_lowercase() == q) {
+        score = score.max(40);
+    }
+    if desc.contains(q) {
+        score = score.max(20);
+    }
+    if e.author.to_ascii_lowercase().contains(q) {
+        score = score.max(10);
+    }
+    score
 }
 
 pub fn search_entries(
@@ -235,6 +271,7 @@ pub fn search_entries(
                     "reviewed by {} on {} (v{})",
                     ce.curation.reviewer, ce.curation.review_date, ce.curation.reviewed_version
                 )),
+                score: match_score(&ce.entry, &q),
             });
         }
     }
@@ -251,13 +288,15 @@ pub fn search_entries(
                     author: e.author.clone(),
                     tier: "community".to_string(),
                     review_summary: None,
+                    score: match_score(e, &q),
                 });
             }
         }
     }
     hits.sort_by(|a, b| {
-        (b.tier == "curated")
-            .cmp(&(a.tier == "curated"))
+        b.score
+            .cmp(&a.score)
+            .then((b.tier == "curated").cmp(&(a.tier == "curated")))
             .then(a.name.cmp(&b.name))
     });
     hits
@@ -337,6 +376,7 @@ mod tests {
                 author: "ZenCode".to_string(),
                 trust_tier: "curated".to_string(),
                 permissions: vec!["read".to_string()],
+                tags: vec![],
                 source: Some(format!("builtin:{}", name)),
             },
             curation: CurationMeta {
@@ -364,6 +404,7 @@ mod tests {
             author: "someone".to_string(),
             trust_tier: "community".to_string(),
             permissions: vec![],
+            tags: vec![],
             source: Some("https://example.com/skill.zip".to_string()),
         }
     }
@@ -467,6 +508,24 @@ mod tests {
         assert_eq!(search_entries("zencode", false, &reg, &[]).len(), 2);
         assert_eq!(search_entries("TDD", false, &reg, &[]).len(), 1);
         assert!(search_entries("zzz-no-match", false, &reg, &[]).is_empty());
+    }
+
+    #[test]
+    fn search_scores_follow_community_tiers() {
+        let reg = sample_registry();
+        let community = vec![community_entry("tdd-helper")];
+        let hits = search_entries("tdd", false, &reg, &community);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].name, "tdd");
+        assert_eq!(hits[0].score, 100);
+        assert_eq!(hits[1].name, "tdd-helper");
+        assert_eq!(hits[1].score, 75);
+        let desc = search_entries("does things", false, &reg, &[]);
+        assert_eq!(desc.len(), 2);
+        assert!(desc.iter().all(|h| h.score == 20));
+        let author = search_entries("zencode", false, &reg, &[]);
+        assert_eq!(author.len(), 2);
+        assert!(author.iter().all(|h| h.score == 10));
     }
 
     #[test]
