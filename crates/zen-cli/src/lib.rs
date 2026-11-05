@@ -453,9 +453,10 @@ fn cost_subcommand(
     home: Option<&std::path::Path>,
     args: &CostArgs,
 ) -> anyhow::Result<()> {
-    if cli.quiet {
-        return Ok(());
-    }
+    // --quiet suppresses stdout only: it must never skip the work,
+    // swallow an error, or change the exit code (pilot finding D1:
+    // cost --json --quiet used to exit 0 with no session at all).
+    let quiet = cli.quiet;
     let Some(home) = home else {
         anyhow::bail!("cannot determine home directory");
     };
@@ -478,14 +479,16 @@ fn cost_subcommand(
             .ok_or_else(|| anyhow::anyhow!("no sessions found under ~/.zen/projects"))?,
     };
     let Some(ledger) = cost::load(home, &session_id) else {
-        match format {
-            OutputFormat::Json | OutputFormat::StreamJson => {
-                let empty = cost::summarize(&session_id, &[]);
-                println!("{}", serde_json::to_string(&cost::to_json(&empty))?);
-            }
-            OutputFormat::Text => {
-                println!("No cost data recorded for session {}.", session_id);
-                println!("Cost tracking starts with this version; run a session first.");
+        if !quiet {
+            match format {
+                OutputFormat::Json | OutputFormat::StreamJson => {
+                    let empty = cost::summarize(&session_id, &[]);
+                    println!("{}", serde_json::to_string(&cost::to_json(&empty))?);
+                }
+                OutputFormat::Text => {
+                    println!("No cost data recorded for session {}.", session_id);
+                    println!("Cost tracking starts with this version; run a session first.");
+                }
             }
         }
         return Ok(());
@@ -499,23 +502,25 @@ fn cost_subcommand(
         cfg.as_ref().and_then(|c| c.max_budget_usd),
         cfg.as_ref().and_then(|c| c.budget_warn_at),
     );
-    match format {
-        OutputFormat::Text => {
-            print!("{}", cost::render_text(&summary));
-            if let Some(policy) = &budget {
-                println!(
-                    "{}",
-                    crate::budget::budget_line(policy, summary.total_cost_usd)
-                );
+    if !quiet {
+        match format {
+            OutputFormat::Text => {
+                print!("{}", cost::render_text(&summary));
+                if let Some(policy) = &budget {
+                    println!(
+                        "{}",
+                        crate::budget::budget_line(policy, summary.total_cost_usd)
+                    );
+                }
             }
-        }
-        OutputFormat::Json | OutputFormat::StreamJson => {
-            let mut v = cost::to_json(&summary);
-            if let Some(policy) = &budget {
-                v["budget_usd"] = serde_json::json!(policy.max_budget_usd);
-                v["budget_warn_at"] = serde_json::json!(policy.warn_at);
+            OutputFormat::Json | OutputFormat::StreamJson => {
+                let mut v = cost::to_json(&summary);
+                if let Some(policy) = &budget {
+                    v["budget_usd"] = serde_json::json!(policy.max_budget_usd);
+                    v["budget_warn_at"] = serde_json::json!(policy.warn_at);
+                }
+                println!("{}", serde_json::to_string(&v)?)
             }
-            println!("{}", serde_json::to_string(&v)?)
         }
     }
     Ok(())

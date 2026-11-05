@@ -129,3 +129,31 @@ fn review_with_base_and_commit_exits_validation() {
     assert_eq!(code, 4, "stderr: {stderr}");
     assert!(stderr.contains("mutually exclusive"), "stderr: {stderr}");
 }
+
+#[test]
+fn cost_json_without_session_exits_1_with_error() {
+    let home = TempDir::new("uc_home");
+    let cwd = TempDir::new("uc_cwd");
+    // No sessions under the home: cost is an error (exit 1, message on
+    // stderr), in JSON mode as in text mode.
+    let (stdout, stderr, code) = ZenRun::new("uc7", &home, &cwd)
+        .args(["cost", "--json"])
+        .run_output();
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert!(stderr.contains("no sessions found"), "stderr: {stderr}");
+}
+
+#[test]
+fn cost_json_quiet_without_session_keeps_error_and_exit_code() {
+    let home = TempDir::new("uc_home");
+    let cwd = TempDir::new("uc_cwd");
+    // Pilot finding D1: --quiet suppresses stdout only. It must not
+    // swallow the no-session error or turn the exit code into 0.
+    let (stdout, stderr, code) = ZenRun::new("uc8", &home, &cwd)
+        .args(["cost", "--json", "--quiet"])
+        .run_output();
+    assert_eq!(code, 1, "stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert!(stderr.contains("no sessions found"), "stderr: {stderr}");
+}
