@@ -495,6 +495,10 @@ fn absolutize_paths(findings: &mut [Finding], root: &Path) {
         if !p.is_absolute() {
             f.file = root.join(p).display().to_string();
         }
+        // Finding paths are report output (text, JSON and stream-json) and
+        // are compared as strings, so normalize Windows separators to '/':
+        // Path::display would otherwise emit a backslash there on Windows.
+        f.file = f.file.replace('\\', "/");
     }
 }
 
