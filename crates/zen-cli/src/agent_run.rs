@@ -620,9 +620,11 @@ pub(crate) async fn run_agent_with_result(
                 name
             );
             let result = local_result(session_id, &cfg.model, Default::default(), text, true, 0);
-            print_result(&result, &cli.output_format, &buf, false);
-            print!("{}", buf.text());
-            if cli.output_format == OutputFormat::Text {
+            print_result(&result, &cli.effective_output_format(), &buf, false);
+            if !cli.quiet {
+                print!("{}", buf.text());
+            }
+            if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text {
                 println!();
             }
             return Ok((1, result));
@@ -652,13 +654,15 @@ pub(crate) async fn run_agent_with_result(
 
     let assembly = assemble(cli, cwd, home, cfg, session_id, transcript_path).await?;
 
-    let buf = Arc::new(if cli.output_format == OutputFormat::StreamJson {
-        Buffered::stdout()
-    } else {
-        Buffered::new()
-    });
+    let buf = Arc::new(
+        if cli.effective_output_format() == OutputFormat::StreamJson {
+            Buffered::stdout()
+        } else {
+            Buffered::new()
+        },
+    );
     let mut stream_sink: Option<Arc<StreamJsonSink>> = None;
-    let sink: Arc<dyn EventSink> = match cli.output_format {
+    let sink: Arc<dyn EventSink> = match cli.effective_output_format() {
         OutputFormat::StreamJson => {
             let s = Arc::new(StreamJsonSink::with_partial(
                 buf.clone(),
@@ -804,9 +808,11 @@ pub(crate) async fn run_agent_with_result(
                 false,
                 0,
             );
-            print_result(&result, &cli.output_format, &buf, false);
-            print!("{}", buf.text());
-            if cli.output_format == OutputFormat::Text {
+            print_result(&result, &cli.effective_output_format(), &buf, false);
+            if !cli.quiet {
+                print!("{}", buf.text());
+            }
+            if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text {
                 println!();
             }
             return Ok((if local_failed { 1 } else { 0 }, result));
@@ -848,9 +854,11 @@ pub(crate) async fn run_agent_with_result(
             is_error,
             started.elapsed().as_millis() as u64,
         );
-        print_result(&result, &cli.output_format, &buf, false);
-        print!("{}", buf.text());
-        if cli.output_format == OutputFormat::Text {
+        print_result(&result, &cli.effective_output_format(), &buf, false);
+        if !cli.quiet {
+            print!("{}", buf.text());
+        }
+        if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text {
             println!();
         }
         return Ok((if is_error { 1 } else { 0 }, result));
@@ -923,9 +931,12 @@ pub(crate) async fn run_agent_with_result(
                     permission_denials: vec![],
                 };
                 if interrupt != Interrupt::Term {
-                    print_result(&result, &cli.output_format, &buf, false);
-                    print!("{}", buf.text());
-                    if cli.output_format == OutputFormat::Text {
+                    print_result(&result, &cli.effective_output_format(), &buf, false);
+                    if !cli.quiet {
+                        print!("{}", buf.text());
+                    }
+                    if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text
+                    {
                         println!();
                     }
                 }
@@ -999,15 +1010,21 @@ pub(crate) async fn run_agent_with_result(
 
     run_session_end(&assembly.hooks, session_id, cwd, cfg, "other").await;
 
-    print_result(&result, &cli.output_format, &buf, false);
+    print_result(&result, &cli.effective_output_format(), &buf, false);
 
-    print!("{}", buf.text());
-    if cli.output_format == OutputFormat::Text && !result.result.ends_with('\n') {
+    if !cli.quiet {
+        print!("{}", buf.text());
+    }
+    if !cli.quiet
+        && !cli.raw
+        && cli.effective_output_format() == OutputFormat::Text
+        && !result.result.ends_with('\n')
+    {
         println!();
     }
 
     if let Some(schema_path) = &cli.json_schema {
-        if cli.output_format != OutputFormat::Json {
+        if cli.effective_output_format() != OutputFormat::Json {
             eprintln!("warning: --json-schema requires --output-format json");
         } else if let Err(msg) = crate::output::validate_json_schema(&result.result, schema_path) {
             eprintln!("JSON schema validation failed: {}", msg);

@@ -570,6 +570,7 @@ pub fn resolve_session_path(
 pub fn run_context(
     session: Option<&str>,
     output_format: &crate::cli::OutputFormat,
+    quiet: bool,
     cwd: &Path,
     home: Option<&Path>,
 ) -> Result<()> {
@@ -580,10 +581,15 @@ pub fn run_context(
         .unwrap_or_default();
     let parsed = parse_transcript(&path, &session_id)?;
     if parsed.requests.is_empty() {
-        println!("No model requests recorded in this session yet.");
+        if !quiet {
+            println!("No model requests recorded in this session yet.");
+        }
         return Ok(());
     }
     let analysis = analyze(&parsed);
+    if quiet {
+        return Ok(());
+    }
     match output_format {
         crate::cli::OutputFormat::Text => {
             print!("{}", render_text(&analysis));

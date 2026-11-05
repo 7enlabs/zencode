@@ -99,257 +99,368 @@ fn parse_session_uuid(s: &str) -> Result<String, String> {
 }
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "zen", version, about = "ZenCode CLI coding agent")]
+#[command(
+    name = "zen",
+    version,
+    about = "Run an AI coding agent in your terminal",
+    after_help = "Examples:
+  zen                             Start an interactive session
+  zen -p \"fix the failing test\"   Run one prompt and print the result
+  zen doctor                      Show configuration and environment diagnostics
+  zen --output-format json doctor Print diagnostics as JSON"
+)]
 pub struct Cli {
+    /// Run one prompt non-interactively and print the result
     #[arg(short = 'p', long = "print")]
     pub print: bool,
 
+    /// Serve the Agent Client Protocol (ACP) over stdio
     #[arg(long = "acp")]
     pub acp: bool,
 
+    /// Format for results and reports
     #[arg(long = "output-format", value_enum, default_value_t = OutputFormat::Text)]
     pub output_format: OutputFormat,
 
+    /// Emit JSON output (alias for --output-format json).
+    // The field is named json_output, not json, so the clap arg id does not
+    // collide with the json positional (a String) of the mcp add-json
+    // subcommand now that this flag is global and reaches every subcommand.
+    #[arg(long = "json", global = true)]
+    pub json_output: bool,
+
+    /// Silence informational output on stdout; errors still go to stderr.
+    #[arg(long = "quiet", global = true)]
+    pub quiet: bool,
+
+    /// Print output without decoration or extra framing.
+    #[arg(long = "raw", global = true)]
+    pub raw: bool,
+
+    /// Format for prompts read from stdin
     #[arg(long = "input-format", value_enum, default_value_t = InputFormat::Text)]
     pub input_format: InputFormat,
 
+    /// Include partial message chunks in stream-json output
     #[arg(long = "include-partial-messages")]
     pub include_partial_messages: bool,
 
+    /// Print verbose diagnostics
     #[arg(long = "verbose")]
     pub verbose: bool,
 
+    /// Continue the most recent session
     #[arg(short = 'c', long = "continue")]
     pub continue_session: bool,
 
+    /// Resume a session by id; without an id, resume the latest
     #[arg(short = 'r', long = "resume", num_args = 0..=1, default_missing_value = "")]
     pub resume: Option<String>,
 
+    /// Auto-compact context: auto, off, or a token count
     #[arg(long = "autocompact", value_parser = parse_autocompact)]
     pub autocompact: Option<String>,
 
+    /// Prune older tool results from context
     #[arg(long = "prune", overrides_with = "no_prune")]
     pub prune: bool,
 
+    /// Do not prune older tool results from context
     #[arg(long = "no-prune", overrides_with = "prune")]
     pub no_prune: bool,
 
+    /// Keep this many recent turns before pruning older tool results
     #[arg(long = "prune-after")]
     pub prune_after: Option<usize>,
 
+    /// Cap tokens kept for a single tool result
     #[arg(long = "max-result-tokens")]
     pub max_result_tokens: Option<u64>,
 
+    /// Use this session id (UUID) for the run
     #[arg(long = "session-id", value_parser = parse_session_uuid)]
     pub session_id: Option<String>,
 
+    /// Fork the resumed session instead of appending to it
     #[arg(long = "fork-session")]
     pub fork_session: bool,
 
+    /// Do not save the session to disk
     #[arg(long = "no-session-persistence")]
     pub no_session_persistence: bool,
 
+    /// Ephemeral run: save nothing to disk
     #[arg(long)]
     pub ephemeral: bool,
 
+    /// Model to use for this run
     #[arg(long = "model")]
     pub model: Option<String>,
 
+    /// Model for /btw side questions
     #[arg(long = "btw-model")]
     pub btw_model: Option<String>,
 
+    /// Base URL of the model provider API
     #[arg(long = "base-url")]
     pub base_url: Option<String>,
 
+    /// Model provider to route requests through
     #[arg(long = "provider")]
     pub provider: Option<String>,
 
+    /// Permission mode for tool calls
     #[arg(long = "permission-mode", value_parser = parse_permission_mode_flag)]
     pub permission_mode: Option<PermissionMode>,
 
+    /// Only allow these tools (space-separated names)
     #[arg(long = "allowedTools", visible_alias = "allowed-tools", num_args = 1..)]
     pub allowed_tools: Vec<String>,
 
+    /// Never allow these tools (space-separated names)
     #[arg(long = "disallowedTools", visible_alias = "disallowed-tools", num_args = 1..)]
     pub disallowed_tools: Vec<String>,
 
+    /// Tool set for the run (bundle name or list)
     #[arg(long = "tools", allow_hyphen_values = true)]
     pub tools: Option<String>,
 
+    /// Override the system prompt
     #[arg(long = "system-prompt")]
     pub system_prompt: Option<String>,
 
+    /// Append text to the system prompt
     #[arg(long = "append-system-prompt")]
     pub append_system_prompt: Option<String>,
 
+    /// Add a working directory the agent may access
     #[arg(long = "add-dir", num_args = 1..)]
     pub add_dir: Vec<PathBuf>,
 
+    /// Load MCP servers from this config file or JSON
     #[arg(long = "mcp-config", num_args = 1..)]
     pub mcp_config: Vec<String>,
 
+    /// Only use MCP servers given via --mcp-config
     #[arg(long = "strict-mcp-config")]
     pub strict_mcp_config: bool,
 
+    /// Load settings from this file or JSON
     #[arg(long = "settings")]
     pub settings: Option<String>,
 
+    /// Settings sources to load (comma-separated)
     #[arg(long = "setting-sources")]
     pub setting_sources: Option<String>,
 
+    /// Agent definitions as JSON
     #[arg(long = "agents")]
     pub agents: Option<String>,
 
+    /// Run as the named agent
     #[arg(long = "agent")]
     pub agent: Option<String>,
 
+    /// Stop after this many agent turns
     #[arg(long = "max-turns")]
     pub max_turns: Option<usize>,
 
+    /// Stop when session cost passes this USD amount
     #[arg(long = "max-budget-usd")]
     pub max_budget_usd: Option<f64>,
 
+    /// Warn when session cost passes this USD amount
     #[arg(long = "budget-warn-at")]
     pub budget_warn_at: Option<f64>,
 
+    /// Verify command to run after turns; failures are retried
     #[arg(long = "until")]
     pub until: Option<String>,
 
+    /// Retries allowed for a failing --until verify command
     #[arg(long = "max-verify-retries", default_value_t = 3)]
     pub max_verify_retries: usize,
 
+    /// Start in plan mode (no edits until the plan is approved)
     #[arg(long = "plan")]
     pub plan: bool,
 
+    /// Answer yes to confirmation prompts
     #[arg(short = 'y', long = "yes")]
     pub yes: bool,
 
+    /// Bare mode: skip project config, agents and MCP discovery
     #[arg(long = "bare")]
     pub bare: bool,
 
+    /// Ask the model for terse answers
     #[arg(long = "terse")]
     pub terse: bool,
 
+    /// Cap tokens in each model response
     #[arg(long = "max-output-tokens")]
     pub max_output_tokens: Option<u32>,
 
+    /// Token budget for the repository map
     #[arg(long = "repomap-budget", default_value_t = crate::repomap::DEFAULT_MAP_TOKENS)]
     pub map_tokens: usize,
 
+    /// Trust this folder's project config for the session
     #[arg(long = "trust-folder")]
     pub trust_folder: bool,
 
+    /// Skip safety confirmations for risky operations
     #[arg(long = "i-understand-the-risks")]
     pub i_understand_the_risks: bool,
 
+    /// Restrict the run to a named tool bundle
     #[arg(long = "tool-bundle", value_parser = parse_tool_bundle)]
     pub tool_bundle: Option<zen_agent::ToolBundle>,
 
+    /// Output style to apply to responses
     #[arg(long = "style", value_name = "STYLE")]
     pub style: Option<String>,
 
+    /// Validate the final output against this JSON schema file
     #[arg(long = "json-schema", value_name = "FILE")]
     pub json_schema: Option<std::path::PathBuf>,
 
     #[command(subcommand)]
     pub subcommand: Option<Commands>,
 
+    /// Prompt for the agent; omit to start an interactive session
     pub prompt: Vec<String>,
+}
+
+impl Cli {
+    /// The output format to honor for this run: --json aliases JSON output.
+    pub fn effective_output_format(&self) -> OutputFormat {
+        if self.json_output {
+            OutputFormat::Json
+        } else {
+            self.output_format
+        }
+    }
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
+    /// Manage MCP server configuration
     Mcp(McpArgs),
 
+    /// Manage skills: list, install, search, remove
     Skill(SkillArgs),
 
+    /// Diagnose configuration, credentials and environment
     Doctor,
 
+    /// List available models
     Models(ModelsArgs),
 
+    /// Show recorded cost for a session
     Cost(CostArgs),
 
+    /// Show what fills a session's context window
     Context(ContextArgs),
 
+    /// Show documentation for one tool
     #[command(name = "tool-help")]
     ToolHelp {
+        /// Name of the tool, e.g. Read or Bash
         name: String,
     },
 
+    /// Export a session to a file
     Export(ExportArgs),
 
+    /// Import a session from an export file
     Import(ImportArgs),
 
+    /// List, archive, delete or restore sessions
     Sessions(SessionsArgs),
 
+    /// Run the built-in evaluation tasks
     Eval(EvalArgs),
 
+    /// Review a diff and report findings
     Review(ReviewArgs),
 
+    /// Show review comments on a GitHub pull request
     #[command(name = "pr-comments")]
     PrComments {
+        /// Pull request number or URL (default: current branch)
         pr: Option<String>,
-
-        #[arg(long)]
-        json: bool,
+        // JSON output is the global --json flag on Cli (json_output).
     },
 
+    /// Inspect CI check failures and suggest fixes
     #[command(name = "ci-fix")]
     CiFix {
-        #[arg(long)]
-        json: bool,
+        // JSON output is the global --json flag on Cli (json_output).
     },
 
+    /// Check for and install zen updates
     Update(UpdateArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct UpdateArgs {
+    /// Only check for updates; do not install
     #[arg(long)]
     pub check: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ModelsArgs {
+    /// Refresh the model list from the provider
     #[arg(long = "refresh")]
     pub refresh: bool,
 
+    /// Print only the best working model
     #[arg(long = "best")]
     pub best: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct CostArgs {
+    /// Session id (default: the latest session)
     #[arg(long = "session")]
     pub session: Option<String>,
 
+    /// Format for the report
     #[arg(long = "output-format", value_enum, default_value_t = OutputFormat::Text)]
     pub output_format: OutputFormat,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ContextArgs {
+    /// Session id (default: the latest session)
     #[arg(long = "session")]
     pub session: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ExportArgs {
+    /// Export format
     #[arg(long, value_enum, default_value_t = crate::export::ExportFormat::Markdown)]
     pub format: crate::export::ExportFormat,
 
+    /// Session id (default: the latest session)
     #[arg(long)]
     pub session: Option<String>,
 
+    /// Write to this file instead of stdout
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
+    /// Redact secrets from the export
     #[arg(long)]
     pub redact: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ImportArgs {
+    /// Export file to import
     pub file: PathBuf,
 }
 
@@ -361,38 +472,49 @@ pub struct SessionsArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SessionSubcommand {
+    /// List sessions
     List {
+        /// Include archived sessions
         #[arg(long)]
         all: bool,
     },
 
+    /// Archive a session
     Archive {
+        /// Session id
         id: String,
     },
 
+    /// Delete a session permanently
     Delete {
+        /// Session id
         id: String,
 
+        /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
     },
 
+    /// Restore an archived session
     Restore {
+        /// Session id
         id: String,
     },
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct EvalArgs {
+    /// Model to evaluate (default: the configured model)
     #[arg(long)]
     pub model: Option<String>,
 
+    /// Run only the task with this id
     #[arg(long)]
     pub task: Option<String>,
 
-    #[arg(long)]
-    pub json: bool,
-
+    // The report-as-JSON switch is the global --json flag on Cli
+    // (json_output); eval no longer defines its own copy.
+    /// Turn limit per task
     #[arg(long, default_value_t = 25)]
     pub max_turns: usize,
 
@@ -414,44 +536,62 @@ pub struct SkillArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SkillSubcommand {
+    /// List installed skills
     List,
 
+    /// Install a skill
     Install {
+        /// Skill source: registry name, URL or path
         source: String,
 
+        /// Skip the confirmation prompt
         #[arg(long)]
         yes: bool,
 
+        /// Registry URL to use
         #[arg(long)]
         registry: Option<String>,
     },
 
+    /// Search skills
     Search {
+        /// Search text
         query: String,
 
+        /// Registry URL to use
         #[arg(long)]
         registry: Option<String>,
 
+        /// Only search the curated registry
         #[arg(long)]
         curated: bool,
     },
 
+    /// Show details for one skill
     Info {
+        /// Skill name
         name: String,
 
+        /// Registry URL to use
         #[arg(long)]
         registry: Option<String>,
     },
 
+    /// Remove an installed skill
     Remove {
+        /// Skill name
         name: String,
     },
 
+    /// Run the tests of a skill
     Test {
+        /// Skill name
         name: String,
     },
 
+    /// Scaffold a new skill
     Create {
+        /// Skill name
         name: String,
     },
 }
@@ -464,65 +604,88 @@ pub struct McpArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum McpSubcommand {
+    /// List configured MCP servers
     List,
 
+    /// Add an MCP server
     Add {
+        /// Transport type: stdio, sse or http
         #[arg(long = "transport", default_value = "stdio")]
         transport: String,
 
+        /// Config scope: local, project or user
         #[arg(short = 's', long = "scope", default_value = "local")]
         scope: String,
 
+        /// Environment variable for the server (KEY=VALUE)
         #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
 
+        /// HTTP header for the server (KEY=VALUE)
         #[arg(long = "header", value_name = "KEY=VALUE")]
         header: Vec<String>,
 
+        /// Server name
         name: String,
 
+        /// Server command and its arguments
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
 
+    /// Remove an MCP server
     Remove {
+        /// Config scope: local, project or user
         #[arg(short = 's', long = "scope", default_value = "local")]
         scope: String,
 
+        /// Server name
         name: String,
     },
 
+    /// Show one MCP server
     Get {
+        /// Config scope: local, project or user
         #[arg(short = 's', long = "scope", default_value = "")]
         scope: String,
 
+        /// Server name
         name: String,
     },
 
+    /// Add an MCP server from a JSON definition
     AddJson {
+        /// Config scope: local, project or user
         #[arg(short = 's', long = "scope", default_value = "local")]
         scope: String,
 
+        /// Server name
         name: String,
 
+        /// Server configuration as JSON
         json: String,
     },
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ReviewArgs {
+    /// Review uncommitted changes
     #[arg(long)]
     pub uncommitted: bool,
 
+    /// Diff against this ref
     #[arg(long, value_name = "REF")]
     pub base: Option<String>,
 
+    /// Review this single commit
     #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
 
+    /// Lowest severity that makes the run fail
     #[arg(long, default_value = "high")]
     pub fail_on: String,
 
+    /// Format for the review report
     #[arg(long = "output-format", value_enum, default_value_t = OutputFormat::Text)]
     pub output_format: OutputFormat,
 
@@ -573,6 +736,34 @@ mod tests {
         let cli = parse(&["-p", "hello", "world"]);
         assert!(cli.print);
         assert_eq!(cli.prompt, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn parse_quiet_raw_json_flags() {
+        let cli = parse(&["--quiet", "doctor"]);
+        assert!(cli.quiet);
+        let cli = parse(&["--raw", "doctor"]);
+        assert!(cli.raw);
+        let cli = parse(&["--json", "doctor"]);
+        assert!(cli.json_output);
+        assert_eq!(cli.effective_output_format(), OutputFormat::Json);
+        let cli = parse(&["doctor"]);
+        assert_eq!(cli.effective_output_format(), OutputFormat::Text);
+    }
+
+    #[test]
+    fn parse_global_flags_after_subcommand() {
+        // --json/--quiet/--raw are global: they must also parse when placed
+        // after the subcommand (zen doctor --json), not only before it.
+        let cli = parse(&["doctor", "--json"]);
+        assert!(cli.json_output);
+        assert_eq!(cli.effective_output_format(), OutputFormat::Json);
+        let cli = parse(&["doctor", "--quiet"]);
+        assert!(cli.quiet);
+        let cli = parse(&["doctor", "--raw"]);
+        assert!(cli.raw);
+        let cli = parse(&["cost", "--json"]);
+        assert!(cli.json_output);
     }
 
     #[test]
@@ -1108,7 +1299,7 @@ mod tests {
             Some(Commands::Eval(a)) => {
                 assert_eq!(a.model.as_deref(), Some("x:free"));
                 assert_eq!(a.task.as_deref(), Some("create"));
-                assert!(a.json);
+                assert!(cli.json_output);
                 assert_eq!(a.max_turns, 25);
             }
             other => panic!("expected Eval, got {:?}", other),
