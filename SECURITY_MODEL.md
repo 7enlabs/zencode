@@ -52,7 +52,7 @@ or enforced; a control with no such pointer is listed under open questions, not 
 | Account-safety pacing | backoff, no retry on billing errors, versioned User-Agent | `docs/account-safety.md` |
 | CI: dependency scans | `cargo audit` (RustSec), OSV-Scanner, `cargo deny` | `.github/workflows/ci.yml`, `deny.toml` |
 | CI: secret scan | gitleaks full history, redacted report, reviewed baseline in `.gitleaksignore` | `.github/workflows/ci.yml`, `.gitleaks.toml` |
-| Locked builds | `cargo ... --locked` in CI | `.github/workflows/ci.yml` |
+| Locked builds (partial) | `--locked` is used only on the eval run (`cargo run --locked`) and on `cargo install cargo-zigbuild --locked`; fmt, clippy, test and the release build steps do not pass it, so they do not enforce `Cargo.lock` | `.github/workflows/ci.yml` |
 | Human gate for sensitive files | workflows, installer and release scripts, permissions, secrets, auto-update, new network hosts need a person | REVIEW.md |
 
 ## Out of scope
