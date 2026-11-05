@@ -16,7 +16,7 @@ or enforced; a control with no such pointer is listed under open questions, not 
 | --- | --- | --- |
 | Model to tools | the permission layer | tool calls and shell commands proposed by any model, local or remote |
 | Repo to config | `~/.zen/` (always loads) | project `.zen/settings*.json`, `.mcp.json`, hooks, project commands and skills (load only in a trusted folder) |
-| Repo to prompt | the system prompt | file contents, READMEs, comments (data, not instructions) |
+| Repo to prompt | the system prompt | file contents, READMEs, comments, MCP and web fetch results (no prompt text marks them as data yet, see open question 7) |
 | CLI to network | the configured provider endpoint | provider responses, MCP server results, web fetch results |
 | Skill install | ed25519-signed ZenCode skills | community skills (hash-pinned after your approval) and unverified skills (sandboxed: read-only, no network) |
 | Source to binary | this repo at a reviewed commit | whatever `install.sh` / `zen update` fetches from the branch it is told to build |
@@ -27,6 +27,7 @@ or enforced; a control with no such pointer is listed under open questions, not 
 2. Files outside the working directory and approved roots.
 3. The user's shell (commands run with the user's own privileges).
 4. Session data and exports (may contain code and secrets pasted into prompts).
+   The folder trust store `~/.zen/trusted-folders.json` belongs here too (see open question 6).
 5. Integrity of the stream-json contract that Desktop and Sen parse.
 6. Integrity of what gets installed and what CI builds.
 
@@ -51,7 +52,7 @@ or enforced; a control with no such pointer is listed under open questions, not 
 | Atomic file writes | writes go through a temp file and rename | `crates/zen-tools/src/atomic.rs` |
 | Account-safety pacing | backoff, no retry on billing errors, versioned User-Agent | `docs/account-safety.md` |
 | CI: dependency scans | `cargo audit` (RustSec), OSV-Scanner, `cargo deny` | `.github/workflows/ci.yml`, `deny.toml` |
-| CI: secret scan | gitleaks full history, redacted report, reviewed baseline in `.gitleaksignore` | `.github/workflows/ci.yml`, `.gitleaks.toml` |
+| CI: secret scan | gitleaks full history, redacted report, reviewed baseline in `.gitleaksignore`; the gitleaks binary itself is downloaded without a sha256 check (open question 8) | `.github/workflows/ci.yml`, `.gitleaks.toml` |
 | Locked builds (partial) | `--locked` is used only on the eval run (`cargo run --locked`) and on `cargo install cargo-zigbuild --locked`; fmt, clippy, test and the release build steps do not pass it, so they do not enforce `Cargo.lock` | `.github/workflows/ci.yml` |
 | Human gate for sensitive files | workflows, installer and release scripts, permissions, secrets, auto-update, new network hosts need a person | REVIEW.md |
 
@@ -75,13 +76,29 @@ Checked against `main` at 647fcc0.
 2. Install source is unpinned. `install.sh` builds the tip of `main` by default (`ZENCODE_BRANCH`),
    and `zen update` rebuilds from source. There is no tag, commit or checksum check.
 3. No binary releases yet, so no SHA256SUMS and no signature to verify. The release checklist
-   gets this as a requirement (see CONTRIBUTING.md).
-4. OS-level sandbox for the Bash tool: not verified in this draft. State whether one exists, per platform.
-5. Session files and exports on disk: file permissions and redaction defaults are not documented.
-6. Hooks run commands from trusted project config. Is a trusted-folder prompt shown with enough
-   detail (which hooks, which MCP servers) for an informed yes?
-7. Prompt-injection through MCP and web fetch results: the model is told they are data; no
-   technical separation is documented.
+   requirement (SHA256SUMS per artifact) is in PR #46, not merged yet; it does not exist on `main`
+   647fcc0. Link to CONTRIBUTING.md once #46 lands.
+4. No OS-level sandbox for the Bash tool. Verified: `crates/zen-tools` and `crates/zen-agent` contain no
+   bubblewrap, bwrap, unshare, namespace, seatbelt, pledge, landlock or seccomp. Bash runs with the user's
+   privileges, gated only by the permission layer. Known limit; follow-up is a separate work item, owner to be named by Leader.
+5. Session files and exports on disk (verified against `main` 647fcc0):
+   - Session files are written with `OpenOptions` and no `set_permissions` (`crates/zen-cli/src/session.rs:227`,
+     `:362`), so mode follows umask, typically 0644, not 0600.
+   - Only the REPL history file gets 0600, Unix only, best effort (`crates/zen-cli/src/repl_input.rs:229`).
+   - `zen export` redaction is off by default; it needs `--redact`.
+   Decision needed: should session files be created 0600?
+6. Folder trust prompt is too thin. The only prompt is `Trust this folder? [y/N]` (`crates/zen-cli/src/lib.rs:555`).
+   It does not list which hooks, MCP servers, allow rules or env vars will load, so a yes is not an informed one.
+   Decision needed: list what will load before the prompt, or record this as an accepted risk.
+   The trust store `~/.zen/trusted-folders.json` (`crates/zen-ext/src/trust.rs:17`) is also an asset: anyone who can
+   write it makes a hostile folder trusted, and its project config then loads.
+7. Prompt injection through MCP and web fetch results. Verified: no sentence in `crates/zen-cli/src/system_prompt.rs`
+   or `crates/zen-agent` tells the model that MCP results, web fetch output or file contents are untrusted data
+   rather than instructions; EVIDENCE_LABELING treats tool results as the model's own evidence. No technical
+   separation is documented either. Decision needed: add such a sentence, or record the gap.
+8. gitleaks is installed without verification: `ci.yml:66-69` downloads the gitleaks 8.30.1 tarball with curl and
+   does not check its sha256. Fix (pin sha256) is approved in msg 5716 item (3) and goes on its own branch;
+   it does not block this PR.
 
 ## Hardening checklist
 
