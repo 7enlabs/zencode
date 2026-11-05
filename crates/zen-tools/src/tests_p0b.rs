@@ -2,7 +2,9 @@ use serde_json::json;
 use std::path::PathBuf;
 use zen_core::{Tool, ToolContext};
 
-use crate::builtin::{spill_output, BashTool, BASH_MAX_CHARS};
+use crate::builtin::spill_output;
+#[cfg(unix)]
+use crate::builtin::{BashTool, BASH_MAX_CHARS};
 
 fn tmp_dir(tag: &str) -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -110,6 +112,7 @@ async fn p0b_1_bash_long_output_is_spilled_not_lost() {
 
 use crate::jobs::{JobKillTool, JobOutputTool};
 
+#[cfg(unix)]
 fn job_id(reply: &str) -> String {
     let start = reply.find("background job ").expect(reply) + "background job ".len();
     reply[start..]
