@@ -17,6 +17,11 @@ disagree, CONTRIBUTING.md wins and this file is the bug.
 5. Changes to `.github/workflows/`, installer or release scripts, permissions,
    secrets, auto-update, or network calls to a new host need a human reviewer
    (see "Always needs a person" in REVIEW.md). Do not ship them on an agent's word.
+6. When this file (or CLAUDE.md / SKILL.md) clearly drifts from the existing
+   code, prioritize the existing code and report the drift — do not rewrite
+   the code to match the stale file, and do not silently edit the instruction
+   file. This applies only when the drift is clear; valid new conventions in
+   the file still stand.
 
 Also: no `unwrap()` in production paths, and code must work on Linux, macOS and
 Windows (use the `dirs` crate, never hardcode `/home` or `C:\`).
