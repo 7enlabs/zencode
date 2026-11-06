@@ -62,12 +62,22 @@ if (-not (Test-Path $Bin)) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $Bin (Join-Path $InstallDir 'zen.exe') -Force
 
-$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-$Parts = $UserPath -split ';' | Where-Object { $_ -ne '' }
+# Persist the PATH change without [Environment]: its static methods are
+# blocked in Constrained Language mode. $env:Path is the process PATH
+# (machine + user); setx writes it back to the user PATH, and the same
+# value is applied to this session below. setx refuses values over 1024
+# characters, so fall back to manual instructions instead of risking a
+# truncated PATH.
+$Parts = $env:Path -split ';' | Where-Object { $_ -ne '' }
 if ($Parts -notcontains $InstallDir) {
-    [Environment]::SetEnvironmentVariable('Path', "$UserPath;$InstallDir", 'User')
-    $env:Path = "$env:Path;$InstallDir"
-    Write-Host "Added $InstallDir to the user PATH. Open a new terminal to use it."
+    $NewPath = (@($Parts) + $InstallDir) -join ';'
+    if ($NewPath.Length -le 1024) {
+        setx PATH "$NewPath" | Out-Null
+        Write-Host "Added $InstallDir to the user PATH. Open a new terminal to use it."
+    } else {
+        Write-Warning "PATH is too long for setx (1024 characters). Add $InstallDir to your user PATH manually."
+    }
+    $env:Path = $NewPath
 }
 
 Write-Host "Installed zen to $(Join-Path $InstallDir 'zen.exe')"
