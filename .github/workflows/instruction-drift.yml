@@ -1,0 +1,24 @@
+name: Instruction drift
+# Flags agent instruction files (AGENTS.md, CLAUDE.md, ZEN.md, SKILL.md) that
+# name paths, crates or zen commands the repo does not have. Clear drift fails
+# the job; unclear drift is a warning annotation only. See docs/instruction-drift.md.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: instruction-drift-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  instruction-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-test the checker
+        run: python3 -m unittest scripts/test_check_instruction_drift.py
+      - name: Check instruction files against the code
+        run: python3 scripts/check_instruction_drift.py
