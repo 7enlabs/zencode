@@ -57,7 +57,7 @@ impl Theme {
         }
         let code: u8 = match (theme, role) {
             (Theme::Dark, ColorRole::Prompt) => 36,
-            (Theme::Dark, ColorRole::Accent) => 33,
+            (Theme::Dark, ColorRole::Accent) => 94,
             (Theme::Dark, ColorRole::Error) => 31,
             (Theme::Dark, ColorRole::Success) => 32,
             (Theme::Dark, ColorRole::Dim) => 90,

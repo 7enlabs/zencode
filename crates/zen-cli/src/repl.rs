@@ -13,7 +13,7 @@ enum LineAction {
     Exit,
 }
 
-fn status_line(cfg_model: &str, cwd: &Path) -> String {
+fn status_line(theme: repl_polish::Theme, cfg_model: &str, cwd: &Path) -> String {
     let (branch, _) = crate::git::git_info(cwd);
     let cwd_str = cwd.display().to_string();
 
@@ -27,10 +27,48 @@ fn status_line(cfg_model: &str, cwd: &Path) -> String {
     } else {
         cwd_str
     };
-    match branch {
-        Some(b) => format!("[{} | {} | {}]", cfg_model, cwd_short, b.trim()),
-        None => format!("[{} | {}]", cfg_model, cwd_short),
+    let model = theme.paint(repl_polish::ColorRole::Accent, cfg_model);
+    let rest = match branch {
+        Some(b) => format!(" · {} · {}", cwd_short, b.trim()),
+        None => format!(" · {}", cwd_short),
+    };
+    format!(
+        "{}{}",
+        model,
+        theme.paint(repl_polish::ColorRole::Dim, &rest)
+    )
+}
+
+/// Zen ASCII mark (original). Rendered inside the welcome box.
+const ZEN_MARK: &[&str] = &["██████", "    ██", "   ██ ", "  ██  ", "██████"];
+
+/// Bordered welcome box for the REPL start, Claude-Code-style dashboard
+/// adapted to ZenCode's line-based REPL. Pure formatting (unit-testable).
+fn welcome_box(version: &str, model: &str, cwd: &str, ephemeral: bool) -> String {
+    let mut content: Vec<String> = Vec::new();
+    content.push(format!("ZenCode CLI {}", version));
+    content.push(String::new());
+    for line in ZEN_MARK {
+        content.push(line.to_string());
     }
+    content.push(String::new());
+    content.push("Welcome back!".to_string());
+    content.push(format!("model  {}", model));
+    content.push(format!("cwd    {}", cwd));
+    if ephemeral {
+        content.push("EPHEMERAL MODE - nothing will be saved".to_string());
+    }
+    content.push(String::new());
+    content.push("/model to switch models · /help for commands".to_string());
+    let width = content.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let mut out = String::new();
+    out.push_str(&format!("┌{}┐\n", "─".repeat(width + 2)));
+    for line in &content {
+        let pad = width - line.chars().count();
+        out.push_str(&format!("│ {}{} │\n", line, " ".repeat(pad)));
+    }
+    out.push_str(&format!("└{}┘", "─".repeat(width + 2)));
+    out
 }
 
 pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> {
@@ -60,14 +98,14 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     };
 
     println!(
-        "zen {} - model {}, cwd {}",
-        env!("CARGO_PKG_VERSION"),
-        cfg.model,
-        cwd.display()
+        "{}",
+        welcome_box(
+            env!("CARGO_PKG_VERSION"),
+            &cfg.model,
+            &cwd.display().to_string(),
+            cli.ephemeral
+        )
     );
-    if cli.ephemeral {
-        println!("EPHEMERAL MODE - nothing will be saved");
-    }
     println!("Type /help for commands, !cmd for shell, @file to attach files, #note to remember, Ctrl-D to exit. While typing a /command, Tab lists the matches and Esc cancels.");
 
     let assembly = crate::agent_run::assemble(
@@ -200,7 +238,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     let mut reader = crate::repl_input::LineReader::new(home);
     let mut last_interrupt: Option<std::time::Instant> = None;
     loop {
-        println!("{}", status_line(&cfg.model, cwd));
+        println!("{}", status_line(repl.theme, &agent.config.model, cwd));
         let prompt = {
             let mut p = repl_polish::prompt_text(repl.theme, &repl.goal);
 
@@ -483,7 +521,8 @@ fn print_turn(result: Option<RunResult>) {
         if r.is_error {
             eprintln!("error: {}", r.result);
         } else if !r.result.is_empty() {
-            println!("{}", r.result);
+            // Claude-Code-style marker: assistant text is prefixed with ●.
+            println!("● {}", r.result);
         }
         // S9 pattern 3: close the turn with the real elapsed time and
         // token total from the run result, on stderr like the rest of
@@ -696,6 +735,66 @@ async fn offer_fix_turn(
     }
 }
 
+/// Model ids the user can pick from in the REPL: the probed pool cache when
+/// it matches the current provider, otherwise the static free catalog.
+fn available_model_ids(home: Option<&Path>, base_url: &str) -> Vec<String> {
+    if let Some(cache) = crate::models::load_cache(home) {
+        if cache.base_url == base_url {
+            let ids: Vec<String> = cache
+                .results
+                .iter()
+                .filter(|p| p.success)
+                .map(|p| p.model.clone())
+                .collect();
+            if !ids.is_empty() {
+                return ids;
+            }
+        }
+    }
+    crate::models::FREE_MODEL_CATALOG
+        .iter()
+        .map(|m| m.id.to_string())
+        .collect()
+}
+
+/// Numbered model list for `/model`, with the current model marked.
+/// Pure formatting so it is unit-testable without a provider.
+fn format_model_list(current: &str, ids: &[String]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("current model: {}\n", current));
+    out.push_str("available models:\n");
+    for (i, id) in ids.iter().enumerate() {
+        let mark = if id == current { "  *" } else { "" };
+        out.push_str(&format!("  {}. {}{}\n", i + 1, id, mark));
+    }
+    out.push_str("switch with /model <number> or /model <name>");
+    out
+}
+
+/// Resolve a `/model` argument to a model id: a 1-based number picks from
+/// the list, otherwise an exact id wins, else a unique substring match.
+fn pick_model(arg: &str, ids: &[String]) -> Result<String, String> {
+    if let Ok(n) = arg.parse::<usize>() {
+        return match ids.get(n.wrapping_sub(1)) {
+            Some(id) => Ok(id.clone()),
+            None => Err(format!("no model #{} (1-{})", n, ids.len())),
+        };
+    }
+    if ids.iter().any(|id| id == arg) {
+        return Ok(arg.to_string());
+    }
+    let matches: Vec<&String> = ids.iter().filter(|id| id.contains(arg)).collect();
+    match matches.len() {
+        1 => Ok(matches[0].clone()),
+        0 => Err(format!("no model matches '{}'", arg)),
+        _ => Err(format!(
+            "'{}' matches {} models; be more specific",
+            arg,
+            matches.len()
+        )),
+    }
+}
+
 async fn handle_slash(
     line: &str,
     cli: &Cli,
@@ -715,11 +814,8 @@ async fn handle_slash(
         "/exit" | "/quit" => return Ok(LineAction::Exit),
         "/help" => {
             println!("Built-in commands:");
-            for c in commands::BUILTIN_COMMANDS
-                .iter()
-                .chain(commands::REPL_ONLY_COMMANDS)
-            {
-                println!("  {}", c);
+            for (name, desc) in commands::slash_command_catalog() {
+                println!("  {:<16} {}", name, desc);
             }
 
             let custom = zen_ext::discover_slash_commands(cwd, home);
@@ -775,11 +871,17 @@ async fn handle_slash(
             }
         }
         "/model" => {
+            let ids = available_model_ids(home, &cfg.base_url);
             if arg.is_empty() {
-                println!("{}", cfg.model);
+                print!("{}", format_model_list(&agent.config.model, &ids));
             } else {
-                agent.config.model = arg.clone();
-                println!("model set to {}", arg);
+                match pick_model(&arg, &ids) {
+                    Ok(id) => {
+                        agent.config.model = id.clone();
+                        println!("model set to {}", id);
+                    }
+                    Err(e) => eprintln!("{}", e),
+                }
             }
         }
         "/btw" => {
@@ -1738,5 +1840,99 @@ mod turn_summary_tests {
             format_turn_summary(100, &usage(1000, 50, 800)),
             "Done in 0.1s - 1050 tokens used (800 from cache)"
         );
+    }
+}
+
+#[cfg(test)]
+mod model_picker_tests {
+    use super::*;
+
+    fn ids() -> Vec<String> {
+        vec![
+            "google/gemini-4-argon:free".to_string(),
+            "cohere/north-mini-code:free".to_string(),
+            "nvidia/nemotron-3-nano:free".to_string(),
+        ]
+    }
+
+    #[test]
+    fn model_list_marks_the_current_model() {
+        let out = format_model_list("cohere/north-mini-code:free", &ids());
+        assert!(out.contains("current model: cohere/north-mini-code:free"));
+        assert!(out.contains("1. google/gemini-4-argon:free"));
+        assert!(out.contains("2. cohere/north-mini-code:free  *"));
+        assert!(out.contains("3. nvidia/nemotron-3-nano:free"));
+        assert!(out.contains("/model <number> or /model <name>"));
+    }
+
+    #[test]
+    fn pick_by_number_is_one_based() {
+        assert_eq!(
+            pick_model("1", &ids()).unwrap(),
+            "google/gemini-4-argon:free"
+        );
+        assert_eq!(
+            pick_model("3", &ids()).unwrap(),
+            "nvidia/nemotron-3-nano:free"
+        );
+        assert!(pick_model("0", &ids()).is_err());
+        assert!(pick_model("4", &ids()).is_err());
+    }
+
+    #[test]
+    fn pick_by_exact_id_wins_over_substring() {
+        assert_eq!(
+            pick_model("cohere/north-mini-code:free", &ids()).unwrap(),
+            "cohere/north-mini-code:free"
+        );
+    }
+
+    #[test]
+    fn pick_by_unique_substring() {
+        assert_eq!(
+            pick_model("nemotron", &ids()).unwrap(),
+            "nvidia/nemotron-3-nano:free"
+        );
+    }
+
+    #[test]
+    fn pick_rejects_ambiguous_and_unknown() {
+        assert!(pick_model("free", &ids()).is_err());
+        assert!(pick_model("does-not-exist", &ids()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod welcome_box_tests {
+    use super::*;
+
+    #[test]
+    fn welcome_box_has_border_and_contents() {
+        let out = welcome_box("0.1.0", "google/gemini-4-argon:free", "/home/zen", false);
+        assert!(out.starts_with('┌'));
+        assert!(out.ends_with('┘'));
+        assert!(out.contains("ZenCode CLI 0.1.0"));
+        assert!(out.contains("model  google/gemini-4-argon:free"));
+        assert!(out.contains("cwd    /home/zen"));
+        assert!(out.contains("/model to switch models"));
+        assert!(!out.contains("EPHEMERAL"));
+    }
+
+    #[test]
+    fn welcome_box_marks_ephemeral_mode() {
+        let out = welcome_box("0.1.0", "m", "/tmp", true);
+        assert!(out.contains("EPHEMERAL MODE"));
+    }
+
+    #[test]
+    fn welcome_box_lines_share_one_width() {
+        let out = welcome_box(
+            "0.1.0",
+            "a-very-long-model-id-that-stretches-the-box",
+            "/x",
+            false,
+        );
+        let widths: Vec<usize> = out.lines().map(|l| l.chars().count()).collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]));
     }
 }
