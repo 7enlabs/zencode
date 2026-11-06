@@ -1,0 +1,34 @@
+name: Floor guard
+# Blocks pull requests that loosen checks instead of fixing code: new #[ignore] or
+# #[allow], new todo!/unimplemented!, softer workflows, a weaker CONSTRAINTS.md Floor,
+# or fewer Rust tests than ci/floor-baseline.json. See CONSTRAINTS.md.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: floor-guard-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  floor-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Self-test the guard
+        run: python3 -m unittest scripts/test_floor_guard.py
+      - name: Check the change against CONSTRAINTS.md
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            python3 scripts/floor_guard.py --base "$BASE_SHA"
+          else
+            python3 scripts/floor_guard.py
+          fi
