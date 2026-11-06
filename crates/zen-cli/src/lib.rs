@@ -211,6 +211,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                     let report = serde_json::json!({
                         "type": "doctor",
                         "version": env!("CARGO_PKG_VERSION"),
+                        "revision": env!("ZEN_GIT_SHA"),
                         "model": cfg.model,
                         "base_url": cfg.base_url,
                         "api_key": if cfg.api_key().is_some() {

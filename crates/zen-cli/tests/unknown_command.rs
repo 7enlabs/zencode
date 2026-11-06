@@ -118,6 +118,25 @@ fn doctor_json_flag_after_subcommand_emits_json() {
 }
 
 #[test]
+fn doctor_json_carries_revision() {
+    let home = TempDir::new("uc_home");
+    let cwd = TempDir::new("uc_cwd");
+    let (stdout, stderr, code) = ZenRun::new("uc11", &home, &cwd)
+        .args(["doctor", "--json"])
+        .run_output();
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("zen doctor --json must emit valid JSON");
+    let rev = v["revision"]
+        .as_str()
+        .expect("doctor JSON must carry a revision string");
+    assert!(
+        rev == "unknown" || (rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit())),
+        "revision must be a 40-char git sha or 'unknown', got: {rev}"
+    );
+}
+
+#[test]
 fn review_with_base_and_commit_exits_validation() {
     let home = TempDir::new("uc_home");
     let cwd = TempDir::new("uc_cwd");
