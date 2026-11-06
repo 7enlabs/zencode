@@ -1,6 +1,11 @@
 # ZenCode CLI visual redesign (REPL)
 
-Status: design + implementation in progress (branch `dev/repl-model-picker`).
+Status: **superseded by `repl-visual-redesign-v2.md`** for the welcome box,
+mark, colours, `/model` list, tool cards, thinking line and `/todos`. This
+v1 doc stays as the record of the first pass (implemented in PR #56, commit
+bb539ca); the v2 implementation on the same branch replaces its visual
+choices. The v1 functional work (the `/model` picker itself, `/help`
+descriptions, the status line following live model switches) stays.
 Date: 2026-11-06. Requested by Zen after he found the working screen
 unpolished and `/model` undiscoverable.
 

@@ -55,20 +55,23 @@ impl Theme {
         if theme == Theme::None {
             return text.to_string();
         }
-        let code: u8 = match (theme, role) {
-            (Theme::Dark, ColorRole::Prompt) => 36,
-            (Theme::Dark, ColorRole::Accent) => 94,
-            (Theme::Dark, ColorRole::Error) => 31,
-            (Theme::Dark, ColorRole::Success) => 32,
-            (Theme::Dark, ColorRole::Dim) => 90,
-            (Theme::Light, ColorRole::Prompt) => 34,
-            (Theme::Light, ColorRole::Accent) => 35,
-            (Theme::Light, ColorRole::Error) => 31,
-            (Theme::Light, ColorRole::Success) => 32,
-            (Theme::Light, ColorRole::Dim) => 90,
+        let sgr: Sgr = match (theme, role) {
+            (Theme::Dark, ColorRole::Prompt) => Sgr::Code(36),
+            // 256:27 (#005fff) is the verified nearest xterm-256 colour
+            // to Zen blue #2563EB (computed by script, 2026-11-06).
+            (Theme::Dark, ColorRole::Accent) => Sgr::Color256(27),
+            (Theme::Dark, ColorRole::Error) => Sgr::Code(31),
+            (Theme::Dark, ColorRole::Success) => Sgr::Code(32),
+            (Theme::Dark, ColorRole::Dim) => Sgr::Code(90),
+            (Theme::Light, ColorRole::Prompt) => Sgr::Code(34),
+            // Light accent is blue, not magenta — same brand, both themes.
+            (Theme::Light, ColorRole::Accent) => Sgr::Code(34),
+            (Theme::Light, ColorRole::Error) => Sgr::Code(31),
+            (Theme::Light, ColorRole::Success) => Sgr::Code(32),
+            (Theme::Light, ColorRole::Dim) => Sgr::Code(90),
             (Theme::None, _) => unreachable!("handled above"),
         };
-        format!("\x1b[{code}m{text}\x1b[0m")
+        format!("{}{text}\x1b[0m", sgr.render())
     }
 }
 
@@ -79,6 +82,24 @@ pub enum ColorRole {
     Error,
     Success,
     Dim,
+}
+
+/// SGR (Select Graphic Rendition) value for one paint. A plain ANSI code
+/// (`Code`) renders as `\x1b[{code}m`; a 256-colour foreground
+/// (`Color256`) renders as `\x1b[38;5;{n}m`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sgr {
+    Code(u8),
+    Color256(u8),
+}
+
+impl Sgr {
+    fn render(self) -> String {
+        match self {
+            Sgr::Code(c) => format!("\x1b[{c}m"),
+            Sgr::Color256(n) => format!("\x1b[38;5;{n}m"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -240,6 +261,20 @@ mod tests {
         let dark = Theme::Dark.paint(ColorRole::Prompt, "x");
         let light = Theme::Light.paint(ColorRole::Prompt, "x");
         assert_ne!(dark, light);
+    }
+
+    #[test]
+    fn accent_is_blue_on_both_themes() {
+        // v2: Dark accent is 256-colour 27 (#005fff, nearest to Zen
+        // blue #2563EB); Light accent is plain blue 34, not magenta.
+        assert_eq!(
+            Theme::Dark.paint(ColorRole::Accent, "x"),
+            "\x1b[38;5;27mx\x1b[0m"
+        );
+        assert_eq!(
+            Theme::Light.paint(ColorRole::Accent, "x"),
+            "\x1b[34mx\x1b[0m"
+        );
     }
 
     #[test]
