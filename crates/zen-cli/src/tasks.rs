@@ -39,6 +39,13 @@
 //! with the same key is a no-op that reports success without writing
 //! a duplicate snapshot. A claim without `--expected-version` keeps
 //! the observe-only behaviour of step 1.
+//!
+//! Step 5 guards DEAD-LETTER cards (Leader decision, tin 7328,
+//! 07/11/2026): `zen task claim` and `zen task heartbeat` on a card
+//! the sweep has parked as dead-letter are refused with exit code 7
+//! (B2 CONFLICT) and write nothing - the card is terminal and only a
+//! Leader decision can revive it. There is no revive command in this
+//! step; inventing one is out of scope.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -246,6 +253,7 @@ pub fn find_task<'a>(cards: &'a [TaskCard], id: &str) -> Option<&'a TaskCard> {
 /// the task before (if anyone), so the caller can flag the overlap.
 /// `replayed` is true when the claim was already applied under the
 /// same idempotency key and no new snapshot was written (step 4).
+#[derive(Debug)]
 pub struct ClaimOutcome {
     pub card: TaskCard,
     pub previous_holder: Option<String>,
@@ -255,18 +263,34 @@ pub struct ClaimOutcome {
 
 /// The outcome of a guarded claim (`zen task claim
 /// --expected-version`, step 4): the claim was recorded, it was
-/// already applied under the same key, or the lease version the
-/// caller expected no longer matches the card.
+/// already applied under the same key, the lease version the
+/// caller expected no longer matches the card, or the card has been
+/// parked as DEAD-LETTER (step 5) and the claim is refused.
 pub enum CasClaim {
     Recorded(ClaimOutcome),
     Replayed(ClaimOutcome),
-    Conflict { expected: u64, actual: u64 },
+    Conflict {
+        expected: u64,
+        actual: u64,
+    },
+    /// The card has been parked as DEAD-LETTER by the sweep (step 5):
+    /// the claim is refused and nothing is written.
+    DeadLetter,
 }
 
 /// Build the idempotency key of a guarded claim (Leader decision,
 /// tin 7242, 07/11/2026): `claim:<task_id>:<actor>:<expected_version>`.
 pub fn claim_idempotency_key(id: &str, by: &str, expected_version: u64) -> String {
     format!("claim:{id}:{by}:{expected_version}")
+}
+
+/// Message for a refused operation on a DEAD-LETTER card: the card is
+/// terminal and only a Leader decision can revive it; no revive
+/// command exists yet (step 5, Leader tin 7328).
+fn dead_letter_message(id: &str) -> String {
+    format!(
+        "task '{id}' is dead-lettered: only a Leader decision can revive it, and no revive command exists yet"
+    )
 }
 
 /// Record `by` as the holder of task `id` and append the new snapshot.
@@ -285,6 +309,12 @@ pub fn claim_task(
     let Some(existing) = find_task(&cards, id) else {
         return Ok(None);
     };
+    if existing.dead_lettered {
+        return Err(crate::coded_error(
+            exit_code::CONFLICT,
+            dead_letter_message(id),
+        ));
+    }
     let mut card = existing.clone();
     let previous_holder = card
         .lease
@@ -345,6 +375,9 @@ pub fn claim_task_cas(
     let Some(existing) = find_task(&cards, id) else {
         return Ok(None);
     };
+    if existing.dead_lettered {
+        return Ok(Some(CasClaim::DeadLetter));
+    }
     let key = claim_idempotency_key(id, by, expected);
     let current_version = existing.lease.as_ref().map_or(0, |l| l.version);
     if existing.idempotency_key.as_deref() == Some(key.as_str())
@@ -427,6 +460,7 @@ pub fn lease_status(lease: &Lease, now: DateTime<Utc>) -> LeaseStatus {
 
 /// The result of a recorded heartbeat: the updated card plus whether
 /// the heartbeat came from a seat other than the lease holder.
+#[derive(Debug)]
 pub struct HeartbeatOutcome {
     pub card: TaskCard,
     pub flagged: bool,
@@ -453,6 +487,12 @@ pub fn heartbeat_task(
     let Some(existing) = find_task(&cards, id) else {
         return Ok(None);
     };
+    if existing.dead_lettered {
+        return Err(crate::coded_error(
+            exit_code::CONFLICT,
+            dead_letter_message(id),
+        ));
+    }
     let mut card = existing.clone();
     let flagged = if let Some(lease) = card.lease.as_mut() {
         let flagged = lease.holder != by;
@@ -883,6 +923,12 @@ pub fn run_task(
                         ),
                     ));
                 }
+                CasClaim::DeadLetter => {
+                    return Err(crate::coded_error(
+                        exit_code::CONFLICT,
+                        dead_letter_message(id),
+                    ));
+                }
             };
             if !quiet {
                 match format {
@@ -1098,6 +1144,7 @@ mod tests {
             CasClaim::Recorded(outcome) => outcome,
             CasClaim::Replayed(_) => panic!("expected Recorded, got Replayed"),
             CasClaim::Conflict { .. } => panic!("expected Recorded, got Conflict"),
+            CasClaim::DeadLetter => panic!("expected Recorded, got DeadLetter"),
         };
         assert!(!outcome.replayed);
         assert_eq!(
@@ -1134,6 +1181,7 @@ mod tests {
             }
             CasClaim::Recorded(_) => panic!("expected Conflict, got Recorded"),
             CasClaim::Replayed(_) => panic!("expected Conflict, got Replayed"),
+            CasClaim::DeadLetter => panic!("expected Conflict, got DeadLetter"),
         }
         // A refused claim writes no snapshot: still seed + first claim.
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
@@ -1157,6 +1205,7 @@ mod tests {
             CasClaim::Replayed(outcome) => outcome,
             CasClaim::Recorded(_) => panic!("expected Replayed, got Recorded"),
             CasClaim::Conflict { .. } => panic!("expected Replayed, got Conflict"),
+            CasClaim::DeadLetter => panic!("expected Replayed, got DeadLetter"),
         };
         assert!(outcome.replayed);
         assert_eq!(outcome.card.lease.as_ref().unwrap().version, 1);
@@ -1190,6 +1239,7 @@ mod tests {
             }
             CasClaim::Recorded(_) => panic!("expected Conflict, got Recorded"),
             CasClaim::Replayed(_) => panic!("expected Conflict, got Replayed"),
+            CasClaim::DeadLetter => panic!("expected Conflict, got DeadLetter"),
         }
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
         assert_eq!(lines, 3);
@@ -1206,6 +1256,7 @@ mod tests {
             CasClaim::Recorded(outcome) => outcome,
             CasClaim::Replayed(_) => panic!("expected Recorded, got Replayed"),
             CasClaim::Conflict { .. } => panic!("expected Recorded, got Conflict"),
+            CasClaim::DeadLetter => panic!("expected Recorded, got DeadLetter"),
         };
         assert!(!outcome.replayed);
         assert_eq!(outcome.idempotency_key, None);
@@ -1232,6 +1283,7 @@ mod tests {
             CasClaim::Recorded(outcome) => outcome,
             CasClaim::Replayed(_) => panic!("expected Recorded, got Replayed"),
             CasClaim::Conflict { .. } => panic!("expected Recorded, got Conflict"),
+            CasClaim::DeadLetter => panic!("expected Recorded, got DeadLetter"),
         };
         assert_eq!(
             outcome.idempotency_key.as_deref(),
@@ -1628,6 +1680,99 @@ mod tests {
         // And the sweep leaves it alone now.
         let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
         assert!(outcome.entries.is_empty());
+    }
+
+    fn dead_lettered_card() -> TaskCard {
+        let mut c = doing_with_lease("B-4", "2026-11-06T09:00:00+00:00");
+        c.status = TaskStatus::Queued;
+        c.orphaned = true;
+        c.reassign_count = 3;
+        c.dead_lettered = true;
+        c
+    }
+
+    fn registry_lines(path: &Path) -> usize {
+        std::fs::read_to_string(path).unwrap().lines().count()
+    }
+
+    fn assert_conflict_7(err: &anyhow::Error) {
+        assert_eq!(crate::exit_code_for_error(err), crate::exit_code::CONFLICT);
+    }
+
+    #[test]
+    fn claim_on_dead_lettered_card_is_refused_and_writes_nothing() {
+        let path = temp_registry("dead_claim");
+        let seeded = dead_lettered_card();
+        append_snapshot(&path, &seeded).unwrap();
+        let err = claim_task(&path, "B-4", "sd-developer", fixed_now()).unwrap_err();
+        assert_conflict_7(&err);
+        assert!(format!("{err}").contains("dead-lettered"));
+        assert_eq!(registry_lines(&path), 1);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0], seeded);
+    }
+
+    #[test]
+    fn cas_claim_on_dead_lettered_card_is_refused_even_with_matching_version() {
+        let path = temp_registry("dead_cas");
+        append_snapshot(&path, &dead_lettered_card()).unwrap();
+        // The lease version on the card is 1, so this version matches -
+        // the refusal comes from the dead-letter state, not the CAS.
+        let cas = claim_task_cas(&path, "B-4", "sd-developer", Some(1), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        assert!(matches!(cas, CasClaim::DeadLetter));
+        assert_eq!(registry_lines(&path), 1);
+    }
+
+    #[test]
+    fn cas_replay_on_dead_lettered_card_is_refused_not_replayed() {
+        let path = temp_registry("dead_replay");
+        let mut parked = dead_lettered_card();
+        parked.idempotency_key = Some(claim_idempotency_key("B-4", "sd-developer", 1));
+        parked.lease.as_mut().unwrap().version = 2;
+        parked.lease.as_mut().unwrap().holder = "sd-developer".to_string();
+        append_snapshot(&path, &parked).unwrap();
+        // Without the dead-letter guard this would be a replay no-op:
+        // the key matches and the lease is exactly the post-claim state.
+        let cas = claim_task_cas(&path, "B-4", "sd-developer", Some(1), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        assert!(matches!(cas, CasClaim::DeadLetter));
+        assert_eq!(registry_lines(&path), 1);
+    }
+
+    #[test]
+    fn heartbeat_on_dead_lettered_card_is_refused_and_keeps_lease() {
+        let path = temp_registry("dead_heartbeat");
+        let seeded = dead_lettered_card();
+        append_snapshot(&path, &seeded).unwrap();
+        let err = heartbeat_task(&path, "B-4", "sd-developer", fixed_now()).unwrap_err();
+        assert_conflict_7(&err);
+        assert!(format!("{err}").contains("dead-lettered"));
+        assert_eq!(registry_lines(&path), 1);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0], seeded);
+    }
+
+    #[test]
+    fn sweep_to_dead_letter_then_claim_and_heartbeat_both_fail() {
+        let path = temp_registry("dead_cycle");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-06T09:00:00+00:00")).unwrap();
+        for _ in 0..4 {
+            sweep_tasks(&path, fixed_now(), false).unwrap();
+        }
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].dead_lettered);
+        let lines_before = registry_lines(&path);
+        assert!(claim_task(&path, "B-4", "sd-developer", fixed_now()).is_err());
+        assert!(heartbeat_task(&path, "B-4", "sd-developer", fixed_now()).is_err());
+        // A fifth sweep leaves the parked card alone, too.
+        assert!(sweep_tasks(&path, fixed_now(), false)
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(registry_lines(&path), lines_before);
     }
 
     #[test]
