@@ -220,9 +220,9 @@ pub struct SearchHit {
 /// community registry (`search_registry`): exact name 100, name prefix
 /// 75, name contains 50, exact tag 40, description contains 20. The
 /// author tier (10) is curated-search only: `search_entries` also
-/// matches on author, which community scoring does not cover. No
-/// curated entry carries tags today, so the tag tier is inert until
-/// one does; it is kept so the tiers stay identical.
+/// matches on author, which community scoring does not cover. The
+/// `tdd` entry carries the `test` tag, so the tag tier is live; the
+/// tiers are kept identical to the community registry.
 fn match_score(e: &RegistryEntry, q: &str) -> u32 {
     let name = e.name.to_ascii_lowercase();
     let desc = e.description.to_ascii_lowercase();
@@ -540,6 +540,48 @@ mod tests {
         let author = search_entries("zencode", false, &reg, &[]);
         assert_eq!(author.len(), 2);
         assert!(author.iter().all(|h| h.score == 10));
+    }
+
+    #[test]
+    fn search_tag_tier_scores_exact_tag_40() {
+        // The tag tier (40) must beat the description tier (20): the same
+        // entry scores 20 without tags and 40 with the exact tag.
+        let mut tagged = sample_curated("tdd");
+        tagged.entry.description =
+            "Test-driven development workflow - write the failing test first".to_string();
+        tagged.entry.tags = vec!["test".to_string()];
+        let mut untagged = tagged.clone();
+        untagged.entry.tags = vec![];
+        let with_tag = CuratedRegistry {
+            format_version: 1,
+            updated: "2026-10-17".to_string(),
+            entries: vec![tagged],
+        };
+        let without_tag = CuratedRegistry {
+            format_version: 1,
+            updated: "2026-10-17".to_string(),
+            entries: vec![untagged],
+        };
+        let hits = search_entries("test", false, &with_tag, &[]);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].score, 40);
+        let plain = search_entries("test", false, &without_tag, &[]);
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].score, 20);
+    }
+
+    #[test]
+    fn embedded_tdd_entry_carries_test_tag_at_tier_40() {
+        let reg = embedded_registry().unwrap();
+        let hits = search_entries("test", true, &reg, &[]);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "tdd");
+        assert_eq!(hits[0].tier, "curated");
+        assert_eq!(hits[0].score, 40);
+        // Tag matching is case-insensitive, like the other tiers.
+        let upper = search_entries("TEST", true, &reg, &[]);
+        assert_eq!(upper.len(), 1);
+        assert_eq!(upper[0].score, 40);
     }
 
     #[test]

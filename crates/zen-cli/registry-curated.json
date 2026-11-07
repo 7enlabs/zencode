@@ -17,6 +17,9 @@
         "bash"
       ],
       "source": "builtin:tdd",
+      "tags": [
+        "test"
+      ],
       "trust_tier": "curated",
       "version": "1.0.0"
     },
@@ -58,5 +61,5 @@
     }
   ],
   "format_version": 1,
-  "updated": "2026-10-17"
+  "updated": "2026-11-07"
 }
