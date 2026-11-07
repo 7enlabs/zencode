@@ -52,38 +52,8 @@ jobs:
           scan-args: |-
             -L Cargo.lock
 
-  secrets:
-    # Buffer task #8: full-history secret scan with Gitleaks. Reviewed
-    # findings live in .gitleaksignore; the report is redacted and written
-    # with owner-only permissions so it never exposes a secret value.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      GITLEAKS_VERSION: "8.30.1"
-      # sha256 of gitleaks_8.30.1_linux_x64.tar.gz (matches the release
-      # gitleaks_8.30.1_checksums.txt). Bump both lines together.
-      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - name: Install gitleaks
-        run: |
-          curl -sSfL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
-          tar xzf gitleaks.tgz gitleaks
-      - name: Gitleaks (full history, redacted)
-        shell: bash
-        run: |
-          umask 077
-          ./gitleaks git --redact --no-banner --exit-code 1 -f sarif -r gitleaks.sarif .
-      - name: Upload redacted report
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitleaks-report
-          path: gitleaks.sarif
-          retention-days: 7
-
+  # Secret scanning moved to .github/workflows/secrets.yml (weekly
+  # schedule + TruffleHog layer 2); the job no longer lives here.
   deny:
     # Buffer task #8: cargo-deny. Advisories run apart from the rest so a new
     # RustSec advisory does not hide license, ban or source failures.
