@@ -385,6 +385,9 @@ pub enum Commands {
     /// List, archive, delete or restore sessions
     Sessions(SessionsArgs),
 
+    /// Inspect the P0-3 multi-seat task registry (observe-only)
+    Task(TaskArgs),
+
     /// Run the built-in evaluation tasks
     Eval(EvalArgs),
 
@@ -534,6 +537,37 @@ pub enum SessionSubcommand {
     Restore {
         /// Session id
         id: String,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)"
+)]
+pub struct TaskArgs {
+    #[command(subcommand)]
+    pub command: TaskSubcommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum TaskSubcommand {
+    /// List every task in the registry
+    List,
+
+    /// Show one task card
+    Show {
+        /// Task id, e.g. B-4
+        id: String,
+    },
+
+    /// Record that a seat holds a task (observe-only: never blocks)
+    Claim {
+        /// Task id, e.g. B-4
+        id: String,
+
+        /// Seat recording the claim
+        #[arg(long = "by")]
+        by: String,
     },
 }
 
@@ -1014,6 +1048,34 @@ mod tests {
             cli.subcommand,
             Some(Commands::Sessions(s)) if matches!(s.command, SessionSubcommand::Restore { .. })
         ));
+    }
+
+    #[test]
+    fn parse_task_subcommands() {
+        let cli = parse(&["task", "list"]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Task(t)) if matches!(t.command, TaskSubcommand::List)
+        ));
+        let cli = parse(&["task", "show", "B-4"]);
+        match cli.subcommand {
+            Some(Commands::Task(t)) => match t.command {
+                TaskSubcommand::Show { id } => assert_eq!(id, "B-4"),
+                other => panic!("expected Show, got {:?}", other),
+            },
+            _ => panic!("expected Task"),
+        }
+        let cli = parse(&["task", "claim", "B-4", "--by", "zc-developer"]);
+        match cli.subcommand {
+            Some(Commands::Task(t)) => match t.command {
+                TaskSubcommand::Claim { id, by } => {
+                    assert_eq!(id, "B-4");
+                    assert_eq!(by, "zc-developer");
+                }
+                other => panic!("expected Claim, got {:?}", other),
+            },
+            _ => panic!("expected Task"),
+        }
     }
 
     #[test]
