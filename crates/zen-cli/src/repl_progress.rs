@@ -123,16 +123,14 @@ impl ReplProgressSink {
                 let mut out = Vec::new();
                 if let Some(text) = message.content.as_deref() {
                     if !text.trim().is_empty() {
-                        out.push(format!("{indent}{}", clip(text, 160)));
+                        // Same ● marker as the final answer (print_turn).
+                        out.push(format!("{indent}● {}", clip(text, 160)));
                     }
                 }
                 for tc in calls {
                     let arg = tool_arg_summary(&tc.function.arguments);
                     let n = self.register_card(&tc.id, &tc.function.name, arg.clone());
-                    out.push(format!(
-                        "{indent}\u{251c}\u{2500} {n}. {}({arg})",
-                        tc.function.name
-                    ));
+                    out.push(format!("{indent}● {n}. {}({arg})", tc.function.name));
                 }
                 out
             }
@@ -152,9 +150,10 @@ impl ReplProgressSink {
                 let summary = summary.trim_start();
                 match self.attach_result(tool_use_id, content, *is_error) {
                     Some(n) if is_long_result(content) => vec![format!(
-                        "{indent}\u{2502}  {summary} (collapsed - /expand {n} for the full output)"
+                        "{indent}└ {summary} (+{} lines — /expand {n})",
+                        content.lines().count()
                     )],
-                    _ => vec![format!("{indent}\u{2502}  {summary}")],
+                    _ => vec![format!("{indent}└ {summary}")],
                 }
             }
             _ => Vec::new(),
@@ -224,16 +223,41 @@ pub fn tool_arg_summary(arguments: &str) -> String {
     clip(arguments, ARG_MAX)
 }
 
-/// One line describing a tool result: ok or error, line count, and the first line.
+/// One line describing a tool result: ✓/✗, line count, and the first line.
+/// v2: the `-> ok,` log prefix is gone; the closing corner `└` is added
+/// by the caller (card_lines), not here.
 pub fn tool_result_summary(content: &str, is_error: bool) -> String {
     let lines = content.lines().count();
     let first = content.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    let tag = if is_error { "error" } else { "ok" };
+    let tag = if is_error { "✗" } else { "✓" };
     if lines <= 1 {
-        format!("  -> {tag}: {}", clip(first, ARG_MAX))
+        format!("{tag} {}", clip(first, ARG_MAX))
     } else {
-        format!("  -> {tag}, {lines} lines: {}", clip(first, ARG_MAX))
+        format!("{tag} {lines} lines · {}", clip(first, ARG_MAX))
     }
+}
+
+/// Original Zen thinking verbs (clean-room: written from scratch, not
+/// copied from any other coding tool). Picked deterministically per tool
+/// call so the word does not flicker between heartbeats.
+const THINKING_VERBS: &[&str] = &[
+    "Thinking",
+    "Composing",
+    "Weaving",
+    "Polishing",
+    "Digging",
+    "Reading",
+    "Writing",
+    "Searching",
+    "Checking",
+    "Zening",
+];
+
+fn thinking_verb(tool_use_id: &str) -> &'static str {
+    let hash: usize = tool_use_id.bytes().fold(0usize, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(b as usize)
+    });
+    THINKING_VERBS[hash % THINKING_VERBS.len()]
 }
 
 /// The lines a progress event prints, or none.
@@ -254,12 +278,12 @@ pub fn render(ev: &AgentEvent) -> Vec<String> {
             let mut out = Vec::new();
             if let Some(text) = message.content.as_deref() {
                 if !text.trim().is_empty() {
-                    out.push(format!("{indent}{}", clip(text, 160)));
+                    out.push(format!("{indent}● {}", clip(text, 160)));
                 }
             }
             for tc in calls {
                 out.push(format!(
-                    "{indent}* {}({})",
+                    "{indent}● {}({})",
                     tc.function.name,
                     tool_arg_summary(&tc.function.arguments)
                 ));
@@ -306,11 +330,13 @@ pub fn render(ev: &AgentEvent) -> Vec<String> {
             )]
         }
         AgentEvent::ToolProgress {
+            tool_use_id,
             tool_name,
             elapsed_ms,
             ..
         } => vec![format!(
-            "Still working - {tool_name} has been running for {:.0}s...",
+            "{}… {tool_name} · {:.0}s · Ctrl-C to stop",
+            thinking_verb(tool_use_id),
             *elapsed_ms as f64 / 1000.0
         )],
         AgentEvent::SystemMessage { event, text } => vec![format!("[{event} hook] {text}")],
@@ -364,10 +390,10 @@ mod tests {
 
     #[test]
     fn result_summary_counts_lines() {
-        assert_eq!(tool_result_summary("done", false), "  -> ok: done");
+        assert_eq!(tool_result_summary("done", false), "✓ done");
         assert_eq!(
             tool_result_summary("\nboom\nmore", true),
-            "  -> error, 3 lines: boom"
+            "✗ 3 lines · boom"
         );
     }
 
@@ -399,9 +425,19 @@ mod tests {
             elapsed_ms: 12_400,
         });
         assert_eq!(r.len(), 1);
-        assert!(r[0].contains("Still working"), "line: {}", r[0]);
         assert!(r[0].contains("Bash"), "line: {}", r[0]);
         assert!(r[0].contains("12s"), "line: {}", r[0]);
+        assert!(r[0].contains("Ctrl-C to stop"), "line: {}", r[0]);
+        assert!(r[0].ends_with("Ctrl-C to stop"), "line: {}", r[0]);
+        // No "Still working" sentence anymore; a verb + ellipsis instead.
+        assert!(!r[0].contains("Still working"), "line: {}", r[0]);
+        assert!(r[0].contains('…'), "line: {}", r[0]);
+    }
+
+    #[test]
+    fn thinking_verb_is_deterministic() {
+        assert_eq!(thinking_verb("t1"), thinking_verb("t1"));
+        assert!(THINKING_VERBS.contains(&thinking_verb("anything")));
     }
 
     #[test]
@@ -439,7 +475,7 @@ mod tests {
             !collapsed.contains("secret middle"),
             "collapse: {collapsed}"
         );
-        assert!(collapsed.contains("-> ok"), "collapse: {collapsed}");
+        assert!(collapsed.contains("✓"), "collapse: {collapsed}");
         assert!(sink.toggle_expand(Some(99)).contains("No tool card 99"));
     }
 

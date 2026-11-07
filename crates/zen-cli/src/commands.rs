@@ -110,6 +110,25 @@ pub const COMMAND_DESCRIPTIONS: &[(&str, &str)] = &[
 /// commands and the two accepted aliases - each with its description, in
 /// catalog order. Commands without a description are dropped here, which the
 /// coverage test treats as a failure.
+/// Display group for a slash command in `/help` (v2 design). Groups are
+/// display-only; command names and descriptions do not change.
+pub fn help_group(name: &str) -> &'static str {
+    match name {
+        "/help" | "/model" | "/cost" | "/status" | "/resume" | "/continue" | "/exit" | "/quit"
+        | "/theme" | "/personality" | "/vim" | "/terse" | "/quota" | "/config" | "/permissions" => {
+            "Session & model"
+        }
+        "/clear" | "/compact" | "/context" | "/memory" | "/memories" | "/init" | "/add-dir"
+        | "/scope" => "Context",
+        "/diff" | "/review" | "/commit" | "/undo" | "/plan" | "/ci-fix" | "/pr_comments"
+        | "/worktree" | "/done" | "/goal" | "/loop" | "/export" | "/rename" | "/map"
+        | "/map-refresh" | "/deep-research" => "Code & review",
+        _ => "Tools",
+    }
+}
+
+pub const HELP_GROUP_ORDER: &[&str] = &["Session & model", "Context", "Code & review", "Tools"];
+
 pub fn slash_command_catalog() -> Vec<(&'static str, &'static str)> {
     let names = BUILTIN_COMMANDS
         .iter()
