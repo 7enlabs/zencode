@@ -542,7 +542,7 @@ pub enum SessionSubcommand {
 
 #[derive(Args, Debug, Clone)]
 #[command(
-    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)\n  zen task heartbeat B-4 --by zc-dev  Record a heartbeat (observe-only)"
+    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)\n  zen task heartbeat B-4 --by zc-dev  Record a heartbeat (observe-only)\n  zen task sweep                   Run the handover sweep (expired leases return as orphans)\n  zen task sweep --dry-run         Preview the sweep; writes nothing"
 )]
 pub struct TaskArgs {
     #[command(subcommand)]
@@ -578,6 +578,13 @@ pub enum TaskSubcommand {
         /// Seat sending the heartbeat
         #[arg(long = "by")]
         by: String,
+    },
+
+    /// Run the handover sweep: expired DOING tasks return to the queue as orphans
+    Sweep {
+        /// Report what would change without writing any snapshot
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
 }
 
@@ -1094,6 +1101,22 @@ mod tests {
                     assert_eq!(by, "zc-developer");
                 }
                 other => panic!("expected Heartbeat, got {:?}", other),
+            },
+            _ => panic!("expected Task"),
+        }
+        let cli = parse(&["task", "sweep"]);
+        match cli.subcommand {
+            Some(Commands::Task(t)) => match t.command {
+                TaskSubcommand::Sweep { dry_run } => assert!(!dry_run),
+                other => panic!("expected Sweep, got {:?}", other),
+            },
+            _ => panic!("expected Task"),
+        }
+        let cli = parse(&["task", "sweep", "--dry-run"]);
+        match cli.subcommand {
+            Some(Commands::Task(t)) => match t.command {
+                TaskSubcommand::Sweep { dry_run } => assert!(dry_run),
+                other => panic!("expected Sweep, got {:?}", other),
             },
             _ => panic!("expected Task"),
         }

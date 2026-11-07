@@ -21,6 +21,14 @@
 //! the lease. `list`/`show` display the derived lease status
 //! (`active`/`expired`); an expired lease changes nothing here —
 //! returning the task to the queue is the sweep of a later step.
+//!
+//! Step 3 adds `zen task sweep`, the handover sweep of section 4.1:
+//! a DOING task whose lease has expired is returned to the queue as
+//! ORPHAN (the holder stays on the card as history and the count of
+//! reassignments grows), and an orphan nobody claims again is
+//! counted once per sweep until it is parked as DEAD-LETTER for a
+//! Leader decision - never deleted, never closed. The sweep is a
+//! manual command run at a handover; nothing runs in the background.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -37,9 +45,10 @@ use crate::exit_code;
 /// shift. A lease is a liveness signal, not a deadline for the task.
 pub const LEASE_HOURS: i64 = 8;
 
-/// One of the seven statuses of the v3.0 state machine. BLOCKED and
-/// ORPHAN are auxiliary states: a card carries them through its
-/// `blocker` field and its `orphaned` flag, not through this enum.
+/// One of the seven statuses of the v3.0 state machine. BLOCKED,
+/// ORPHAN and DEAD-LETTER are auxiliary states: a card carries them
+/// through its `blocker` field, its `orphaned` flag and its
+/// `dead_lettered` flag, not through this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -139,6 +148,18 @@ pub struct TaskCard {
     pub anti_jobs: Vec<String>,
     #[serde(default)]
     pub orphaned: bool,
+    /// How many times the sweep has returned this task to the queue
+    /// (step 3). History: a later claim never resets it.
+    #[serde(default)]
+    pub reassign_count: u32,
+    /// Set by the sweep once a task has been returned to the queue
+    /// `DEAD_LETTER_AFTER_REASSIGNS` times without a new claim: the
+    /// task is parked for a Leader decision, never deleted or closed.
+    #[serde(default)]
+    pub dead_lettered: bool,
+    /// Why the sweep orphaned this task (the lease expiry it saw).
+    #[serde(default)]
+    pub orphan_reason: Option<String>,
     #[serde(default)]
     pub updated_at: String,
     #[serde(default)]
@@ -336,6 +357,177 @@ pub fn heartbeat_task(
     Ok(Some(HeartbeatOutcome { card, flagged }))
 }
 
+/// How many times a task may be returned to the queue without a new
+/// claim before the sweep parks it as DEAD-LETTER for a Leader
+/// decision (design sections 4.1 and 4.2). Like the 8-hour lease,
+/// the number is a proposal of the design, not yet measured on real
+/// team data.
+pub const DEAD_LETTER_AFTER_REASSIGNS: u32 = 3;
+
+/// The auxiliary state a card is in at a given moment, derived from
+/// its flags and its lease: `dead-letter` once the sweep has parked
+/// the card for a Leader decision, `orphan` while the card sits back
+/// in the queue with no live lease after an expiry. A card a seat
+/// has claimed again carries a live lease, so it reads as neither;
+/// the flags stay on the card as history.
+pub fn aux_state(card: &TaskCard, now: DateTime<Utc>) -> Option<&'static str> {
+    if card.dead_lettered {
+        return Some("dead-letter");
+    }
+    if card.orphaned {
+        let live = card
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease_status(lease, now) == LeaseStatus::Active);
+        if !live {
+            return Some("orphan");
+        }
+    }
+    None
+}
+
+/// One task the sweep moved (or, in a dry run, would move): the id,
+/// the state it came from, the state it went to, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SweepEntry {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+}
+
+/// The result of one sweep pass: one entry per changed task, in
+/// registry order.
+#[derive(Debug)]
+pub struct SweepOutcome {
+    pub entries: Vec<SweepEntry>,
+    pub dry_run: bool,
+}
+
+/// Run one handover sweep over the registry (design sections 4.1,
+/// 4.2, and step 3 of section 6). The sweep is a manual command run
+/// at a shift handover; it starts nothing in the background.
+///
+/// Each task changes at most once per pass:
+/// - a DOING task whose lease has expired is returned to the queue
+///   as ORPHAN: the holder stays on the card as history, the reason
+///   names the expiry, and `reassign_count` grows by one - being
+///   returned to the queue is one more offering of the task. A
+///   DOING task without a lease has no expiry to prove and is left
+///   alone;
+/// - an ORPHAN task sitting in the queue still without a new claim
+///   is offered again, so its `reassign_count` grows by one per
+///   sweep as well; once the count has reached
+///   `DEAD_LETTER_AFTER_REASSIGNS`, the next sweep parks it as
+///   DEAD-LETTER - never deleted, never closed - to wait for a
+///   Leader decision.
+///
+/// A claim after an orphan gives the card a live lease again, which
+/// is how the sweep tells "claimed again" from "still waiting"; the
+/// count is history and is never reset here. With `dry_run` the
+/// same entries are computed but no snapshot is written. An empty
+/// registry, or one with nothing expired, yields zero entries and
+/// writes nothing.
+pub fn sweep_tasks(path: &Path, now: DateTime<Utc>, dry_run: bool) -> Result<SweepOutcome> {
+    let cards = load_registry(path)?;
+    let mut outcome = SweepOutcome {
+        entries: Vec::new(),
+        dry_run,
+    };
+    for card in &cards {
+        if card.dead_lettered {
+            continue;
+        }
+        let lease_live = card
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease_status(lease, now) == LeaseStatus::Active);
+        if lease_live {
+            continue;
+        }
+        if card.status == TaskStatus::Doing {
+            let Some(lease) = &card.lease else {
+                continue;
+            };
+            let reason = format!(
+                "lease expired at {} (holder {}, last heartbeat {})",
+                lease.expires_at, lease.holder, lease.last_heartbeat
+            );
+            let mut next = card.clone();
+            next.status = TaskStatus::Queued;
+            next.orphaned = true;
+            next.reassign_count += 1;
+            next.orphan_reason = Some(reason.clone());
+            next.version += 1;
+            next.updated_at = now.to_rfc3339();
+            if !dry_run {
+                append_snapshot(path, &next)?;
+            }
+            outcome.entries.push(SweepEntry {
+                id: card.id.clone(),
+                from: TaskStatus::Doing.as_str().to_string(),
+                to: "orphan".to_string(),
+                reason,
+            });
+        } else if card.orphaned && card.status == TaskStatus::Queued {
+            if card.reassign_count >= DEAD_LETTER_AFTER_REASSIGNS {
+                let mut next = card.clone();
+                next.dead_lettered = true;
+                next.version += 1;
+                next.updated_at = now.to_rfc3339();
+                if !dry_run {
+                    append_snapshot(path, &next)?;
+                }
+                outcome.entries.push(SweepEntry {
+                    id: card.id.clone(),
+                    from: "orphan".to_string(),
+                    to: "dead-letter".to_string(),
+                    reason: format!(
+                        "returned to the queue {} times without a new claim; parked for a Leader decision (never deleted, never closed)",
+                        card.reassign_count
+                    ),
+                });
+            } else {
+                let mut next = card.clone();
+                next.reassign_count += 1;
+                next.version += 1;
+                next.updated_at = now.to_rfc3339();
+                if !dry_run {
+                    append_snapshot(path, &next)?;
+                }
+                outcome.entries.push(SweepEntry {
+                    id: card.id.clone(),
+                    from: "orphan".to_string(),
+                    to: "orphan".to_string(),
+                    reason: format!(
+                        "still unclaimed at this sweep; reassign_count {} -> {}",
+                        card.reassign_count, next.reassign_count
+                    ),
+                });
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+pub fn render_sweep_text(outcome: &SweepOutcome) -> String {
+    let mut out = if outcome.dry_run {
+        format!(
+            "Sweep (dry-run): {} task(s) would change.\n",
+            outcome.entries.len()
+        )
+    } else {
+        format!("Sweep: {} task(s) changed.\n", outcome.entries.len())
+    };
+    for entry in &outcome.entries {
+        out.push_str(&format!(
+            "{}: {} -> {} ({})\n",
+            entry.id, entry.from, entry.to, entry.reason
+        ));
+    }
+    out
+}
+
 pub fn render_heartbeat_text(outcome: &HeartbeatOutcome) -> String {
     let card = &outcome.card;
     let mut out = format!("Recorded heartbeat: {}.\n", card.id);
@@ -359,8 +551,8 @@ pub fn render_list_text(cards: &[TaskCard], now: DateTime<Utc>) -> String {
         return "No tasks in the registry.\n".to_string();
     }
     let mut out = format!(
-        "{:<14} {:<10} {:<18} {:<8} {}\n",
-        "ID", "STATUS", "OWNER", "LEASE", "TITLE"
+        "{:<14} {:<10} {:<18} {:<8} {:<11} {}\n",
+        "ID", "STATUS", "OWNER", "LEASE", "STATE", "TITLE"
     );
     for card in cards {
         let lease = card
@@ -369,11 +561,12 @@ pub fn render_list_text(cards: &[TaskCard], now: DateTime<Utc>) -> String {
             .map(|lease| lease_status(lease, now).as_str())
             .unwrap_or("-");
         out.push_str(&format!(
-            "{:<14} {:<10} {:<18} {:<8} {}\n",
+            "{:<14} {:<10} {:<18} {:<8} {:<11} {}\n",
             card.id,
             card.status.as_str(),
             card.owner.as_deref().unwrap_or("-"),
             lease,
+            aux_state(card, now).unwrap_or("-"),
             card.title
         ));
     }
@@ -422,6 +615,15 @@ pub fn render_show_text(card: &TaskCard, now: DateTime<Utc>) -> String {
     }
     if card.orphaned {
         out.push_str("orphaned: true\n");
+    }
+    if let Some(state) = aux_state(card, now) {
+        out.push_str(&format!("state: {}\n", state));
+    }
+    if card.reassign_count > 0 {
+        out.push_str(&format!("reassign_count: {}\n", card.reassign_count));
+    }
+    if let Some(reason) = &card.orphan_reason {
+        out.push_str(&format!("orphan_reason: {}\n", reason));
     }
     if !card.evidence.is_empty() {
         out.push_str(&format!("evidence: {} entries\n", card.evidence.len()));
@@ -560,6 +762,24 @@ pub fn run_task(
                         print_json(&value, raw)?;
                     }
                     OutputFormat::Text => print!("{}", render_heartbeat_text(&outcome)),
+                }
+            }
+            Ok(0)
+        }
+        TaskSubcommand::Sweep { dry_run } => {
+            let outcome = sweep_tasks(&path, Utc::now(), *dry_run)?;
+            if !quiet {
+                match format {
+                    OutputFormat::Json | OutputFormat::StreamJson => {
+                        let count = outcome.entries.len();
+                        let value = serde_json::json!({
+                            "changes": outcome.entries,
+                            "count": count,
+                            "dry_run": outcome.dry_run,
+                        });
+                        print_json(&value, raw)?;
+                    }
+                    OutputFormat::Text => print!("{}", render_sweep_text(&outcome)),
                 }
             }
             Ok(0)
@@ -942,5 +1162,190 @@ mod tests {
         assert_eq!(lease.holder, "sd-developer");
         assert_eq!(lease.version, 0);
         assert_eq!(lease.expires_at, "");
+    }
+
+    fn doing_with_lease(id: &str, expires_at: &str) -> TaskCard {
+        let mut c = card(id, "work");
+        c.status = TaskStatus::Doing;
+        c.owner = Some("zc-developer".to_string());
+        c.lease = Some(Lease {
+            holder: "zc-developer".to_string(),
+            acquired_at: "2026-11-06T01:00:00+00:00".to_string(),
+            last_heartbeat: "2026-11-06T01:00:00+00:00".to_string(),
+            expires_at: expires_at.to_string(),
+            version: 1,
+        });
+        c
+    }
+
+    #[test]
+    fn sweep_orphans_expired_doing_task() {
+        let path = temp_registry("sweep_orphan");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-06T09:00:00+00:00")).unwrap();
+        let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(outcome.entries[0].id, "B-4");
+        assert_eq!(outcome.entries[0].from, "doing");
+        assert_eq!(outcome.entries[0].to, "orphan");
+        assert!(outcome.entries[0].reason.contains("lease expired"));
+        let cards = load_registry(&path).unwrap();
+        let swept = &cards[0];
+        assert_eq!(swept.status, TaskStatus::Queued);
+        assert!(swept.orphaned);
+        assert_eq!(swept.reassign_count, 1);
+        // The old holder stays on the card as history.
+        assert_eq!(swept.owner.as_deref(), Some("zc-developer"));
+        assert!(swept
+            .orphan_reason
+            .as_ref()
+            .unwrap()
+            .contains("2026-11-06T09:00:00+00:00"));
+        assert!(!swept.dead_lettered);
+        // Seed + one sweep snapshot.
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 2);
+    }
+
+    #[test]
+    fn sweep_leaves_live_doing_task_alone() {
+        let path = temp_registry("sweep_live");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-07T09:00:00+00:00")).unwrap();
+        let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert!(outcome.entries.is_empty());
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 1);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].status, TaskStatus::Doing);
+        assert!(!cards[0].orphaned);
+    }
+
+    #[test]
+    fn sweep_counts_unclaimed_orphan_until_dead_letter() {
+        let path = temp_registry("sweep_dead_letter_cycle");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-06T09:00:00+00:00")).unwrap();
+        // Pass 1: doing -> orphan, count 1.
+        let first = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert_eq!(first.entries[0].to, "orphan");
+        // Passes 2 and 3: still unclaimed, the count grows.
+        sweep_tasks(&path, fixed_now(), false).unwrap();
+        let third = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert_eq!(third.entries[0].to, "orphan");
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].reassign_count, 3);
+        assert!(!cards[0].dead_lettered);
+        // Pass 4: at the threshold, the task is parked as dead-letter.
+        let fourth = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert_eq!(fourth.entries[0].from, "orphan");
+        assert_eq!(fourth.entries[0].to, "dead-letter");
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].dead_lettered);
+        // A dead-lettered task is never swept again.
+        let fifth = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert!(fifth.entries.is_empty());
+    }
+
+    #[test]
+    fn sweep_dead_letters_orphan_already_at_threshold() {
+        let path = temp_registry("sweep_dead_letter_ready");
+        let mut parked = doing_with_lease("B-9", "2026-11-06T09:00:00+00:00");
+        parked.status = TaskStatus::Queued;
+        parked.orphaned = true;
+        parked.reassign_count = 3;
+        append_snapshot(&path, &parked).unwrap();
+        let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(outcome.entries[0].to, "dead-letter");
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].dead_lettered);
+        assert_eq!(cards[0].status, TaskStatus::Queued);
+    }
+
+    #[test]
+    fn sweep_dry_run_writes_nothing() {
+        let path = temp_registry("sweep_dry_run");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-06T09:00:00+00:00")).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let outcome = sweep_tasks(&path, fixed_now(), true).unwrap();
+        assert!(outcome.dry_run);
+        assert_eq!(outcome.entries.len(), 1);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let text = render_sweep_text(&outcome);
+        assert!(text.contains("dry-run"), "sweep text: {text}");
+        assert!(text.contains("B-4: doing -> orphan"), "sweep text: {text}");
+    }
+
+    #[test]
+    fn sweep_on_empty_registry_reports_zero() {
+        let path = temp_registry("sweep_empty").with_file_name("nope.jsonl");
+        let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert!(outcome.entries.is_empty());
+        assert!(!path.exists());
+        let text = render_sweep_text(&outcome);
+        assert!(text.contains("0 task(s)"), "sweep text: {text}");
+    }
+
+    #[test]
+    fn orphan_can_be_claimed_and_heartbeated_again() {
+        let path = temp_registry("sweep_reclaim");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-06T09:00:00+00:00")).unwrap();
+        sweep_tasks(&path, fixed_now(), false).unwrap();
+        let claim = claim_task(&path, "B-4", "sd-developer", fixed_now())
+            .unwrap()
+            .expect("an orphan can be claimed");
+        assert_eq!(claim.previous_holder.as_deref(), Some("zc-developer"));
+        let hb = heartbeat_task(&path, "B-4", "sd-developer", fixed_now())
+            .unwrap()
+            .expect("heartbeat works after the claim");
+        assert!(!hb.flagged);
+        let cards = load_registry(&path).unwrap();
+        // The count is history: a new claim does not reset it.
+        assert_eq!(cards[0].reassign_count, 1);
+        // With a live lease again the card no longer reads as orphan.
+        assert_eq!(aux_state(&cards[0], fixed_now()), None);
+        // And the sweep leaves it alone now.
+        let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert!(outcome.entries.is_empty());
+    }
+
+    #[test]
+    fn step1_lines_load_with_sweep_field_defaults() {
+        // A step 1/2 snapshot has none of the step-3 fields; serde
+        // defaults fill them in and the sweep can act on the card.
+        let path = temp_registry("step3_compat");
+        let data = "{\"id\":\"B-4\",\"title\":\"fix install\",\"status\":\"doing\",\"owner\":\"zc-developer\",\"lease\":{\"holder\":\"zc-developer\",\"acquired_at\":\"2026-11-06T01:00:00+00:00\",\"last_heartbeat\":\"2026-11-06T01:00:00+00:00\",\"expires_at\":\"2026-11-06T09:00:00+00:00\",\"version\":1}}\n";
+        std::fs::write(&path, data).unwrap();
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].reassign_count, 0);
+        assert!(!cards[0].dead_lettered);
+        assert_eq!(cards[0].orphan_reason, None);
+        let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert_eq!(outcome.entries.len(), 1);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].reassign_count, 1);
+        assert!(cards[0].orphaned);
+    }
+
+    #[test]
+    fn list_and_show_display_orphan_and_dead_letter() {
+        let mut orphan = doing_with_lease("B-4", "2026-11-06T09:00:00+00:00");
+        orphan.status = TaskStatus::Queued;
+        orphan.orphaned = true;
+        orphan.reassign_count = 1;
+        orphan.orphan_reason = Some(
+            "lease expired at 2026-11-06T09:00:00+00:00 (holder zc-developer, last heartbeat 2026-11-06T01:00:00+00:00)"
+                .to_string(),
+        );
+        let list = render_list_text(std::slice::from_ref(&orphan), fixed_now());
+        assert!(list.contains("orphan"), "list text: {list}");
+        let shown = render_show_text(&orphan, fixed_now());
+        assert!(shown.contains("state: orphan"), "show text: {shown}");
+        assert!(shown.contains("reassign_count: 1"), "show text: {shown}");
+        let mut dead = orphan.clone();
+        dead.dead_lettered = true;
+        dead.reassign_count = 3;
+        let list = render_list_text(std::slice::from_ref(&dead), fixed_now());
+        assert!(list.contains("dead-letter"), "list text: {list}");
+        let shown = render_show_text(&dead, fixed_now());
+        assert!(shown.contains("state: dead-letter"), "show text: {shown}");
     }
 }
