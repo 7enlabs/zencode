@@ -67,7 +67,10 @@ CI_LOOSEN = [
 TEST_FN = re.compile(r"#\[(?:test|tokio::test)\b")
 
 # Task codes (P0-3 section 4.3 layer 2). Canonical form is upper-case, no spaces.
-TASK_GENERIC = re.compile(r"\b[A-Z]{1,4}-\d+\b", re.IGNORECASE)
+# The generic pattern only accepts the prefixes CONSTRAINTS.md names
+# (B, STU, APP, DV, DS, C): an open-ended [A-Z]{1,4} prefix also matched
+# non-task codes such as UTF-8 or HTTP-2, flagging unrelated branches.
+TASK_GENERIC = re.compile(r"\b(?:B|STU|APP|DV|DS|C)-\d+\b", re.IGNORECASE)
 TASK_VIEC = re.compile(r"\bviệc\s*(\d+)\b", re.IGNORECASE)
 TASK_STEP = re.compile(r"\bP0-(\d+)[-\s]*(?:step|bước)[-\s]*(\d+)\b", re.IGNORECASE)
 TASK_PSTEP = re.compile(r"\bp0(\d)[-\s]?s(?:tep)?[-\s]*(\d+)\b", re.IGNORECASE)

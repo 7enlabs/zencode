@@ -131,6 +131,18 @@ class TaskGuard(unittest.TestCase):
         self.assertEqual(fg.extract_task_codes("dev/dep-security-rustls-webpki-2"), set())
         self.assertEqual(fg.extract_task_codes("dev/secret-scan-ci"), set())
 
+    def test_no_false_positive_on_non_task_codes(self):
+        # Regression: the old open-ended prefix matched encodings, protocols
+        # and standards (UTF-8, HTTP-2) as if they were task codes.
+        for text in ("dev/fix-utf-8", "UTF-8 encoding", "UTF-16 output",
+                     "fix HTTP-2 retry", "HTTP-3 support", "TLS-1.3 handshake",
+                     "SHA-256 hash", "RFC-9110", "ISO-8859-1", "ECMA-262"):
+            self.assertEqual(fg.extract_task_codes(text), set(), text)
+
+    def test_known_prefixes_still_extracted(self):
+        for code in ("B-4", "STU-3", "APP-1", "DV-2", "DS-1", "C-2"):
+            self.assertIn(code, fg.extract_task_codes(f"work on {code}"), code)
+
     def test_t1_pass_from_body(self):
         self.assertEqual(fg.check_task_code("dev/secret-scan-ci", "Secret-scan CI (B-2)"), [])
         self.assertEqual(fg.check_task_code("dev/p03-revive", "P0-3 step 6"), [])
