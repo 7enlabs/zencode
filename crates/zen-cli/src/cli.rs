@@ -542,7 +542,7 @@ pub enum SessionSubcommand {
 
 #[derive(Args, Debug, Clone)]
 #[command(
-    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)\n  zen task claim B-4 --by zc-dev --expected-version 1  Guarded claim: refused (exit 7) unless the lease is at version 1\n  zen task heartbeat B-4 --by zc-dev  Record a heartbeat (observe-only)\n  zen task sweep                   Run the handover sweep (expired leases return as orphans)\n  zen task sweep --dry-run         Preview the sweep; writes nothing"
+    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)\n  zen task claim B-4 --by zc-dev --expected-version 1  Guarded claim: refused (exit 7) unless the lease is at version 1\n  zen task heartbeat B-4 --by zc-dev  Record a heartbeat (observe-only)\n  zen task sweep                   Run the handover sweep (expired leases return as orphans)\n  zen task sweep --dry-run         Preview the sweep; writes nothing\n  zen task revive B-4 --by zc-leader  Revive a dead-lettered task back to the queue (Leader decision)"
 )]
 pub struct TaskArgs {
     #[command(subcommand)]
@@ -584,6 +584,18 @@ pub enum TaskSubcommand {
         id: String,
 
         /// Seat sending the heartbeat
+        #[arg(long = "by")]
+        by: String,
+    },
+
+    /// Revive a DEAD-LETTER task back to the queue (step 6: a Leader
+    /// decision; the CLI records the seat that ran it, it checks no
+    /// permission of its own)
+    Revive {
+        /// Task id, e.g. B-4
+        id: String,
+
+        /// Seat recording the revive
         #[arg(long = "by")]
         by: String,
     },
@@ -1154,6 +1166,17 @@ mod tests {
             Some(Commands::Task(t)) => match t.command {
                 TaskSubcommand::Sweep { dry_run } => assert!(dry_run),
                 other => panic!("expected Sweep, got {:?}", other),
+            },
+            _ => panic!("expected Task"),
+        }
+        let cli = parse(&["task", "revive", "B-4", "--by", "zc-leader"]);
+        match cli.subcommand {
+            Some(Commands::Task(t)) => match t.command {
+                TaskSubcommand::Revive { id, by } => {
+                    assert_eq!(id, "B-4");
+                    assert_eq!(by, "zc-leader");
+                }
+                other => panic!("expected Revive, got {:?}", other),
             },
             _ => panic!("expected Task"),
         }
