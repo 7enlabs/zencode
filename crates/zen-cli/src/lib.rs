@@ -34,6 +34,7 @@ pub mod settings;
 pub mod skill_registry;
 pub mod skills;
 pub mod system_prompt;
+pub mod tasks;
 pub mod update;
 
 pub use cli::{
@@ -376,6 +377,13 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             commands::sessions_command(cli, cwd, home, s).await?;
             Ok(0)
         }
+        Commands::Task(args) => tasks::run_task(
+            args,
+            &cli.effective_output_format(),
+            cli.quiet,
+            cli.raw,
+            home,
+        ),
         Commands::Eval(args) => {
             if !(0.0..=1.0).contains(&args.min_pass_rate) {
                 return Err(coded_error(
