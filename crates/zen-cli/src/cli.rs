@@ -542,7 +542,7 @@ pub enum SessionSubcommand {
 
 #[derive(Args, Debug, Clone)]
 #[command(
-    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)\n  zen task heartbeat B-4 --by zc-dev  Record a heartbeat (observe-only)\n  zen task sweep                   Run the handover sweep (expired leases return as orphans)\n  zen task sweep --dry-run         Preview the sweep; writes nothing"
+    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)\n  zen task claim B-4 --by zc-dev --expected-version 1  Guarded claim: refused (exit 7) unless the lease is at version 1\n  zen task heartbeat B-4 --by zc-dev  Record a heartbeat (observe-only)\n  zen task sweep                   Run the handover sweep (expired leases return as orphans)\n  zen task sweep --dry-run         Preview the sweep; writes nothing"
 )]
 pub struct TaskArgs {
     #[command(subcommand)]
@@ -568,6 +568,14 @@ pub enum TaskSubcommand {
         /// Seat recording the claim
         #[arg(long = "by")]
         by: String,
+
+        /// Only claim when the lease version on the card equals this
+        /// number (compare-and-swap, step 4). Without it the claim
+        /// keeps the step-1 observe-only behaviour. A mismatch is
+        /// refused with exit code 7 (B2 CONFLICT) and writes nothing;
+        /// a retry with the same key is a no-op.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
     },
 
     /// Record a heartbeat for a task (observe-only: renews the lease, never blocks)
@@ -1085,9 +1093,38 @@ mod tests {
         let cli = parse(&["task", "claim", "B-4", "--by", "zc-developer"]);
         match cli.subcommand {
             Some(Commands::Task(t)) => match t.command {
-                TaskSubcommand::Claim { id, by } => {
+                TaskSubcommand::Claim {
+                    id,
+                    by,
+                    expected_version,
+                } => {
                     assert_eq!(id, "B-4");
                     assert_eq!(by, "zc-developer");
+                    assert_eq!(expected_version, None);
+                }
+                other => panic!("expected Claim, got {:?}", other),
+            },
+            _ => panic!("expected Task"),
+        }
+        let cli = parse(&[
+            "task",
+            "claim",
+            "B-4",
+            "--by",
+            "zc-developer",
+            "--expected-version",
+            "1",
+        ]);
+        match cli.subcommand {
+            Some(Commands::Task(t)) => match t.command {
+                TaskSubcommand::Claim {
+                    id,
+                    by,
+                    expected_version,
+                } => {
+                    assert_eq!(id, "B-4");
+                    assert_eq!(by, "zc-developer");
+                    assert_eq!(expected_version, Some(1));
                 }
                 other => panic!("expected Claim, got {:?}", other),
             },

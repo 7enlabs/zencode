@@ -29,6 +29,16 @@
 //! counted once per sweep until it is parked as DEAD-LETTER for a
 //! Leader decision - never deleted, never closed. The sweep is a
 //! manual command run at a handover; nothing runs in the background.
+//!
+//! Step 4 adds claim compare-and-swap plus an idempotency key
+//! (design sections 4.2 and 4.3): `zen task claim --expected-version
+//! <n>` only succeeds when the lease version on the card equals `n`;
+//! otherwise it is refused with exit code 7 (B2 CONFLICT) and writes
+//! nothing. A successful guarded claim records the key
+//! `claim:<task_id>:<actor>:<expected_version>` on the card; a retry
+//! with the same key is a no-op that reports success without writing
+//! a duplicate snapshot. A claim without `--expected-version` keeps
+//! the observe-only behaviour of step 1.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -160,6 +170,12 @@ pub struct TaskCard {
     /// Why the sweep orphaned this task (the lease expiry it saw).
     #[serde(default)]
     pub orphan_reason: Option<String>,
+    /// The idempotency key of the latest guarded claim
+    /// (`claim:<task_id>:<actor>:<expected_version>`, step 4). A
+    /// retry with the same key is a no-op; a claim without
+    /// `--expected-version` leaves the recorded key untouched.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
     #[serde(default)]
     pub updated_at: String,
     #[serde(default)]
@@ -228,9 +244,29 @@ pub fn find_task<'a>(cards: &'a [TaskCard], id: &str) -> Option<&'a TaskCard> {
 
 /// The result of a recorded claim: the updated card plus whoever held
 /// the task before (if anyone), so the caller can flag the overlap.
+/// `replayed` is true when the claim was already applied under the
+/// same idempotency key and no new snapshot was written (step 4).
 pub struct ClaimOutcome {
     pub card: TaskCard,
     pub previous_holder: Option<String>,
+    pub replayed: bool,
+    pub idempotency_key: Option<String>,
+}
+
+/// The outcome of a guarded claim (`zen task claim
+/// --expected-version`, step 4): the claim was recorded, it was
+/// already applied under the same key, or the lease version the
+/// caller expected no longer matches the card.
+pub enum CasClaim {
+    Recorded(ClaimOutcome),
+    Replayed(ClaimOutcome),
+    Conflict { expected: u64, actual: u64 },
+}
+
+/// Build the idempotency key of a guarded claim (Leader decision,
+/// tin 7242, 07/11/2026): `claim:<task_id>:<actor>:<expected_version>`.
+pub fn claim_idempotency_key(id: &str, by: &str, expected_version: u64) -> String {
+    format!("claim:{id}:{by}:{expected_version}")
 }
 
 /// Record `by` as the holder of task `id` and append the new snapshot.
@@ -267,10 +303,97 @@ pub fn claim_task(
     card.version += 1;
     card.updated_at = now.to_rfc3339();
     append_snapshot(path, &card)?;
+    let idempotency_key = card.idempotency_key.clone();
     Ok(Some(ClaimOutcome {
         card,
         previous_holder,
+        replayed: false,
+        idempotency_key,
     }))
+}
+
+/// Record a guarded claim for task `id` from seat `by`.
+///
+/// When `expected_version` is `None` this is exactly the step-1
+/// observe-only claim (recorded, never blocked). When it is `Some`,
+/// the claim is a compare-and-swap on the lease `version` (design
+/// sections 4.2 and 4.3):
+///
+/// * the lease version on the card must equal `expected_version`,
+///   otherwise the claim is refused as `CasClaim::Conflict` and
+///   nothing is written (a task with no lease yet reads as version 0);
+/// * a successful guarded claim records the idempotency key
+///   `claim:<task_id>:<actor>:<expected_version>` on the card;
+/// * a retry whose key is already on the card *and* whose lease is
+///   exactly the post-state of that claim (same holder, version
+///   `expected_version + 1`) is a no-op `CasClaim::Replayed`: it
+///   succeeds without writing a duplicate snapshot.
+///
+/// Returns `None` when the registry has no task with `id`; in that
+/// case nothing is written.
+pub fn claim_task_cas(
+    path: &Path,
+    id: &str,
+    by: &str,
+    expected_version: Option<u64>,
+    now: DateTime<Utc>,
+) -> Result<Option<CasClaim>> {
+    let Some(expected) = expected_version else {
+        return Ok(claim_task(path, id, by, now)?.map(CasClaim::Recorded));
+    };
+    let cards = load_registry(path)?;
+    let Some(existing) = find_task(&cards, id) else {
+        return Ok(None);
+    };
+    let key = claim_idempotency_key(id, by, expected);
+    let current_version = existing.lease.as_ref().map_or(0, |l| l.version);
+    if existing.idempotency_key.as_deref() == Some(key.as_str())
+        && existing
+            .lease
+            .as_ref()
+            .is_some_and(|l| l.holder == by && l.version == expected.saturating_add(1))
+    {
+        return Ok(Some(CasClaim::Replayed(ClaimOutcome {
+            card: existing.clone(),
+            previous_holder: existing
+                .lease
+                .as_ref()
+                .map(|l| l.holder.clone())
+                .or_else(|| existing.owner.clone()),
+            replayed: true,
+            idempotency_key: Some(key),
+        })));
+    }
+    if current_version != expected {
+        return Ok(Some(CasClaim::Conflict {
+            expected,
+            actual: current_version,
+        }));
+    }
+    let mut card = existing.clone();
+    let previous_holder = card
+        .lease
+        .as_ref()
+        .map(|l| l.holder.clone())
+        .or_else(|| card.owner.clone());
+    card.owner = Some(by.to_string());
+    card.lease = Some(Lease {
+        holder: by.to_string(),
+        acquired_at: now.to_rfc3339(),
+        last_heartbeat: now.to_rfc3339(),
+        expires_at: (now + Duration::hours(LEASE_HOURS)).to_rfc3339(),
+        version: expected.saturating_add(1),
+    });
+    card.idempotency_key = Some(key.clone());
+    card.version += 1;
+    card.updated_at = now.to_rfc3339();
+    append_snapshot(path, &card)?;
+    Ok(Some(CasClaim::Recorded(ClaimOutcome {
+        card,
+        previous_holder,
+        replayed: false,
+        idempotency_key: Some(key),
+    })))
 }
 
 /// Whether a lease is still live at a given moment, derived only from
@@ -607,6 +730,9 @@ pub fn render_show_text(card: &TaskCard, now: DateTime<Utc>) -> String {
             lease_status(lease, now).as_str()
         ));
     }
+    if let Some(key) = &card.idempotency_key {
+        out.push_str(&format!("idempotency_key: {}\n", key));
+    }
     if let Some(blocker) = &card.blocker {
         out.push_str(&format!(
             "blocker: what={} tried={} who={} deadline_impact={}\n",
@@ -647,12 +773,24 @@ pub fn render_show_text(card: &TaskCard, now: DateTime<Utc>) -> String {
 pub fn render_claim_text(outcome: &ClaimOutcome) -> String {
     let card = &outcome.card;
     let holder = card.owner.as_deref().unwrap_or("-");
-    let mut out = format!("Recorded claim: {} is now held by {}.\n", card.id, holder);
+    let mut out = if outcome.replayed {
+        format!(
+            "Already applied: {} is still held by {} (idempotency key {}); nothing was written.\n",
+            card.id,
+            holder,
+            outcome.idempotency_key.as_deref().unwrap_or("-")
+        )
+    } else {
+        format!("Recorded claim: {} is now held by {}.\n", card.id, holder)
+    };
     if let Some(lease) = &card.lease {
         out.push_str(&format!(
             "lease: version={} expires_at={}\n",
             lease.version, lease.expires_at
         ));
+    }
+    if let Some(key) = &outcome.idempotency_key {
+        out.push_str(&format!("idempotency_key: {}\n", key));
     }
     if let Some(prev) = &outcome.previous_holder {
         if prev != holder {
@@ -662,7 +800,11 @@ pub fn render_claim_text(outcome: &ClaimOutcome) -> String {
             ));
         }
     }
-    out.push_str("Observe-only: the claim is recorded; no seat was blocked.\n");
+    if outcome.replayed {
+        out.push_str("Observe-only: a repeated claim is a no-op; no seat was blocked.\n");
+    } else {
+        out.push_str("Observe-only: the claim is recorded; no seat was blocked.\n");
+    }
     out
 }
 
@@ -720,12 +862,27 @@ pub fn run_task(
             }
             Ok(0)
         }
-        TaskSubcommand::Claim { id, by } => {
-            let Some(outcome) = claim_task(&path, id, by, Utc::now())? else {
+        TaskSubcommand::Claim {
+            id,
+            by,
+            expected_version,
+        } => {
+            let Some(cas) = claim_task_cas(&path, id, by, *expected_version, Utc::now())? else {
                 return Err(crate::coded_error(
                     exit_code::NOT_FOUND,
                     format!("task '{}' not found in the task registry", id),
                 ));
+            };
+            let outcome = match cas {
+                CasClaim::Recorded(outcome) | CasClaim::Replayed(outcome) => outcome,
+                CasClaim::Conflict { expected, actual } => {
+                    return Err(crate::coded_error(
+                        exit_code::CONFLICT,
+                        format!(
+                            "claim for task '{id}' refused: expected lease version {expected}, actual lease version {actual}; re-read the card and retry with the current version"
+                        ),
+                    ));
+                }
             };
             if !quiet {
                 match format {
@@ -733,6 +890,8 @@ pub fn run_task(
                         let value = serde_json::json!({
                             "task": outcome.card,
                             "claim_recorded": true,
+                            "replayed": outcome.replayed,
+                            "idempotency_key": outcome.idempotency_key,
                             "previous_holder": outcome.previous_holder,
                             "observe_only": true,
                         });
@@ -926,6 +1085,170 @@ mod tests {
         let text = render_claim_text(&outcome);
         assert!(text.contains("previously held by zc-developer"));
         assert!(text.contains("flagged, not blocked"));
+    }
+
+    #[test]
+    fn cas_claim_with_matching_version_records_and_keys_it() {
+        let path = temp_registry("cas_match");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        let outcome = match cas {
+            CasClaim::Recorded(outcome) => outcome,
+            CasClaim::Replayed(_) => panic!("expected Recorded, got Replayed"),
+            CasClaim::Conflict { .. } => panic!("expected Recorded, got Conflict"),
+        };
+        assert!(!outcome.replayed);
+        assert_eq!(
+            outcome.idempotency_key.as_deref(),
+            Some("claim:B-4:zc-developer:0")
+        );
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 1);
+        assert_eq!(outcome.card.version, 1);
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 2);
+        let last = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap()
+            .to_string();
+        assert!(last.contains(r#""idempotency_key":"claim:B-4:zc-developer:0""#));
+    }
+
+    #[test]
+    fn cas_claim_with_stale_version_is_refused_without_writing() {
+        let path = temp_registry("cas_stale");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        let cas = claim_task_cas(&path, "B-4", "sd-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        match cas {
+            CasClaim::Conflict { expected, actual } => {
+                assert_eq!(expected, 0);
+                assert_eq!(actual, 1);
+            }
+            CasClaim::Recorded(_) => panic!("expected Conflict, got Recorded"),
+            CasClaim::Replayed(_) => panic!("expected Conflict, got Replayed"),
+        }
+        // A refused claim writes no snapshot: still seed + first claim.
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 2);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].owner.as_deref(), Some("zc-developer"));
+        assert_eq!(cards[0].lease.as_ref().unwrap().version, 1);
+    }
+
+    #[test]
+    fn cas_claim_replay_with_same_key_is_a_noop() {
+        let path = temp_registry("cas_replay");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        let outcome = match cas {
+            CasClaim::Replayed(outcome) => outcome,
+            CasClaim::Recorded(_) => panic!("expected Replayed, got Recorded"),
+            CasClaim::Conflict { .. } => panic!("expected Replayed, got Conflict"),
+        };
+        assert!(outcome.replayed);
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 1);
+        assert_eq!(outcome.card.version, 1);
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 2);
+        let text = render_claim_text(&outcome);
+        assert!(text.contains("Already applied"));
+        assert!(text.contains("nothing was written"));
+    }
+
+    #[test]
+    fn cas_replay_after_an_intervening_claim_is_a_conflict() {
+        let path = temp_registry("cas_intervening");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        // A legacy (unguarded) claim moves the lease on; the old key
+        // is still on the card but no longer describes the lease.
+        claim_task(&path, "B-4", "sd-developer", fixed_now())
+            .unwrap()
+            .unwrap();
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        match cas {
+            CasClaim::Conflict { expected, actual } => {
+                assert_eq!(expected, 0);
+                assert_eq!(actual, 2);
+            }
+            CasClaim::Recorded(_) => panic!("expected Conflict, got Recorded"),
+            CasClaim::Replayed(_) => panic!("expected Conflict, got Replayed"),
+        }
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 3);
+    }
+
+    #[test]
+    fn claim_without_expected_version_keeps_legacy_behavior() {
+        let path = temp_registry("cas_legacy");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", None, fixed_now())
+            .unwrap()
+            .expect("task exists");
+        let outcome = match cas {
+            CasClaim::Recorded(outcome) => outcome,
+            CasClaim::Replayed(_) => panic!("expected Recorded, got Replayed"),
+            CasClaim::Conflict { .. } => panic!("expected Recorded, got Conflict"),
+        };
+        assert!(!outcome.replayed);
+        assert_eq!(outcome.idempotency_key, None);
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 1);
+        let outcome = claim_task(&path, "B-4", "sd-developer", fixed_now())
+            .unwrap()
+            .expect("observe-only claim still records");
+        assert_eq!(outcome.previous_holder.as_deref(), Some("zc-developer"));
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 2);
+        assert_eq!(outcome.idempotency_key, None);
+    }
+
+    #[test]
+    fn cas_claim_on_a_leased_card_needs_the_current_version() {
+        let path = temp_registry("cas_leased");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .unwrap();
+        let cas = claim_task_cas(&path, "B-4", "sd-developer", Some(1), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        let outcome = match cas {
+            CasClaim::Recorded(outcome) => outcome,
+            CasClaim::Replayed(_) => panic!("expected Recorded, got Replayed"),
+            CasClaim::Conflict { .. } => panic!("expected Recorded, got Conflict"),
+        };
+        assert_eq!(
+            outcome.idempotency_key.as_deref(),
+            Some("claim:B-4:sd-developer:1")
+        );
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 2);
+        let text = render_show_text(&outcome.card, fixed_now());
+        assert!(text.contains("idempotency_key: claim:B-4:sd-developer:1"));
+        assert!(text.contains("version=2"));
+    }
+
+    #[test]
+    fn cas_claim_unknown_id_records_nothing() {
+        let path = temp_registry("cas_unknown");
+        let cas = claim_task_cas(&path, "B-99", "zc-developer", Some(0), fixed_now()).unwrap();
+        assert!(cas.is_none());
+        assert!(!path.exists());
     }
 
     #[test]
