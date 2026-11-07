@@ -1,4 +1,4 @@
-//! P0-3 step 1: the multi-seat task registry (observe-only).
+//! P0-3: the multi-seat task registry (observe-only).
 //!
 //! The registry is a single append-only JSONL file at
 //! `<home>/.zen/tasks.jsonl` — the same `.zen` tree that already holds
@@ -13,6 +13,14 @@
 //! holder and a lease, but it never blocks another seat from claiming
 //! the same task — an overlap is reported, not rejected — and no
 //! existing command changes behavior.
+//!
+//! Step 2 adds `zen task heartbeat`: a heartbeat refreshes the
+//! lease's `last_heartbeat`/`expires_at` and bumps its `version`,
+//! still observe-only — a heartbeat from a seat other than the holder
+//! is recorded and flagged, never rejected, and it never transfers
+//! the lease. `list`/`show` display the derived lease status
+//! (`active`/`expired`); an expired lease changes nothing here —
+//! returning the task to the queue is the sweep of a later step.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -63,10 +71,17 @@ impl TaskStatus {
 /// grows on every claim/renew so a later step can compare-and-swap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
+    // Every field defaults so a snapshot written before a field
+    // existed (or written by hand) still loads.
+    #[serde(default)]
     pub holder: String,
+    #[serde(default)]
     pub acquired_at: String,
+    #[serde(default)]
     pub last_heartbeat: String,
+    #[serde(default)]
     pub expires_at: String,
+    #[serde(default)]
     pub version: u64,
 }
 
@@ -237,27 +252,135 @@ pub fn claim_task(
     }))
 }
 
-pub fn render_list_text(cards: &[TaskCard]) -> String {
+/// Whether a lease is still live at a given moment, derived only from
+/// its `expires_at` (design section 4.2). This is a display value:
+/// step 2 never mutates a card because its lease expired - handing
+/// the task back to the queue is the sweep's job (step 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseStatus {
+    Active,
+    Expired,
+}
+
+impl LeaseStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LeaseStatus::Active => "active",
+            LeaseStatus::Expired => "expired",
+        }
+    }
+}
+
+/// The lease status of `lease` at `now`. An `expires_at` that cannot
+/// be parsed cannot prove the lease is live, so it reads as expired.
+pub fn lease_status(lease: &Lease, now: DateTime<Utc>) -> LeaseStatus {
+    match DateTime::parse_from_rfc3339(&lease.expires_at) {
+        Ok(expires) if expires.with_timezone(&Utc) > now => LeaseStatus::Active,
+        _ => LeaseStatus::Expired,
+    }
+}
+
+/// The result of a recorded heartbeat: the updated card plus whether
+/// the heartbeat came from a seat other than the lease holder.
+pub struct HeartbeatOutcome {
+    pub card: TaskCard,
+    pub flagged: bool,
+}
+
+/// Record a heartbeat for task `id` from seat `by` and append the new
+/// snapshot.
+///
+/// The heartbeat refreshes `last_heartbeat` to `now`, extends
+/// `expires_at` to `now + LEASE_HOURS`, and bumps the lease `version`.
+/// A heartbeat never transfers the lease: the holder stays whoever the
+/// lease names. A heartbeat from a different seat is still recorded -
+/// the outcome flags it, exactly like an overlapping claim - and a
+/// task with no lease yet gains one held by `by`. Returns `None` when
+/// the registry has no task with `id`; in that case nothing is
+/// written.
+pub fn heartbeat_task(
+    path: &Path,
+    id: &str,
+    by: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<HeartbeatOutcome>> {
+    let cards = load_registry(path)?;
+    let Some(existing) = find_task(&cards, id) else {
+        return Ok(None);
+    };
+    let mut card = existing.clone();
+    let flagged = if let Some(lease) = card.lease.as_mut() {
+        let flagged = lease.holder != by;
+        lease.last_heartbeat = now.to_rfc3339();
+        lease.expires_at = (now + Duration::hours(LEASE_HOURS)).to_rfc3339();
+        lease.version += 1;
+        flagged
+    } else {
+        let flagged = card.owner.as_deref().is_some_and(|owner| owner != by);
+        if card.owner.is_none() {
+            card.owner = Some(by.to_string());
+        }
+        card.lease = Some(Lease {
+            holder: by.to_string(),
+            acquired_at: now.to_rfc3339(),
+            last_heartbeat: now.to_rfc3339(),
+            expires_at: (now + Duration::hours(LEASE_HOURS)).to_rfc3339(),
+            version: 1,
+        });
+        flagged
+    };
+    card.version += 1;
+    card.updated_at = now.to_rfc3339();
+    append_snapshot(path, &card)?;
+    Ok(Some(HeartbeatOutcome { card, flagged }))
+}
+
+pub fn render_heartbeat_text(outcome: &HeartbeatOutcome) -> String {
+    let card = &outcome.card;
+    let mut out = format!("Recorded heartbeat: {}.\n", card.id);
+    if let Some(lease) = &card.lease {
+        out.push_str(&format!(
+            "lease: holder={} version={} last_heartbeat={} expires_at={}\n",
+            lease.holder, lease.version, lease.last_heartbeat, lease.expires_at
+        ));
+    }
+    if outcome.flagged {
+        out.push_str(
+            "Note: heartbeat from a seat other than the holder; the overlap is flagged, not blocked.\n",
+        );
+    }
+    out.push_str("Observe-only: the heartbeat is recorded; no seat was blocked.\n");
+    out
+}
+
+pub fn render_list_text(cards: &[TaskCard], now: DateTime<Utc>) -> String {
     if cards.is_empty() {
         return "No tasks in the registry.\n".to_string();
     }
     let mut out = format!(
-        "{:<14} {:<10} {:<18} {}\n",
-        "ID", "STATUS", "OWNER", "TITLE"
+        "{:<14} {:<10} {:<18} {:<8} {}\n",
+        "ID", "STATUS", "OWNER", "LEASE", "TITLE"
     );
     for card in cards {
+        let lease = card
+            .lease
+            .as_ref()
+            .map(|lease| lease_status(lease, now).as_str())
+            .unwrap_or("-");
         out.push_str(&format!(
-            "{:<14} {:<10} {:<18} {}\n",
+            "{:<14} {:<10} {:<18} {:<8} {}\n",
             card.id,
             card.status.as_str(),
             card.owner.as_deref().unwrap_or("-"),
+            lease,
             card.title
         ));
     }
     out
 }
 
-pub fn render_show_text(card: &TaskCard) -> String {
+pub fn render_show_text(card: &TaskCard, now: DateTime<Utc>) -> String {
     let mut out = String::new();
     out.push_str(&format!("id: {}\n", card.id));
     out.push_str(&format!("title: {}\n", card.title));
@@ -282,8 +405,13 @@ pub fn render_show_text(card: &TaskCard) -> String {
     }
     if let Some(lease) = &card.lease {
         out.push_str(&format!(
-            "lease: holder={} acquired_at={} last_heartbeat={} expires_at={} version={}\n",
-            lease.holder, lease.acquired_at, lease.last_heartbeat, lease.expires_at, lease.version
+            "lease: holder={} acquired_at={} last_heartbeat={} expires_at={} version={} status={}\n",
+            lease.holder,
+            lease.acquired_at,
+            lease.last_heartbeat,
+            lease.expires_at,
+            lease.version,
+            lease_status(lease, now).as_str()
         ));
     }
     if let Some(blocker) = &card.blocker {
@@ -367,7 +495,7 @@ pub fn run_task(
                     OutputFormat::Json | OutputFormat::StreamJson => {
                         print_json(&serde_json::json!({ "tasks": cards }), raw)?;
                     }
-                    OutputFormat::Text => print!("{}", render_list_text(&cards)),
+                    OutputFormat::Text => print!("{}", render_list_text(&cards, Utc::now())),
                 }
             }
             Ok(0)
@@ -385,7 +513,7 @@ pub fn run_task(
                     OutputFormat::Json | OutputFormat::StreamJson => {
                         print_json(&serde_json::to_value(card)?, raw)?;
                     }
-                    OutputFormat::Text => print!("{}", render_show_text(card)),
+                    OutputFormat::Text => print!("{}", render_show_text(card, Utc::now())),
                 }
             }
             Ok(0)
@@ -409,6 +537,29 @@ pub fn run_task(
                         print_json(&value, raw)?;
                     }
                     OutputFormat::Text => print!("{}", render_claim_text(&outcome)),
+                }
+            }
+            Ok(0)
+        }
+        TaskSubcommand::Heartbeat { id, by } => {
+            let Some(outcome) = heartbeat_task(&path, id, by, Utc::now())? else {
+                return Err(crate::coded_error(
+                    exit_code::NOT_FOUND,
+                    format!("task '{}' not found in the task registry", id),
+                ));
+            };
+            if !quiet {
+                match format {
+                    OutputFormat::Json | OutputFormat::StreamJson => {
+                        let value = serde_json::json!({
+                            "task": outcome.card,
+                            "heartbeat_recorded": true,
+                            "flagged": outcome.flagged,
+                            "observe_only": true,
+                        });
+                        print_json(&value, raw)?;
+                    }
+                    OutputFormat::Text => print!("{}", render_heartbeat_text(&outcome)),
                 }
             }
             Ok(0)
@@ -633,11 +784,14 @@ mod tests {
 
     #[test]
     fn list_text_renders_rows_and_empty_state() {
-        assert_eq!(render_list_text(&[]), "No tasks in the registry.\n");
+        assert_eq!(
+            render_list_text(&[], fixed_now()),
+            "No tasks in the registry.\n"
+        );
         let mut doing = card("B-4", "fix install");
         doing.status = TaskStatus::Doing;
         doing.owner = Some("zc-developer".to_string());
-        let text = render_list_text(&[doing]);
+        let text = render_list_text(&[doing], fixed_now());
         assert!(text.contains("B-4"));
         assert!(text.contains("doing"));
         assert!(text.contains("zc-developer"));
@@ -648,9 +802,145 @@ mod tests {
     fn show_text_renders_card_fields() {
         let mut doing = card("B-4", "fix install");
         doing.status = TaskStatus::Verifying;
-        let text = render_show_text(&doing);
+        let text = render_show_text(&doing, fixed_now());
         assert!(text.contains("id: B-4"));
         assert!(text.contains("status: verifying"));
         assert!(text.contains("title: fix install"));
+    }
+
+    fn fixed_now_plus_hours(hours: i64) -> DateTime<Utc> {
+        fixed_now() + Duration::hours(hours)
+    }
+
+    #[test]
+    fn heartbeat_renews_lease_and_bumps_versions() {
+        let path = temp_registry("heartbeat");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .unwrap();
+        let outcome = heartbeat_task(&path, "B-4", "zc-developer", fixed_now_plus_hours(2))
+            .unwrap()
+            .expect("task exists");
+        assert!(!outcome.flagged);
+        let lease = outcome.card.lease.as_ref().unwrap();
+        assert_eq!(lease.holder, "zc-developer");
+        assert_eq!(lease.acquired_at, "2026-11-07T01:00:00+00:00");
+        assert_eq!(lease.last_heartbeat, "2026-11-07T03:00:00+00:00");
+        assert_eq!(lease.expires_at, "2026-11-07T11:00:00+00:00");
+        assert_eq!(lease.version, 2);
+        assert_eq!(outcome.card.version, 2);
+        // One seed + one claim + one heartbeat snapshot in the file.
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 3);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].lease.as_ref().unwrap().version, 2);
+    }
+
+    #[test]
+    fn heartbeat_from_another_seat_is_flagged_not_blocked() {
+        let path = temp_registry("heartbeat_overlap");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .unwrap();
+        let outcome = heartbeat_task(&path, "B-4", "sd-developer", fixed_now_plus_hours(1))
+            .unwrap()
+            .expect("observe-only heartbeat still records");
+        assert!(outcome.flagged);
+        // The lease is renewed, but a heartbeat never transfers it.
+        let lease = outcome.card.lease.as_ref().unwrap();
+        assert_eq!(lease.holder, "zc-developer");
+        assert_eq!(lease.version, 2);
+        assert_eq!(lease.last_heartbeat, "2026-11-07T02:00:00+00:00");
+        assert_eq!(lease.expires_at, "2026-11-07T10:00:00+00:00");
+        let text = render_heartbeat_text(&outcome);
+        assert!(text.contains("flagged, not blocked"));
+    }
+
+    #[test]
+    fn heartbeat_unknown_id_records_nothing() {
+        let path = temp_registry("heartbeat_unknown");
+        let outcome = heartbeat_task(&path, "B-99", "zc-developer", fixed_now()).unwrap();
+        assert!(outcome.is_none());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn heartbeat_without_a_lease_starts_one() {
+        let path = temp_registry("heartbeat_fresh");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        let outcome = heartbeat_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .expect("task exists");
+        assert!(!outcome.flagged);
+        let lease = outcome.card.lease.as_ref().unwrap();
+        assert_eq!(lease.holder, "zc-developer");
+        assert_eq!(lease.version, 1);
+        assert_eq!(lease.expires_at, "2026-11-07T09:00:00+00:00");
+        assert_eq!(outcome.card.owner.as_deref(), Some("zc-developer"));
+    }
+
+    #[test]
+    fn lease_status_flips_at_expiry() {
+        let mut lease = Lease {
+            holder: "zc-developer".to_string(),
+            acquired_at: "2026-11-07T01:00:00+00:00".to_string(),
+            last_heartbeat: "2026-11-07T01:00:00+00:00".to_string(),
+            expires_at: "2026-11-07T09:00:00+00:00".to_string(),
+            version: 1,
+        };
+        assert_eq!(lease_status(&lease, fixed_now()), LeaseStatus::Active);
+        assert_eq!(
+            lease_status(&lease, fixed_now_plus_hours(8)),
+            LeaseStatus::Expired
+        );
+        lease.expires_at = "not-a-timestamp".to_string();
+        assert_eq!(lease_status(&lease, fixed_now()), LeaseStatus::Expired);
+    }
+
+    #[test]
+    fn list_and_show_display_expired_lease() {
+        let mut stale = card("B-4", "fix install");
+        stale.lease = Some(Lease {
+            holder: "zc-developer".to_string(),
+            acquired_at: "2026-11-06T01:00:00+00:00".to_string(),
+            last_heartbeat: "2026-11-06T01:00:00+00:00".to_string(),
+            expires_at: "2026-11-06T09:00:00+00:00".to_string(),
+            version: 3,
+        });
+        let list = render_list_text(std::slice::from_ref(&stale), fixed_now());
+        assert!(list.contains("expired"), "list text: {list}");
+        let shown = render_show_text(&stale, fixed_now());
+        assert!(shown.contains("status=expired"), "show text: {shown}");
+        let earlier = render_show_text(&stale, fixed_now() - Duration::days(2));
+        assert!(earlier.contains("status=active"), "show text: {earlier}");
+    }
+
+    #[test]
+    fn step1_registry_lines_still_load() {
+        // Lines exactly as step 1 wrote them: a bare hand-written card,
+        // a full claim snapshot, and a card whose lease is missing the
+        // fields a later reader might expect (serde defaults fill in).
+        let path = temp_registry("step1_compat");
+        let data = concat!(
+            "{\"id\":\"B-1\",\"title\":\"seed\"}\n",
+            "{\"id\":\"B-4\",\"title\":\"fix install\",\"goal\":\"\",\"output\":\"\",\"owner\":\"zc-developer\",\"verifier\":null,\"status\":\"doing\",\"lease\":{\"holder\":\"zc-developer\",\"acquired_at\":\"2026-11-07T01:00:00+00:00\",\"last_heartbeat\":\"2026-11-07T01:00:00+00:00\",\"expires_at\":\"2026-11-07T09:00:00+00:00\",\"version\":1},\"evidence\":[],\"blocker\":null,\"priority\":null,\"due\":null,\"depends_on\":[],\"lane\":null,\"anti_jobs\":[],\"orphaned\":false,\"updated_at\":\"2026-11-07T01:00:00+00:00\",\"version\":1}\n",
+            "{\"id\":\"B-7\",\"title\":\"partial lease\",\"lease\":{\"holder\":\"sd-developer\"}}\n"
+        );
+        std::fs::write(&path, data).unwrap();
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards.len(), 3);
+        let claimed = find_task(&cards, "B-4").unwrap();
+        assert_eq!(claimed.lease.as_ref().unwrap().version, 1);
+        assert_eq!(
+            lease_status(claimed.lease.as_ref().unwrap(), fixed_now()),
+            LeaseStatus::Active
+        );
+        let partial = find_task(&cards, "B-7").unwrap();
+        let lease = partial.lease.as_ref().unwrap();
+        assert_eq!(lease.holder, "sd-developer");
+        assert_eq!(lease.version, 0);
+        assert_eq!(lease.expires_at, "");
     }
 }
