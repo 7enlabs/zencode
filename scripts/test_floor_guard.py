@@ -113,5 +113,68 @@ class Labels(unittest.TestCase):
         self.assertEqual(fg.labels_from_event(None), set())
 
 
+
+class TaskGuard(unittest.TestCase):
+    def test_extract_branch_code(self):
+        self.assertEqual(fg.extract_task_codes("dev/p03-revive"), set())
+        self.assertEqual(fg.extract_task_codes("dev/b61-retry-tool"), set())
+        self.assertIn("B-4", fg.extract_task_codes("fix/B-4-flaky-test"))
+        self.assertIn("VIỆC-6", fg.extract_task_codes("Việc 6: multi-model review"))
+
+    def test_extract_step_supersedes_project(self):
+        self.assertEqual(fg.extract_task_codes("P0-3 step 6 - revive dead-lettered tasks"),
+                         {"P0-3-STEP-6"})
+        self.assertEqual(fg.extract_task_codes("p03-s6 revive"), {"P0-3-STEP-6"})
+        self.assertEqual(fg.extract_task_codes("P0-3-STEP-6"), {"P0-3-STEP-6"})
+
+    def test_extract_no_false_positive_on_dep_name(self):
+        self.assertEqual(fg.extract_task_codes("dev/dep-security-rustls-webpki-2"), set())
+        self.assertEqual(fg.extract_task_codes("dev/secret-scan-ci"), set())
+
+    def test_t1_pass_from_body(self):
+        self.assertEqual(fg.check_task_code("dev/secret-scan-ci", "Secret-scan CI (B-2)"), [])
+        self.assertEqual(fg.check_task_code("dev/p03-revive", "P0-3 step 6"), [])
+
+    def test_t1_fails_without_code(self):
+        found = fg.check_task_code("dev/secret-scan-ci", "Secret-scan CI, no code here")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].rule, "T1")
+
+    def test_t1_dependabot_exempt(self):
+        self.assertEqual(fg.check_task_code("dependabot/cargo/serde-1.0.0", ""), [])
+
+    def test_t2_duplicate_found(self):
+        prs = [
+            {"number": 61, "headRefName": "dev/p03-sweep", "body": "P0-3 step 3"},
+            {"number": 62, "headRefName": "dev/secret-scan-ci", "body": "secret scan (B-2)"},
+        ]
+        found = fg.check_task_duplicates({"P0-3-STEP-3"}, prs, 65)
+        self.assertEqual(len(found), 1)
+        self.assertIn("#61", found[0].msg)
+
+    def test_t2_other_step_is_not_a_duplicate(self):
+        prs = [{"number": 61, "headRefName": "dev/p03-sweep", "body": "P0-3 step 3"}]
+        self.assertEqual(fg.check_task_duplicates({"P0-3-STEP-5"}, prs, 65), [])
+
+    def test_t2_skips_self(self):
+        prs = [{"number": 65, "headRefName": "dev/p03-revive", "body": "P0-3 step 6"}]
+        self.assertEqual(fg.check_task_duplicates({"P0-3-STEP-6"}, prs, 65), [])
+
+    def test_warn_only_window(self):
+        import datetime as _dt
+        self.assertTrue(fg.task_warn_only("2026-11-14", _dt.date(2026, 11, 14)))
+        self.assertTrue(fg.task_warn_only("2026-11-14", _dt.date(2026, 11, 7)))
+        self.assertFalse(fg.task_warn_only("2026-11-14", _dt.date(2026, 11, 15)))
+        self.assertFalse(fg.task_warn_only(None, _dt.date(2026, 11, 7)))
+        self.assertFalse(fg.task_warn_only("not-a-date", _dt.date(2026, 11, 7)))
+
+    def test_task_guard_section_protected(self):
+        base = "# C\n## Task guard\n- one task one PR\n## Floor\n- no stubs\n"
+        head = "# C\n## Task guard\n## Floor\n- no stubs\n"
+        found = fg.check_constraints(base, head)
+        self.assertEqual(len(found), 1)
+        self.assertIn("one task one PR", found[0].msg)
+
+
 if __name__ == "__main__":
     unittest.main()
