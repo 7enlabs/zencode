@@ -2,6 +2,11 @@ name: Floor guard
 # Blocks pull requests that loosen checks instead of fixing code: new #[ignore] or
 # #[allow], new todo!/unimplemented!, softer workflows, a weaker CONSTRAINTS.md Floor,
 # or fewer Rust tests than ci/floor-baseline.json. See CONSTRAINTS.md.
+# The task guard (P0-3 section 4.3 layer 2) also checks one task = one branch =
+# one pull request: the branch name or PR body must name a task code, and two
+# open PRs sharing a task code are flagged. Task-guard findings are warnings
+# until FLOOR_GUARD_TASK_WARN_UNTIL, then they block (unless labelled
+# floor-change-approved).
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -10,6 +15,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  pull-requests: read
 concurrency:
   group: floor-guard-${{ github.ref }}
   cancel-in-progress: true
@@ -23,12 +29,27 @@ jobs:
           fetch-depth: 0
       - name: Self-test the guard
         run: python3 -m unittest scripts/test_floor_guard.py
+      - name: List open pull requests (duplicate-task check)
+        id: prs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh pr list --state open --json number,headRefName,body --limit 100 > "$RUNNER_TEMP/open_prs.json"; then
+            echo "prs=$RUNNER_TEMP/open_prs.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=floor-guard::could not list open PRs; duplicate-task check skipped"
+          fi
       - name: Check the change against CONSTRAINTS.md
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FLOOR_GUARD_TASK_WARN_UNTIL: "2026-11-14"
         run: |
+          ARGS=""
+          if [ -n "${{ steps.prs.outputs.prs }}" ]; then
+            ARGS="--prs ${{ steps.prs.outputs.prs }}"
+          fi
           if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            python3 scripts/floor_guard.py --base "$BASE_SHA"
+            python3 scripts/floor_guard.py --base "$BASE_SHA" $ARGS
           else
-            python3 scripts/floor_guard.py
+            python3 scripts/floor_guard.py $ARGS
           fi
