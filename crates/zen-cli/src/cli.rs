@@ -542,7 +542,7 @@ pub enum SessionSubcommand {
 
 #[derive(Args, Debug, Clone)]
 #[command(
-    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)"
+    after_help = "Examples:\n  zen task list                    List tasks in the registry\n  zen task show B-4                Show one task card\n  zen task claim B-4 --by zc-dev   Record a claim (observe-only)\n  zen task heartbeat B-4 --by zc-dev  Record a heartbeat (observe-only)"
 )]
 pub struct TaskArgs {
     #[command(subcommand)]
@@ -566,6 +566,16 @@ pub enum TaskSubcommand {
         id: String,
 
         /// Seat recording the claim
+        #[arg(long = "by")]
+        by: String,
+    },
+
+    /// Record a heartbeat for a task (observe-only: renews the lease, never blocks)
+    Heartbeat {
+        /// Task id, e.g. B-4
+        id: String,
+
+        /// Seat sending the heartbeat
         #[arg(long = "by")]
         by: String,
     },
@@ -1073,6 +1083,17 @@ mod tests {
                     assert_eq!(by, "zc-developer");
                 }
                 other => panic!("expected Claim, got {:?}", other),
+            },
+            _ => panic!("expected Task"),
+        }
+        let cli = parse(&["task", "heartbeat", "B-4", "--by", "zc-developer"]);
+        match cli.subcommand {
+            Some(Commands::Task(t)) => match t.command {
+                TaskSubcommand::Heartbeat { id, by } => {
+                    assert_eq!(id, "B-4");
+                    assert_eq!(by, "zc-developer");
+                }
+                other => panic!("expected Heartbeat, got {:?}", other),
             },
             _ => panic!("expected Task"),
         }
