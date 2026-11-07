@@ -355,9 +355,13 @@ pub fn claim_task(
 /// * a successful guarded claim records the idempotency key
 ///   `claim:<task_id>:<actor>:<expected_version>` on the card;
 /// * a retry whose key is already on the card *and* whose lease is
-///   exactly the post-state of that claim (same holder, version
-///   `expected_version + 1`) is a no-op `CasClaim::Replayed`: it
-///   succeeds without writing a duplicate snapshot.
+///   still held by the same seat at or past the post-claim state
+///   (same holder, version `>= expected_version + 1`) is a no-op
+///   `CasClaim::Replayed`: it succeeds without writing a duplicate
+///   snapshot. A heartbeat between the claim and the retry only bumps
+///   the version, so the retry stays a replay (Leader tin 7803,
+///   08/11/2026); a card the sweep has parked as ORPHAN is never
+///   replayed.
 ///
 /// Returns `None` when the registry has no task with `id`; in that
 /// case nothing is written.
@@ -381,10 +385,11 @@ pub fn claim_task_cas(
     let key = claim_idempotency_key(id, by, expected);
     let current_version = existing.lease.as_ref().map_or(0, |l| l.version);
     if existing.idempotency_key.as_deref() == Some(key.as_str())
+        && aux_state(existing, now) != Some("orphan")
         && existing
             .lease
             .as_ref()
-            .is_some_and(|l| l.holder == by && l.version == expected.saturating_add(1))
+            .is_some_and(|l| l.holder == by && l.version >= expected.saturating_add(1))
     {
         return Ok(Some(CasClaim::Replayed(ClaimOutcome {
             card: existing.clone(),
@@ -1327,6 +1332,185 @@ mod tests {
         }
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
         assert_eq!(lines, 3);
+    }
+
+    #[test]
+    fn cas_replay_after_own_heartbeat_is_a_noop() {
+        let path = temp_registry("cas_replay_hb");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        heartbeat_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .expect("heartbeat recorded");
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        let outcome = match cas {
+            CasClaim::Replayed(outcome) => outcome,
+            CasClaim::Recorded(_) => panic!("expected Replayed, got Recorded"),
+            CasClaim::Conflict { .. } => panic!("expected Replayed, got Conflict"),
+            CasClaim::DeadLetter => panic!("expected Replayed, got DeadLetter"),
+        };
+        assert!(outcome.replayed);
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 2);
+        // The retry writes no snapshot: seed + claim + heartbeat only.
+        assert_eq!(registry_lines(&path), 3);
+    }
+
+    #[test]
+    fn cas_replay_after_multiple_heartbeats_is_a_noop() {
+        let path = temp_registry("cas_replay_hb2");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        heartbeat_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .expect("first heartbeat recorded");
+        heartbeat_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .expect("second heartbeat recorded");
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        let outcome = match cas {
+            CasClaim::Replayed(outcome) => outcome,
+            CasClaim::Recorded(_) => panic!("expected Replayed, got Recorded"),
+            CasClaim::Conflict { .. } => panic!("expected Replayed, got Conflict"),
+            CasClaim::DeadLetter => panic!("expected Replayed, got DeadLetter"),
+        };
+        assert!(outcome.replayed);
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 3);
+        assert_eq!(registry_lines(&path), 4);
+    }
+
+    #[test]
+    fn cas_replay_after_other_seat_heartbeat_still_replays_for_holder() {
+        let path = temp_registry("cas_replay_other_hb");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        // A heartbeat from another seat only flags the overlap; it does
+        // not move the holder or the key, so the holder's retry is still
+        // a replay (Leader tin 7803, 08/11/2026).
+        let hb = heartbeat_task(&path, "B-4", "sd-developer", fixed_now())
+            .unwrap()
+            .expect("heartbeat recorded");
+        assert!(hb.flagged);
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        let outcome = match cas {
+            CasClaim::Replayed(outcome) => outcome,
+            CasClaim::Recorded(_) => panic!("expected Replayed, got Recorded"),
+            CasClaim::Conflict { .. } => panic!("expected Replayed, got Conflict"),
+            CasClaim::DeadLetter => panic!("expected Replayed, got DeadLetter"),
+        };
+        assert!(outcome.replayed);
+        assert_eq!(outcome.card.lease.as_ref().unwrap().holder, "zc-developer");
+        assert_eq!(outcome.card.lease.as_ref().unwrap().version, 2);
+        assert_eq!(registry_lines(&path), 3);
+    }
+
+    #[test]
+    fn cas_replay_after_other_seat_cas_claim_is_a_conflict() {
+        let path = temp_registry("cas_replay_other_cas");
+        append_snapshot(&path, &card("B-4", "fix install")).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        // Another seat's guarded claim overwrites the idempotency key,
+        // so the first seat's retry can no longer match it.
+        claim_task_cas(&path, "B-4", "sd-developer", Some(1), fixed_now())
+            .unwrap()
+            .unwrap();
+        let cas = claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .expect("task exists");
+        match cas {
+            CasClaim::Conflict { expected, actual } => {
+                assert_eq!(expected, 0);
+                assert_eq!(actual, 2);
+            }
+            CasClaim::Recorded(_) => panic!("expected Conflict, got Recorded"),
+            CasClaim::Replayed(_) => panic!("expected Conflict, got Replayed"),
+            CasClaim::DeadLetter => panic!("expected Conflict, got DeadLetter"),
+        }
+        assert_eq!(registry_lines(&path), 3);
+    }
+
+    #[test]
+    fn cas_replay_after_heartbeat_then_dead_letter_is_refused() {
+        let path = temp_registry("cas_replay_dead");
+        let mut seeded = card("B-4", "fix install");
+        seeded.status = TaskStatus::Doing;
+        append_snapshot(&path, &seeded).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        heartbeat_task(&path, "B-4", "zc-developer", fixed_now())
+            .unwrap()
+            .expect("heartbeat recorded");
+        // Four sweeps past expiry park the card as DEAD-LETTER.
+        for _ in 0..4 {
+            sweep_tasks(&path, fixed_now_plus_hours(9), false).unwrap();
+        }
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].dead_lettered);
+        let cas = claim_task_cas(
+            &path,
+            "B-4",
+            "zc-developer",
+            Some(0),
+            fixed_now_plus_hours(9),
+        )
+        .unwrap()
+        .expect("task exists");
+        assert!(matches!(cas, CasClaim::DeadLetter));
+        // Seed + claim + heartbeat + 4 sweeps; the refused retry writes nothing.
+        assert_eq!(registry_lines(&path), 7);
+    }
+
+    #[test]
+    fn cas_replay_after_orphan_sweep_is_conflict_not_replayed() {
+        let path = temp_registry("cas_replay_orphan");
+        let mut seeded = card("B-4", "fix install");
+        seeded.status = TaskStatus::Doing;
+        append_snapshot(&path, &seeded).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        // One sweep past expiry returns the card to the queue as ORPHAN.
+        let outcome = sweep_tasks(&path, fixed_now_plus_hours(9), false).unwrap();
+        assert_eq!(outcome.entries.len(), 1);
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].orphaned);
+        // The retry must not replay: the card is back in the queue, so
+        // the holder reads the state and claims fresh instead (Leader
+        // tin 7803, 08/11/2026).
+        let cas = claim_task_cas(
+            &path,
+            "B-4",
+            "zc-developer",
+            Some(0),
+            fixed_now_plus_hours(9),
+        )
+        .unwrap()
+        .expect("task exists");
+        match cas {
+            CasClaim::Conflict { expected, actual } => {
+                assert_eq!(expected, 0);
+                assert_eq!(actual, 1);
+            }
+            CasClaim::Recorded(_) => panic!("expected Conflict, got Recorded"),
+            CasClaim::Replayed(_) => panic!("expected Conflict, got Replayed"),
+            CasClaim::DeadLetter => panic!("expected Conflict, got DeadLetter"),
+        }
+        // Seed + claim + sweep; the refused retry writes nothing.
+        assert_eq!(registry_lines(&path), 3);
     }
 
     #[test]
