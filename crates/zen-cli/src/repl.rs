@@ -13,7 +13,7 @@ enum LineAction {
     Exit,
 }
 
-fn status_line(cfg_model: &str, cwd: &Path) -> String {
+fn status_line(theme: repl_polish::Theme, cfg_model: &str, cwd: &Path) -> String {
     let (branch, _) = crate::git::git_info(cwd);
     let cwd_str = cwd.display().to_string();
 
@@ -27,10 +27,191 @@ fn status_line(cfg_model: &str, cwd: &Path) -> String {
     } else {
         cwd_str
     };
-    match branch {
-        Some(b) => format!("[{} | {} | {}]", cfg_model, cwd_short, b.trim()),
-        None => format!("[{} | {}]", cfg_model, cwd_short),
+    // v2: provider in dim, short model name in accent — the eye lands on
+    // the model, the provider is still there for disambiguation.
+    let (provider, short) = split_model_id(cfg_model);
+    let model = if provider.is_empty() {
+        theme.paint(repl_polish::ColorRole::Accent, cfg_model)
+    } else {
+        format!(
+            "{}{}",
+            theme.paint(repl_polish::ColorRole::Dim, &format!("{provider}/")),
+            theme.paint(repl_polish::ColorRole::Accent, short)
+        )
+    };
+    // Middle-truncate the cwd when the whole line would exceed ~80 cols.
+    let cwd_short = truncate_middle(&cwd_short, 40);
+    let rest = match branch {
+        Some(b) => format!(" · {} · {}", cwd_short, b.trim()),
+        None => format!(" · {}", cwd_short),
+    };
+    format!(
+        "{}{}",
+        model,
+        theme.paint(repl_polish::ColorRole::Dim, &rest)
+    )
+}
+
+/// Split a model id into (provider, short name). "google/gemini-4-argon:free"
+/// -> ("google", "gemini-4-argon:free"); an id without "/" has no provider.
+fn split_model_id(id: &str) -> (&str, &str) {
+    match id.split_once('/') {
+        Some((provider, short)) => (provider, short),
+        None => ("", id),
     }
+}
+
+/// Middle-truncate a path to at most `max` visible chars, keeping the
+/// first segment and the last two, joined by "…". Short paths pass through.
+/// The result is always at most `max` chars.
+fn truncate_middle(path: &str, max: usize) -> String {
+    if path.chars().count() <= max {
+        return path.to_string();
+    }
+    if max < 4 {
+        return "…".to_string();
+    }
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() < 4 {
+        // Too few segments to truncate meaningfully; cut the tail.
+        let mut s: String = path.chars().take(max.saturating_sub(1)).collect();
+        s.push('…');
+        return s;
+    }
+    let head = parts[..2].join("/");
+    let tail = parts[parts.len() - 2..].join("/");
+    let mut out = format!("{head}/…/{tail}");
+    if out.chars().count() > max {
+        // Still too long: drop the head, keep the tail, cut if needed.
+        out = format!("…/{tail}");
+    }
+    if out.chars().count() > max {
+        let mut s: String = out.chars().take(max.saturating_sub(1)).collect();
+        s.push('…');
+        out = s;
+    }
+    out
+}
+
+/// One line of the welcome box: segments of (text, optional colour role).
+/// The visible width is the sum of the text char counts (ANSI codes from
+/// `paint` do not count). A `None` role means plain text.
+type BoxLine = Vec<(String, Option<repl_polish::ColorRole>)>;
+
+fn box_line_width(line: &BoxLine) -> usize {
+    line.iter().map(|(t, _)| t.chars().count()).sum()
+}
+
+fn render_box_line(theme: repl_polish::Theme, line: &BoxLine, width: usize) -> String {
+    let mut out = String::new();
+    for (text, role) in line {
+        match role {
+            Some(r) => out.push_str(&theme.paint(*r, text)),
+            None => out.push_str(text),
+        }
+    }
+    let pad = width.saturating_sub(box_line_width(line));
+    out.push_str(&" ".repeat(pad));
+    out
+}
+
+/// Bordered welcome box v2 (design doc `docs/design/repl-visual-redesign-v2.md`).
+/// Rounded corners, width capped at 60 inner columns, brand line `✓ zen`,
+/// theme colours, greeting only for returning users. Pure formatting
+/// (unit-testable). `sessions` is the list from `list_sessions_for_cwd`
+/// (empty on first run); `branch` is the git branch or `None`.
+fn welcome_box(
+    theme: repl_polish::Theme,
+    version: &str,
+    model: &str,
+    cwd: &str,
+    branch: Option<&str>,
+    sessions: &[(String, std::path::PathBuf)],
+    ephemeral: bool,
+) -> String {
+    use repl_polish::ColorRole::{Accent, Dim, Error};
+    let mut content: Vec<BoxLine> = Vec::new();
+    // Brand line: ✓ zen 0.1.0 (check is the essence of the Z-Check logo).
+    content.push(vec![
+        ("✓ ".to_string(), Some(Accent)),
+        ("zen".to_string(), Some(Accent)),
+        (format!(" {version}"), Some(Dim)),
+    ]);
+    content.push(vec![]);
+    // Greeting only when there is a previous session for this cwd.
+    if !sessions.is_empty() {
+        content.push(vec![("Welcome back!".to_string(), None)]);
+    }
+    let (provider, short) = split_model_id(model);
+    let mut model_line: BoxLine = vec![("model  ".to_string(), Some(Dim))];
+    model_line.push((short.to_string(), Some(Accent)));
+    if !provider.is_empty() {
+        model_line.push((format!("  ·  {provider}"), Some(Dim)));
+    }
+    content.push(model_line);
+    content.push(vec![
+        ("cwd    ".to_string(), Some(Dim)),
+        (cwd.to_string(), None),
+    ]);
+    if let Some(b) = branch {
+        content.push(vec![
+            ("branch ".to_string(), Some(Dim)),
+            (b.trim().to_string(), None),
+        ]);
+    }
+    if ephemeral {
+        content.push(vec![(
+            "EPHEMERAL MODE - nothing will be saved".to_string(),
+            Some(Error),
+        )]);
+    }
+    // Recent activity, one dim line when a previous session exists.
+    if let Some((_, path)) = sessions.first() {
+        if let Ok(mtime) = path.metadata().and_then(|m| m.modified()) {
+            let local: chrono::DateTime<chrono::Local> = mtime.into();
+            content.push(vec![]);
+            content.push(vec![(
+                format!("Last session {}", local.format("%H:%M")),
+                Some(Dim),
+            )]);
+        }
+    }
+    content.push(vec![]);
+    content.push(vec![(
+        "/model to switch · /help for commands".to_string(),
+        Some(Dim),
+    )]);
+    // Width: longest visible line, capped at 60, min 40. The cwd is
+    // middle-truncated to fit instead of setting the width.
+    let raw_width = content.iter().map(box_line_width).max().unwrap_or(0);
+    let width = raw_width.clamp(40, 60);
+    // Truncate the cwd line if it still overflows the cap.
+    for line in content.iter_mut() {
+        let mut over = box_line_width(line).saturating_sub(width);
+        while over > 0 {
+            // Only the cwd line can overflow (it is the longest value);
+            // truncate its plain (unlabelled) segment.
+            let mut truncated = false;
+            for (text, role) in line.iter_mut() {
+                if role.is_none() {
+                    let keep = text.chars().count().saturating_sub(over);
+                    *text = truncate_middle(text, keep);
+                    truncated = true;
+                }
+            }
+            if !truncated {
+                break;
+            }
+            over = box_line_width(line).saturating_sub(width);
+        }
+    }
+    let mut out = String::new();
+    out.push_str(&format!("╭{}╮\n", "─".repeat(width + 2)));
+    for line in &content {
+        out.push_str(&format!("│ {} │\n", render_box_line(theme, line, width)));
+    }
+    out.push_str(&format!("╰{}╯", "─".repeat(width + 2)));
+    out
 }
 
 pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> {
@@ -59,16 +240,29 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         None => crate::session::TranscriptWriter::ephemeral(&session_id, cwd),
     };
 
+    // v2 welcome box: theme, branch and previous sessions for the
+    // greeting / Recent line. The long hint line is first-run-only
+    // (returning users already know !cmd / @file / #note).
+    let (branch, _) = crate::git::git_info(cwd);
+    let sessions = home
+        .map(|h| crate::session::list_sessions_for_cwd(h, cwd))
+        .unwrap_or_default();
+    let first_run = sessions.is_empty();
     println!(
-        "zen {} - model {}, cwd {}",
-        env!("CARGO_PKG_VERSION"),
-        cfg.model,
-        cwd.display()
+        "{}",
+        welcome_box(
+            repl_polish::Theme::default(),
+            env!("CARGO_PKG_VERSION"),
+            &cfg.model,
+            &cwd.display().to_string(),
+            branch.as_deref(),
+            &sessions,
+            cli.ephemeral
+        )
     );
-    if cli.ephemeral {
-        println!("EPHEMERAL MODE - nothing will be saved");
+    if first_run {
+        println!("Type /help for commands, !cmd for shell, @file to attach files, #note to remember, Ctrl-D to exit. While typing a /command, Tab lists the matches and Esc cancels.");
     }
-    println!("Type /help for commands, !cmd for shell, @file to attach files, #note to remember, Ctrl-D to exit. While typing a /command, Tab lists the matches and Esc cancels.");
 
     let assembly = crate::agent_run::assemble(
         cli,
@@ -200,7 +394,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     let mut reader = crate::repl_input::LineReader::new(home);
     let mut last_interrupt: Option<std::time::Instant> = None;
     loop {
-        println!("{}", status_line(&cfg.model, cwd));
+        println!("{}", status_line(repl.theme, &agent.config.model, cwd));
         let prompt = {
             let mut p = repl_polish::prompt_text(repl.theme, &repl.goal);
 
@@ -483,7 +677,8 @@ fn print_turn(result: Option<RunResult>) {
         if r.is_error {
             eprintln!("error: {}", r.result);
         } else if !r.result.is_empty() {
-            println!("{}", r.result);
+            // Claude-Code-style marker: assistant text is prefixed with ●.
+            println!("● {}", r.result);
         }
         // S9 pattern 3: close the turn with the real elapsed time and
         // token total from the run result, on stderr like the rest of
@@ -696,6 +891,153 @@ async fn offer_fix_turn(
     }
 }
 
+/// One row of the `/model` picker: the id plus the facts a person uses
+/// to choose (provider, context window, probe latency). `latency_ms` is
+/// `None` for rows from the static catalog (never probed).
+struct ModelRow {
+    id: String,
+    provider: String,
+    short: String,
+    context_window: Option<u32>,
+    latency_ms: Option<u64>,
+}
+
+impl ModelRow {
+    fn from_probe(p: &crate::models::ModelProbe) -> Self {
+        let (provider, short) = split_model_id(&p.model);
+        ModelRow {
+            id: p.model.clone(),
+            provider: provider.to_string(),
+            short: short.to_string(),
+            context_window: p.context_window,
+            latency_ms: Some(p.latency_ms),
+        }
+    }
+
+    fn from_catalog(m: &crate::models::CatalogModel) -> Self {
+        let (provider, short) = split_model_id(m.id);
+        ModelRow {
+            id: m.id.to_string(),
+            provider: provider.to_string(),
+            short: short.to_string(),
+            context_window: Some(m.context_window),
+            latency_ms: None,
+        }
+    }
+}
+
+/// Humanise a context window: 1_000_000 -> "1M", 262_144 -> "262K".
+fn humanise_context(ctx: Option<u32>) -> String {
+    match ctx {
+        None => "—".to_string(),
+        Some(n) if n >= 1_000_000 => format!("{}M", n / 1_000_000),
+        Some(n) if n >= 1_000 => format!("{}K", n / 1_000),
+        Some(n) => n.to_string(),
+    }
+}
+
+/// Model rows the user can pick from in the REPL: the probed pool cache
+/// when it matches the current provider, otherwise the static free catalog.
+/// The probe data (context window, latency) is threaded through instead of
+/// being discarded — the picker shows it.
+fn available_model_rows(home: Option<&Path>, base_url: &str) -> Vec<ModelRow> {
+    if let Some(cache) = crate::models::load_cache(home) {
+        if cache.base_url == base_url {
+            let rows: Vec<ModelRow> = cache
+                .results
+                .iter()
+                .filter(|p| p.success)
+                .map(ModelRow::from_probe)
+                .collect();
+            if !rows.is_empty() {
+                return rows;
+            }
+        }
+    }
+    crate::models::FREE_MODEL_CATALOG
+        .iter()
+        .map(ModelRow::from_catalog)
+        .collect()
+}
+
+/// Numbered model table for `/model`: short name, provider, context
+/// window and probe latency, with the current model marked by a leading
+/// `▸`. Pure formatting so it is unit-testable without a provider.
+fn format_model_list(current: &str, rows: &[ModelRow]) -> String {
+    let mut out = String::new();
+    let (_, current_short) = split_model_id(current);
+    out.push_str(&format!("Models — current: {current_short}\n"));
+    // Drop columns on narrow output: latency first, then context.
+    let name_width = rows
+        .iter()
+        .map(|r| r.short.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(10, 32);
+    let row_width = rows
+        .iter()
+        .map(|r| r.short.chars().count() + r.provider.chars().count())
+        .max()
+        .unwrap_or(0);
+    let show_latency = row_width < 56;
+    let show_ctx = row_width < 64;
+    for (i, row) in rows.iter().enumerate() {
+        let marker = if row.id == current { "▸ " } else { "  " };
+        let latency = match row.latency_ms {
+            Some(ms) => format!("{ms}ms"),
+            None => "—".to_string(),
+        };
+        let short = if row.short.chars().count() > name_width {
+            let mut s: String = row.short.chars().take(name_width - 1).collect();
+            s.push('…');
+            s
+        } else {
+            row.short.clone()
+        };
+        let mut line = format!(
+            "{}{}. {:<name_width$} {:<10}",
+            marker,
+            i + 1,
+            short,
+            row.provider,
+            name_width = name_width
+        );
+        if show_ctx {
+            line.push_str(&format!(" {:>7} ctx", humanise_context(row.context_window)));
+        }
+        if show_latency {
+            line.push_str(&format!("  {latency:>6}"));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push_str("Enter a number, name, or unique part — /model 2, /model nemotron\n");
+    out
+}
+
+/// Resolve a `/model` argument to a model id: a 1-based number picks from
+/// the list, otherwise an exact id wins, else a unique substring match.
+fn pick_model(arg: &str, rows: &[ModelRow]) -> Result<String, String> {
+    if let Ok(n) = arg.parse::<usize>() {
+        return match rows.get(n.wrapping_sub(1)) {
+            Some(row) => Ok(row.id.clone()),
+            None => Err(format!("no model #{} (1-{})", n, rows.len())),
+        };
+    }
+    if rows.iter().any(|r| r.id == arg) {
+        return Ok(arg.to_string());
+    }
+    let matches: Vec<&ModelRow> = rows.iter().filter(|r| r.id.contains(arg)).collect();
+    match matches.len() {
+        1 => Ok(matches[0].id.clone()),
+        0 => Err(format!("no model matches '{arg}'")),
+        _ => Err(format!(
+            "'{arg}' matches {} models; be more specific",
+            matches.len()
+        )),
+    }
+}
+
 async fn handle_slash(
     line: &str,
     cli: &Cli,
@@ -715,11 +1057,14 @@ async fn handle_slash(
         "/exit" | "/quit" => return Ok(LineAction::Exit),
         "/help" => {
             println!("Built-in commands:");
-            for c in commands::BUILTIN_COMMANDS
-                .iter()
-                .chain(commands::REPL_ONLY_COMMANDS)
-            {
-                println!("  {}", c);
+            let catalog = commands::slash_command_catalog();
+            for group in commands::HELP_GROUP_ORDER {
+                println!("{}", repl.theme.paint(repl_polish::ColorRole::Dim, group));
+                for (name, desc) in &catalog {
+                    if commands::help_group(name) == *group {
+                        println!("  {:<16} {}", name, desc);
+                    }
+                }
             }
 
             let custom = zen_ext::discover_slash_commands(cwd, home);
@@ -775,11 +1120,17 @@ async fn handle_slash(
             }
         }
         "/model" => {
+            let rows = available_model_rows(home, &cfg.base_url);
             if arg.is_empty() {
-                println!("{}", cfg.model);
+                print!("{}", format_model_list(&agent.config.model, &rows));
             } else {
-                agent.config.model = arg.clone();
-                println!("model set to {}", arg);
+                match pick_model(&arg, &rows) {
+                    Ok(id) => {
+                        agent.config.model = id.clone();
+                        println!("model set to {}", id);
+                    }
+                    Err(e) => eprintln!("{}", e),
+                }
             }
         }
         "/btw" => {
@@ -1397,8 +1748,14 @@ async fn handle_slash(
             if todos.is_empty() {
                 println!("(no todos)");
             } else {
+                println!("● Todos");
                 for t in todos {
-                    println!("[{}] {}", t.status, t.content);
+                    let box_char = if t.status == "completed" {
+                        "☑"
+                    } else {
+                        "□"
+                    };
+                    println!("└ {box_char} {}", t.content);
                 }
             }
         }
@@ -1738,5 +2095,208 @@ mod turn_summary_tests {
             format_turn_summary(100, &usage(1000, 50, 800)),
             "Done in 0.1s - 1050 tokens used (800 from cache)"
         );
+    }
+}
+
+#[cfg(test)]
+mod model_picker_tests {
+    use super::*;
+
+    fn rows() -> Vec<ModelRow> {
+        vec![
+            ModelRow {
+                id: "google/gemini-4-argon:free".to_string(),
+                provider: "google".to_string(),
+                short: "gemini-4-argon:free".to_string(),
+                context_window: Some(1_000_000),
+                latency_ms: Some(210),
+            },
+            ModelRow {
+                id: "cohere/north-mini-code:free".to_string(),
+                provider: "cohere".to_string(),
+                short: "north-mini-code:free".to_string(),
+                context_window: Some(131_072),
+                latency_ms: Some(180),
+            },
+            ModelRow {
+                id: "nvidia/nemotron-3-nano:free".to_string(),
+                provider: "nvidia".to_string(),
+                short: "nemotron-3-nano:free".to_string(),
+                context_window: Some(131_072),
+                latency_ms: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn model_list_marks_the_current_model() {
+        let out = format_model_list("cohere/north-mini-code:free", &rows());
+        assert!(out.contains("Models — current: north-mini-code:free"));
+        // Short name + provider + context + latency columns.
+        assert!(out.contains("1. gemini-4-argon:free"));
+        assert!(out.contains("google"));
+        assert!(out.contains("1M ctx"));
+        assert!(out.contains("210ms"));
+        // Current row gets the leading ▸ marker.
+        assert!(out.contains("▸ 2. north-mini-code:free"));
+        assert!(out.contains("3. nemotron-3-nano:free"));
+        // Catalog rows (never probed) show — for latency.
+        assert!(out.contains("—"));
+        assert!(out.contains("/model 2, /model nemotron"));
+    }
+
+    #[test]
+    fn pick_by_number_is_one_based() {
+        assert_eq!(
+            pick_model("1", &rows()).unwrap(),
+            "google/gemini-4-argon:free"
+        );
+        assert_eq!(
+            pick_model("3", &rows()).unwrap(),
+            "nvidia/nemotron-3-nano:free"
+        );
+        assert!(pick_model("0", &rows()).is_err());
+        assert!(pick_model("4", &rows()).is_err());
+    }
+
+    #[test]
+    fn pick_by_exact_id_wins_over_substring() {
+        assert_eq!(
+            pick_model("cohere/north-mini-code:free", &rows()).unwrap(),
+            "cohere/north-mini-code:free"
+        );
+    }
+
+    #[test]
+    fn pick_by_unique_substring() {
+        assert_eq!(
+            pick_model("nemotron", &rows()).unwrap(),
+            "nvidia/nemotron-3-nano:free"
+        );
+    }
+
+    #[test]
+    fn pick_rejects_ambiguous_and_unknown() {
+        assert!(pick_model("free", &rows()).is_err());
+        assert!(pick_model("does-not-exist", &rows()).is_err());
+    }
+
+    #[test]
+    fn humanise_context_formats() {
+        assert_eq!(humanise_context(Some(1_000_000)), "1M");
+        assert_eq!(humanise_context(Some(262_144)), "262K");
+        assert_eq!(humanise_context(Some(131_072)), "131K");
+        assert_eq!(humanise_context(None), "—");
+    }
+}
+
+#[cfg(test)]
+mod welcome_box_tests {
+    use super::*;
+    use repl_polish::Theme;
+
+    fn plain_box(
+        version: &str,
+        model: &str,
+        cwd: &str,
+        branch: Option<&str>,
+        sessions: &[(String, std::path::PathBuf)],
+        ephemeral: bool,
+    ) -> String {
+        welcome_box(
+            Theme::None,
+            version,
+            model,
+            cwd,
+            branch,
+            sessions,
+            ephemeral,
+        )
+    }
+
+    #[test]
+    fn welcome_box_has_border_and_contents() {
+        let out = plain_box(
+            "0.1.0",
+            "google/gemini-4-argon:free",
+            "/home/zen",
+            None,
+            &[],
+            false,
+        );
+        assert!(out.starts_with('╭'));
+        assert!(out.ends_with('╯'));
+        assert!(out.contains("✓ zen 0.1.0"));
+        assert!(out.contains("model  gemini-4-argon:free  ·  google"));
+        assert!(out.contains("cwd    /home/zen"));
+        assert!(out.contains("/model to switch · /help for commands"));
+        assert!(!out.contains("EPHEMERAL"));
+        // First run: no greeting without a previous session.
+        assert!(!out.contains("Welcome back!"));
+        // v2: the block-Z mark is gone.
+        assert!(!out.contains('█'));
+    }
+
+    #[test]
+    fn welcome_box_marks_ephemeral_mode() {
+        let out = plain_box("0.1.0", "m", "/tmp", None, &[], true);
+        assert!(out.contains("EPHEMERAL MODE"));
+    }
+
+    #[test]
+    fn welcome_box_lines_share_one_width() {
+        let out = plain_box(
+            "0.1.0",
+            "a-very-long-model-id-that-stretches-the-box",
+            "/x",
+            None,
+            &[],
+            false,
+        );
+        let widths: Vec<usize> = out.lines().map(|l| l.chars().count()).collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]));
+    }
+
+    #[test]
+    fn welcome_box_caps_width_at_sixty() {
+        let out = plain_box(
+            "0.1.0",
+            "google/gemini-4-argon:free",
+            "/home/zen/a/very/long/path/that/should/not/set/the/box/width/at/all",
+            None,
+            &[],
+            false,
+        );
+        // Inner width 60 + 2 border chars + 2 padding = 64 max per line.
+        assert!(out.lines().all(|l| l.chars().count() <= 64));
+        assert!(out.contains('…'), "cwd should be middle-truncated");
+    }
+
+    #[test]
+    fn welcome_box_greets_returning_users() {
+        let sessions = vec![(
+            "sess-1".to_string(),
+            std::path::PathBuf::from("/tmp/x.jsonl"),
+        )];
+        let out = plain_box("0.1.0", "m", "/tmp", Some("dev/x"), &sessions, false);
+        assert!(out.contains("Welcome back!"));
+        assert!(out.contains("branch dev/x"));
+    }
+
+    #[test]
+    fn split_model_id_handles_plain_ids() {
+        assert_eq!(
+            split_model_id("google/gemini-4-argon:free"),
+            ("google", "gemini-4-argon:free")
+        );
+        assert_eq!(split_model_id("local-model"), ("", "local-model"));
+    }
+
+    #[test]
+    fn truncate_middle_keeps_head_and_tail() {
+        let out = truncate_middle("~/a/b/c/d/e/f/g", 12);
+        assert!(out.contains('…'));
+        assert!(out.chars().count() <= 12);
+        assert!(out.starts_with("~/a"));
     }
 }
