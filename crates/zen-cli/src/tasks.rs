@@ -285,11 +285,11 @@ pub fn claim_idempotency_key(id: &str, by: &str, expected_version: u64) -> Strin
 }
 
 /// Message for a refused operation on a DEAD-LETTER card: the card is
-/// terminal and only a Leader decision can revive it; no revive
-/// command exists yet (step 5, Leader tin 7328).
+/// terminal and only a Leader decision can revive it, through the
+/// revive command added in step 6 (Leader tin 7351).
 fn dead_letter_message(id: &str) -> String {
     format!(
-        "task '{id}' is dead-lettered: only a Leader decision can revive it, and no revive command exists yet"
+        "task '{id}' is dead-lettered: only a Leader decision can revive it (zen task revive {id} --by <seat>)"
     )
 }
 
@@ -520,6 +520,60 @@ pub fn heartbeat_task(
     Ok(Some(HeartbeatOutcome { card, flagged }))
 }
 
+/// The result of a revived task: the updated card plus the seat that
+/// recorded the revive, so the caller can show who revived it.
+#[derive(Debug)]
+pub struct ReviveOutcome {
+    pub card: TaskCard,
+    pub revived_by: String,
+}
+
+/// Revive a DEAD-LETTER task (step 6, Leader tin 7351) and append the
+/// new snapshot.
+///
+/// The card returns to the queue (`Queued`) with the dead-letter park
+/// cleared, so it can be claimed again; the lease, the reassign count
+/// and the orphan reason stay on the card as history, and every older
+/// snapshot stays in the append-only registry. A revive is a Leader
+/// decision by process rule: the CLI records the seat that ran it
+/// (`--by`) but performs no permission check of its own.
+///
+/// Returns `None` when the registry has no task with `id`; in that
+/// case nothing is written. A task that is not dead-lettered is
+/// refused with CONFLICT (exit 7, B2 state mismatch, same family as
+/// the step-5 dead-letter guard) and nothing is written.
+pub fn revive_task(
+    path: &Path,
+    id: &str,
+    by: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<ReviveOutcome>> {
+    let cards = load_registry(path)?;
+    let Some(existing) = find_task(&cards, id) else {
+        return Ok(None);
+    };
+    if !existing.dead_lettered {
+        return Err(crate::coded_error(
+            exit_code::CONFLICT,
+            format!(
+                "task '{id}' is not dead-lettered (status {}): only a dead-lettered task can be revived",
+                existing.status.as_str()
+            ),
+        ));
+    }
+    let mut card = existing.clone();
+    card.status = TaskStatus::Queued;
+    card.dead_lettered = false;
+    card.orphaned = false;
+    card.version += 1;
+    card.updated_at = now.to_rfc3339();
+    append_snapshot(path, &card)?;
+    Ok(Some(ReviveOutcome {
+        card,
+        revived_by: by.to_string(),
+    }))
+}
+
 /// How many times a task may be returned to the queue without a new
 /// claim before the sweep parks it as DEAD-LETTER for a Leader
 /// decision (design sections 4.1 and 4.2). Like the 8-hour lease,
@@ -707,6 +761,14 @@ pub fn render_heartbeat_text(outcome: &HeartbeatOutcome) -> String {
     }
     out.push_str("Observe-only: the heartbeat is recorded; no seat was blocked.\n");
     out
+}
+
+pub fn render_revive_text(outcome: &ReviveOutcome) -> String {
+    let card = &outcome.card;
+    format!(
+        "Revived task {} (by {}): back in the queue as queued, ready to be claimed again.\n",
+        card.id, outcome.revived_by
+    )
 }
 
 pub fn render_list_text(cards: &[TaskCard], now: DateTime<Utc>) -> String {
@@ -967,6 +1029,28 @@ pub fn run_task(
                         print_json(&value, raw)?;
                     }
                     OutputFormat::Text => print!("{}", render_heartbeat_text(&outcome)),
+                }
+            }
+            Ok(0)
+        }
+        TaskSubcommand::Revive { id, by } => {
+            let Some(outcome) = revive_task(&path, id, by, Utc::now())? else {
+                return Err(crate::coded_error(
+                    exit_code::NOT_FOUND,
+                    format!("task '{}' not found in the task registry", id),
+                ));
+            };
+            if !quiet {
+                match format {
+                    OutputFormat::Json | OutputFormat::StreamJson => {
+                        let value = serde_json::json!({
+                            "task": outcome.card,
+                            "revived": true,
+                            "revived_by": outcome.revived_by,
+                        });
+                        print_json(&value, raw)?;
+                    }
+                    OutputFormat::Text => print!("{}", render_revive_text(&outcome)),
                 }
             }
             Ok(0)
@@ -1815,5 +1899,87 @@ mod tests {
         assert!(list.contains("dead-letter"), "list text: {list}");
         let shown = render_show_text(&dead, fixed_now());
         assert!(shown.contains("state: dead-letter"), "show text: {shown}");
+    }
+
+    #[test]
+    fn revive_dead_lettered_card_returns_it_to_the_queue() {
+        let path = temp_registry("revive_ok");
+        let seeded = dead_lettered_card();
+        append_snapshot(&path, &seeded).unwrap();
+        let outcome = revive_task(&path, "B-4", "zc-leader", fixed_now())
+            .unwrap()
+            .expect("dead-lettered task exists");
+        assert_eq!(outcome.revived_by, "zc-leader");
+        assert_eq!(outcome.card.status, TaskStatus::Queued);
+        assert!(!outcome.card.dead_lettered);
+        assert!(!outcome.card.orphaned);
+        // History is kept: the reassign count and the lease survive.
+        assert_eq!(outcome.card.reassign_count, 3);
+        assert_eq!(outcome.card.lease, seeded.lease);
+        assert_eq!(registry_lines(&path), 2);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].status, TaskStatus::Queued);
+        assert_eq!(aux_state(&cards[0], fixed_now()), None);
+    }
+
+    #[test]
+    fn revive_queued_card_is_refused_and_writes_nothing() {
+        let path = temp_registry("revive_queued");
+        let seeded = card("B-4", "work");
+        append_snapshot(&path, &seeded).unwrap();
+        let err = revive_task(&path, "B-4", "zc-leader", fixed_now()).unwrap_err();
+        assert_conflict_7(&err);
+        assert!(format!("{err}").contains("not dead-lettered"));
+        assert_eq!(registry_lines(&path), 1);
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0], seeded);
+    }
+
+    #[test]
+    fn revive_orphan_card_is_refused_and_writes_nothing() {
+        let path = temp_registry("revive_orphan");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-06T09:00:00+00:00")).unwrap();
+        sweep_tasks(&path, fixed_now(), false).unwrap();
+        let lines_before = registry_lines(&path);
+        let err = revive_task(&path, "B-4", "zc-leader", fixed_now()).unwrap_err();
+        assert_conflict_7(&err);
+        assert_eq!(registry_lines(&path), lines_before);
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].orphaned);
+        assert!(!cards[0].dead_lettered);
+    }
+
+    #[test]
+    fn revive_unknown_id_records_nothing() {
+        let path = temp_registry("revive_unknown");
+        append_snapshot(&path, &card("B-4", "work")).unwrap();
+        assert!(revive_task(&path, "B-9", "zc-leader", fixed_now())
+            .unwrap()
+            .is_none());
+        assert_eq!(registry_lines(&path), 1);
+    }
+
+    #[test]
+    fn revived_card_can_be_claimed_again_and_sweep_leaves_it_alone() {
+        let path = temp_registry("revive_cycle");
+        append_snapshot(&path, &doing_with_lease("B-4", "2026-11-06T09:00:00+00:00")).unwrap();
+        for _ in 0..4 {
+            sweep_tasks(&path, fixed_now(), false).unwrap();
+        }
+        assert!(load_registry(&path).unwrap()[0].dead_lettered);
+        revive_task(&path, "B-4", "zc-leader", fixed_now())
+            .unwrap()
+            .expect("dead-lettered task exists");
+        let claim = claim_task(&path, "B-4", "sd-developer", fixed_now())
+            .unwrap()
+            .expect("a revived card can be claimed");
+        assert_eq!(claim.card.lease.as_ref().unwrap().holder, "sd-developer");
+        // With a live lease again the sweep leaves it alone, and the
+        // reassign count stays history (the revive did not reset it).
+        let outcome = sweep_tasks(&path, fixed_now(), false).unwrap();
+        assert!(outcome.entries.is_empty());
+        let cards = load_registry(&path).unwrap();
+        assert_eq!(cards[0].reassign_count, 3);
+        assert!(!cards[0].dead_lettered);
     }
 }
