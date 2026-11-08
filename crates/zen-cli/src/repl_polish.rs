@@ -50,6 +50,18 @@ impl Theme {
         }
     }
 
+    /// SGR code that paints the prompt marker, mirroring the Prompt
+    /// role in `paint`. None when the effective theme is None. The
+    /// line editor styles the prompt through this code (via its
+    /// highlighter) instead of receiving a pre-styled prompt string.
+    pub fn prompt_sgr(self) -> Option<u8> {
+        match self.effective() {
+            Theme::Dark => Some(36),
+            Theme::Light => Some(34),
+            Theme::None => None,
+        }
+    }
+
     pub fn paint(self, role: ColorRole, text: &str) -> String {
         let theme = self.effective();
         if theme == Theme::None {
