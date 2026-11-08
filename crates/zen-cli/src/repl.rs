@@ -978,10 +978,21 @@ fn available_model_rows(home: Option<&Path>, base_url: &str) -> Vec<ModelRow> {
             }
         }
     }
-    crate::models::FREE_MODEL_CATALOG
-        .iter()
-        .map(ModelRow::from_catalog)
-        .collect()
+    // The catalog fallback shows only what the current provider
+    // really serves (catalog by real provider): on the Experiential
+    // base the OpenRouter entries must not appear as pickable
+    // models. A custom base has no known provider, so the whole
+    // catalog stays rather than excluding models that might serve it.
+    match crate::models::provider_for_base_url(base_url) {
+        Some(provider) => crate::models::models_for_provider(provider)
+            .into_iter()
+            .map(ModelRow::from_catalog)
+            .collect(),
+        None => crate::models::FREE_MODEL_CATALOG
+            .iter()
+            .map(ModelRow::from_catalog)
+            .collect(),
+    }
 }
 
 /// Numbered model table for `/model`: short name, provider, context
@@ -2259,6 +2270,23 @@ mod model_picker_tests {
         );
         assert!(pick_model("0", &rows()).is_err());
         assert!(pick_model("4", &rows()).is_err());
+    }
+
+    #[test]
+    fn catalog_rows_are_scoped_to_the_current_provider() {
+        // No probe cache at home None, so the catalog fallback runs.
+        let experiential = available_model_rows(None, crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(experiential.len(), 1);
+        assert_eq!(experiential[0].id, "deepseek-v4.1-flash");
+        let openrouter = available_model_rows(None, crate::models::OPENROUTER_BASE_URL);
+        assert_eq!(openrouter.len(), 4);
+        assert!(openrouter.iter().all(|r| r.id != "deepseek-v4.1-flash"));
+        // A custom base has no known provider: nothing is excluded.
+        let custom = available_model_rows(None, "https://example.invalid/v1");
+        assert_eq!(custom.len(), 5);
+        // Numbered picks follow the filtered list, so an id outside
+        // the current provider is not pickable at all.
+        assert!(pick_model("qwen/qwen3-coder:free", &experiential).is_err());
     }
 
     #[test]

@@ -69,14 +69,44 @@ pub fn gateway_model_id(id: &str) -> &str {
     catalog_entry(id).map(|m| m.gateway_id).unwrap_or(id)
 }
 
+/// Base URL of the OpenRouter provider.
+pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
 /// Base URL of the provider that serves a catalog entry. `None` means
 /// the current base URL stays.
 pub fn provider_base_url(provider: &str) -> Option<&'static str> {
     match provider {
         "experientiallabs" => Some(crate::settings::DEFAULT_BASE_URL),
-        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        "openrouter" => Some(OPENROUTER_BASE_URL),
         _ => None,
     }
+}
+
+/// Provider serving a base URL: the default base is the Experiential
+/// gateway, the OpenRouter base is OpenRouter. A custom base URL has
+/// no known provider, so catalog filtering must not exclude anything
+/// there (catalog by real provider).
+pub fn provider_for_base_url(base_url: &str) -> Option<&'static str> {
+    if base_url == crate::settings::DEFAULT_BASE_URL {
+        Some("experientiallabs")
+    } else if base_url == OPENROUTER_BASE_URL {
+        Some("openrouter")
+    } else {
+        None
+    }
+}
+
+/// Catalog entries the provider really serves, in catalog order.
+pub fn models_for_provider(provider: &str) -> Vec<&'static CatalogModel> {
+    FREE_MODEL_CATALOG
+        .iter()
+        .filter(|m| m.provider == provider)
+        .collect()
+}
+
+/// First catalog entry for a provider: the provider's default model.
+pub fn provider_default_model(provider: &str) -> Option<&'static CatalogModel> {
+    FREE_MODEL_CATALOG.iter().find(|m| m.provider == provider)
 }
 
 /// Environment variable holding the provider's API key. `None` means
@@ -1622,6 +1652,36 @@ mod tests {
             Some("OPENROUTER_API_KEY")
         );
         assert_eq!(provider_api_key_env("experientiallabs"), None);
+    }
+
+    #[test]
+    fn catalog_is_scoped_by_provider() {
+        // The default base serves only the Experiential entry; the
+        // OpenRouter base serves only the four OpenRouter entries.
+        assert_eq!(
+            provider_for_base_url(crate::settings::DEFAULT_BASE_URL),
+            Some("experientiallabs")
+        );
+        assert_eq!(
+            provider_for_base_url(OPENROUTER_BASE_URL),
+            Some("openrouter")
+        );
+        assert_eq!(provider_for_base_url("https://example.invalid/v1"), None);
+        let experiential = models_for_provider("experientiallabs");
+        assert_eq!(experiential.len(), 1);
+        assert_eq!(experiential[0].id, "deepseek-v4.1-flash");
+        let openrouter = models_for_provider("openrouter");
+        assert_eq!(openrouter.len(), 4);
+        assert!(openrouter.iter().all(|m| m.provider == "openrouter"));
+        assert_eq!(
+            provider_default_model("experientiallabs").unwrap().id,
+            "deepseek-v4.1-flash"
+        );
+        assert_eq!(
+            provider_default_model("openrouter").unwrap().id,
+            "qwen/qwen3-coder:free"
+        );
+        assert!(provider_default_model("unknown-provider").is_none());
     }
 
     #[test]
