@@ -10,6 +10,13 @@ pub struct CatalogModel {
     pub id: &'static str,
     pub provider: &'static str,
     pub context_window: u32,
+    /// Exact model string the serving provider's endpoint accepts.
+    /// OpenRouter-style ids (`provider/model:free`) are only valid on
+    /// OpenRouter; the Experiential gateway wants the bare slug
+    /// (`gemini-4-argon`), so the catalog id must never be sent to it
+    /// verbatim - that is what the gateway rejects with HTTP 400
+    /// "Invalid Model Name".
+    pub gateway_id: &'static str,
 }
 
 pub const FREE_MODEL_CATALOG: &[CatalogModel] = &[
@@ -17,28 +24,64 @@ pub const FREE_MODEL_CATALOG: &[CatalogModel] = &[
         id: "google/gemini-4-argon:free",
         provider: "experientiallabs",
         context_window: 1_000_000,
+        gateway_id: "gemini-4-argon",
     },
     CatalogModel {
         id: "qwen/qwen3-coder:free",
         provider: "openrouter",
         context_window: 262_144,
+        gateway_id: "qwen/qwen3-coder:free",
     },
     CatalogModel {
         id: "deepseek/deepseek-r1:free",
         provider: "openrouter",
         context_window: 131_072,
+        gateway_id: "deepseek/deepseek-r1:free",
     },
     CatalogModel {
         id: "nvidia/nemotron-3-ultra-550b-a55b:free",
         provider: "openrouter",
         context_window: 131_072,
+        gateway_id: "nvidia/nemotron-3-ultra-550b-a55b:free",
     },
     CatalogModel {
         id: "cohere/north-mini-code:free",
         provider: "openrouter",
         context_window: 131_072,
+        gateway_id: "cohere/north-mini-code:free",
     },
 ];
+
+/// Look a catalog entry up by its picker id.
+pub fn catalog_entry(id: &str) -> Option<&'static CatalogModel> {
+    FREE_MODEL_CATALOG.iter().find(|m| m.id == id)
+}
+
+/// Model string to put in the request for an id. Unknown ids (e.g. a
+/// probed pool entry, which already is a gateway id for the current
+/// provider) pass through unchanged.
+pub fn gateway_model_id<'a>(id: &'a str) -> &'a str {
+    catalog_entry(id).map(|m| m.gateway_id).unwrap_or(id)
+}
+
+/// Base URL of the provider that serves a catalog entry. `None` means
+/// the current base URL stays.
+pub fn provider_base_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "experientiallabs" => Some(crate::settings::DEFAULT_BASE_URL),
+        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        _ => None,
+    }
+}
+
+/// Environment variable holding the provider's API key. `None` means
+/// keep the key the session already uses.
+pub fn provider_api_key_env(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        _ => None,
+    }
+}
 
 struct ProbeTask {
     prompt: &'static str,
@@ -1534,6 +1577,46 @@ mod tests {
             "corrupt backup must not destroy the current cache"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn catalog_gateway_ids_match_what_each_provider_accepts() {
+        // The Experiential gateway wants the bare slug (verified against
+        // its public model page); sending the catalog id verbatim is the
+        // HTTP 400 "Invalid Model Name" bug.
+        assert_eq!(
+            gateway_model_id("google/gemini-4-argon:free"),
+            "gemini-4-argon"
+        );
+        // OpenRouter entries keep their own id: it IS the wire id there.
+        assert_eq!(
+            gateway_model_id("qwen/qwen3-coder:free"),
+            "qwen/qwen3-coder:free"
+        );
+        assert_eq!(
+            gateway_model_id("nvidia/nemotron-3-ultra-550b-a55b:free"),
+            "nvidia/nemotron-3-ultra-550b-a55b:free"
+        );
+        // Unknown ids (e.g. probed pool entries) pass through unchanged.
+        assert_eq!(gateway_model_id("some-probed-model"), "some-probed-model");
+    }
+
+    #[test]
+    fn catalog_provider_routing() {
+        assert_eq!(
+            provider_base_url("experientiallabs"),
+            Some(crate::settings::DEFAULT_BASE_URL)
+        );
+        assert_eq!(
+            provider_base_url("openrouter"),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(provider_base_url("unknown-provider"), None);
+        assert_eq!(
+            provider_api_key_env("openrouter"),
+            Some("OPENROUTER_API_KEY")
+        );
+        assert_eq!(provider_api_key_env("experientiallabs"), None);
     }
 
     #[test]

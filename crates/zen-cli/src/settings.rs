@@ -104,11 +104,33 @@ impl ResolvedConfig {
         sink: std::sync::Arc<dyn zen_core::EventSink>,
         home: Option<&std::path::Path>,
     ) -> std::sync::Arc<dyn zen_core::LlmBackend> {
-        let client = self.llm_client(sink);
+        self.gated_llm_client_for(&self.base_url, self.api_key.clone(), sink, home)
+    }
+
+    /// Build the rate-gated backend for an explicit provider endpoint
+    /// and key (used by `/model` when a switch changes provider).
+    pub fn gated_llm_client_for(
+        &self,
+        base_url: &str,
+        api_key: Option<String>,
+        sink: std::sync::Arc<dyn zen_core::EventSink>,
+        home: Option<&std::path::Path>,
+    ) -> std::sync::Arc<dyn zen_core::LlmBackend> {
+        let client = zen_agent::make_backend_with(
+            base_url.to_string(),
+            api_key,
+            sink,
+            self.retry_max_wait_secs.saturating_mul(1000),
+            zen_agent::HttpTimeouts::from_secs(
+                base_url,
+                self.request_timeout_secs,
+                self.idle_timeout_secs,
+            ),
+        );
         let (settings, store_path) = self.rate_gate_for(home);
         std::sync::Arc::new(zen_agent::RateGate::new(
             client,
-            self.base_url.clone(),
+            base_url.to_string(),
             settings,
             store_path,
         ))

@@ -15,6 +15,12 @@ fn price_table(model: &str) -> Option<(f64, f64)> {
         "gemini-2.5-flash" => (0.30, 2.50),
         "gemini-2.5-pro" => (1.25, 10.00),
 
+        // List price on the Experiential gateway (its public models
+        // page, 2026-11-08): Gemini 4 Argon is NOT free, despite the
+        // free catalog listing it. Pricing it honestly keeps /cost
+        // correct and lets a budget cap actually bite.
+        "gemini-4-argon" => (2.00, 10.00),
+
         "grok-4" => (3.00, 15.00),
         "grok-code-fast-1" => (0.20, 1.50),
 
@@ -145,6 +151,15 @@ mod tests {
         assert_eq!(price_per_1m("ollama/qwen3-coder:30b"), Some((0.0, 0.0)));
         assert!(is_free_model("deepseek/deepseek-chat:free"));
         assert!(!is_free_model("gpt-4o"));
+    }
+
+    #[test]
+    fn gemini_4_argon_is_priced_not_free() {
+        // The free catalog lists it, but the gateway prices it $2/$10
+        // (public models page, 2026-11-08): it must never be treated as
+        // a free model by the budget guard or /cost.
+        assert_eq!(price_per_1m("gemini-4-argon"), Some((2.00, 10.00)));
+        assert!(!is_free_model("gemini-4-argon"));
     }
 
     #[test]
