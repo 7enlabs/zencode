@@ -82,10 +82,12 @@ pub fn canonical_provider(name: &str) -> Option<&'static str> {
 }
 
 /// Whether a model string requests auto mode, matched
-/// case-insensitively: `auto` is user-facing (`/model Auto`), so
-/// casing must not change the meaning (PR #73 review follow-up).
+/// case-insensitively and ignoring surrounding whitespace: `auto` is
+/// user-facing (`/model Auto`), so casing must not change the meaning
+/// (PR #73 review follow-up), and `ZEN_MODEL` / a settings-file model
+/// may carry stray spaces (PR #74 review follow-up).
 pub fn is_auto_model(model: &str) -> bool {
-    model.eq_ignore_ascii_case("auto")
+    model.trim().eq_ignore_ascii_case("auto")
 }
 
 /// Base URL of the provider that serves a catalog entry. `None` means
@@ -1710,8 +1712,11 @@ mod tests {
         assert!(is_auto_model("Auto"));
         assert!(is_auto_model("AUTO"));
         assert!(is_auto_model("aUtO"));
+        // Surrounding whitespace must not change the meaning either
+        // (PR #74 review follow-up): `ZEN_MODEL="Auto "` is auto.
+        assert!(is_auto_model("auto "));
+        assert!(is_auto_model(" Auto "));
         assert!(!is_auto_model("automatic"));
-        assert!(!is_auto_model("auto "));
         assert!(!is_auto_model(""));
     }
 

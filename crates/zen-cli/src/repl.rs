@@ -1068,6 +1068,10 @@ fn format_model_list(current: &str, rows: &[ModelRow], auto: bool) -> String {
 
 /// Resolve a `/model` argument to a model id: a 1-based number picks from
 /// the list, otherwise an exact id wins, else a unique substring match.
+/// Id matching is case-insensitive: catalog ids are user-facing
+/// (`/model DEEPSEEK-V4.1-FLASH`), so casing must not change the meaning.
+/// The canonical catalog id is returned, never the user's casing, so the
+/// id still matches the catalog downstream.
 fn pick_model(arg: &str, rows: &[ModelRow]) -> Result<String, String> {
     if let Ok(n) = arg.parse::<usize>() {
         return match rows.get(n.wrapping_sub(1)) {
@@ -1075,10 +1079,14 @@ fn pick_model(arg: &str, rows: &[ModelRow]) -> Result<String, String> {
             None => Err(format!("no model #{} (1-{})", n, rows.len())),
         };
     }
-    if rows.iter().any(|r| r.id == arg) {
-        return Ok(arg.to_string());
+    if let Some(row) = rows.iter().find(|r| r.id.eq_ignore_ascii_case(arg)) {
+        return Ok(row.id.clone());
     }
-    let matches: Vec<&ModelRow> = rows.iter().filter(|r| r.id.contains(arg)).collect();
+    let needle = arg.to_ascii_lowercase();
+    let matches: Vec<&ModelRow> = rows
+        .iter()
+        .filter(|r| r.id.to_ascii_lowercase().contains(&needle))
+        .collect();
     match matches.len() {
         1 => Ok(matches[0].id.clone()),
         0 => Err(format!("no model matches '{arg}'")),
@@ -2368,6 +2376,26 @@ mod model_picker_tests {
         assert_eq!(
             pick_model("cohere/north-mini-code:free", &rows()).unwrap(),
             "cohere/north-mini-code:free"
+        );
+    }
+
+    #[test]
+    fn pick_by_id_is_case_insensitive() {
+        // `/model DEEPSEEK-V4.1-FLASH` must pick the same entry as the
+        // lowercase id (PR #74 review follow-up), and the canonical
+        // catalog id is returned, not the user's casing.
+        assert_eq!(
+            pick_model("DEEPSEEK-V4.1-FLASH", &rows()).unwrap(),
+            "deepseek-v4.1-flash"
+        );
+        assert_eq!(
+            pick_model("CoHere/North-Mini-Code:Free", &rows()).unwrap(),
+            "cohere/north-mini-code:free"
+        );
+        // Substring matching is case-insensitive too.
+        assert_eq!(
+            pick_model("NEMOTRON", &rows()).unwrap(),
+            "nvidia/nemotron-3-nano:free"
         );
     }
 
