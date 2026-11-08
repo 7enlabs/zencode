@@ -231,7 +231,9 @@ pub(crate) async fn run_tool_with_heartbeat(
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            model: "google/gemini-4-argon:free".into(),
+            // The decided CLI default (PR #71 review F8): a free
+            // catalog entry, in the id its gateway accepts.
+            model: "deepseek-v4.1-flash".into(),
             fallback_models: vec![],
             system_prompt: String::new(),
             max_turns: 50,
@@ -1512,5 +1514,18 @@ pub(crate) fn combine_permission(
             PermissionDecision::Allow
         }
         (c, _) => c,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_model_is_the_decided_free_gateway_id() {
+        // PR #71 review F8: the old default named a paid model in
+        // its OpenRouter form; the decided default is the free
+        // deepseek-v4.1-flash, already in gateway form.
+        assert_eq!(AgentConfig::default().model, "deepseek-v4.1-flash");
     }
 }
