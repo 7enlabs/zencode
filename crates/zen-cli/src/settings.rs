@@ -308,6 +308,48 @@ fn resolve_base_url(cli: &Cli, settings_url: Option<&str>) -> String {
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
 }
 
+/// Route a catalog model to the provider that serves it: rewrite
+/// `cfg.model` to the id that provider accepts, and - when the base
+/// URL is still the default - point `base_url` and `api_key` at that
+/// provider. A custom base URL is the user's explicit endpoint
+/// choice: routing leaves the whole config untouched then, so a
+/// catalog id is never rewritten for a gateway that would reject
+/// the rewritten form (PR #71 review F2/F3). Returns Ok(true) when
+/// the model was routed. Shared by the REPL and headless entry
+/// points so every path sends an id its gateway accepts.
+pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
+    if cfg.ollama {
+        return Ok(false);
+    }
+    let Some(entry) = crate::models::catalog_entry(&cfg.model) else {
+        return Ok(false);
+    };
+    let Some(base_url) = crate::models::provider_base_url(entry.provider) else {
+        return Ok(false);
+    };
+    if cfg.base_url == DEFAULT_BASE_URL && base_url != DEFAULT_BASE_URL {
+        // Cross-provider: the request must carry that provider's key.
+        if let Some(env) = crate::models::provider_api_key_env(entry.provider) {
+            match std::env::var(env).ok().filter(|v| !v.is_empty()) {
+                Some(key) => cfg.api_key = Some(key),
+                None => anyhow::bail!(
+                    "model '{}' needs its provider's key: set {} before starting",
+                    entry.id,
+                    env
+                ),
+            }
+        }
+        cfg.base_url = base_url.to_string();
+        cfg.model = entry.gateway_id.to_string();
+        return Ok(true);
+    }
+    if cfg.base_url == DEFAULT_BASE_URL || cfg.base_url == base_url {
+        cfg.model = entry.gateway_id.to_string();
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 fn resolve_api_key(api_key_env: Option<&str>) -> Option<String> {
     if let Ok(v) = std::env::var("ZEN_API_KEY") {
         if !v.is_empty() {

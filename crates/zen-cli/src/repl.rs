@@ -216,37 +216,14 @@ fn welcome_box(
 
 pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> {
     let mut cfg = crate::settings::resolve_config_with_home(cli, cwd, home)?;
-    // A catalog id is a picker label, not a wire id: the gateway that
-    // serves the entry wants its own slug (see models::gateway_model_id),
-    // and a different provider needs its own base URL and key. Apply the
-    // entry's routing at startup when the base URL is still the default
-    // (an explicitly configured base URL, and local Ollama, stay as-is);
-    // otherwise the very first prompt fails with the same HTTP 400.
-    if !cfg.ollama {
-        if let Some(entry) = crate::models::catalog_entry(&cfg.model) {
-            if cfg.base_url == crate::settings::DEFAULT_BASE_URL {
-                if let Some(url) = crate::models::provider_base_url(entry.provider) {
-                    match crate::models::provider_api_key_env(entry.provider) {
-                        Some(env) => match std::env::var(env).ok().filter(|v| !v.is_empty()) {
-                            Some(key) => {
-                                cfg.base_url = url.to_string();
-                                cfg.api_key = Some(key);
-                            }
-                            None => {
-                                anyhow::bail!(
-                                    "model '{}' needs its provider's key: set {} before starting",
-                                    entry.id,
-                                    env
-                                );
-                            }
-                        },
-                        None => cfg.base_url = url.to_string(),
-                    }
-                }
-            }
-            cfg.model = entry.gateway_id.to_string();
-        }
-    }
+    // The key resolved for the configured route, kept verbatim: a
+    // /model round trip through another provider restores this key
+    // instead of leaking that provider's key (PR #71 review F1).
+    let home_api_key = cfg.api_key.clone();
+    // A catalog id is a picker label, not a wire id: route the model
+    // to its serving provider (gateway id, base URL, key) so the very
+    // first prompt does not fail with the same HTTP 400.
+    crate::settings::route_catalog_model(&mut cfg)?;
     if cfg.ollama {
         crate::ollama::ensure_ollama_ready(&cfg.base_url, &cfg.model).await?;
     }
@@ -365,6 +342,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         mcp_status: assembly.mcp_status.clone(),
         interrupts: interrupts.as_mut(),
         recorder: assembly.recorder.clone(),
+        home_api_key,
         goal: None,
         personality: repl_polish::Personality::default(),
         theme: repl_polish::Theme::default(),
@@ -515,6 +493,10 @@ struct ReplState<'a> {
     interrupts: Option<&'a mut ReplInterrupts>,
 
     recorder: Option<Arc<crate::eventlog::Recorder>>,
+
+    // API key resolved at startup for the configured route; a /model
+    // round trip restores it (see apply_model_switch, review F1).
+    home_api_key: Option<String>,
 
     goal: Option<String>,
 
@@ -1100,16 +1082,19 @@ fn apply_model_switch(
     agent: &mut zen_agent::Agent,
     recorder: Option<&Arc<crate::eventlog::Recorder>>,
     home: Option<&Path>,
+    home_api_key: &Option<String>,
     id: &str,
 ) -> Result<String, String> {
     let Some(entry) = crate::models::catalog_entry(id) else {
         // Not a catalog entry (e.g. a probed pool id, already a gateway
         // id for the current provider): only the string changes.
         agent.config.model = id.to_string();
+        cfg.model = id.to_string();
         return Ok(format!("model set to {id}"));
     };
     let Some(base_url) = crate::models::provider_base_url(entry.provider) else {
         agent.config.model = entry.gateway_id.to_string();
+        cfg.model = entry.gateway_id.to_string();
         return Ok(format!(
             "model set to {} (sending {})",
             id, entry.gateway_id
@@ -1125,7 +1110,11 @@ fn apply_model_switch(
                 ));
             }
         },
-        None => cfg.api_key.clone(),
+        // No dedicated env var: the home provider. Restore the key
+        // resolved at startup - never cfg.api_key, which a previous
+        // switch may have overwritten with another provider's key
+        // (PR #71 review F1).
+        None => home_api_key.clone(),
     };
     if base_url != cfg.base_url || key != cfg.api_key {
         cfg.base_url = base_url.to_string();
@@ -1133,6 +1122,9 @@ fn apply_model_switch(
         agent.llm = crate::eventlog::wrap(cfg.gated_llm_client(agent.sink.clone(), home), recorder);
     }
     agent.config.model = entry.gateway_id.to_string();
+    // Keep cfg.model in step with what is actually sent, so anything
+    // that re-reads it later sees the effective model (review F7).
+    cfg.model = entry.gateway_id.to_string();
     Ok(format!(
         "model set to {} (sending {} to {})",
         id, entry.gateway_id, base_url
@@ -1227,7 +1219,14 @@ async fn handle_slash(
             } else {
                 match pick_model(&arg, &rows) {
                     Ok(id) => {
-                        match apply_model_switch(cfg, agent, repl.recorder.as_ref(), home, &id) {
+                        match apply_model_switch(
+                            cfg,
+                            agent,
+                            repl.recorder.as_ref(),
+                            home,
+                            &repl.home_api_key,
+                            &id,
+                        ) {
                             Ok(msg) => println!("{msg}"),
                             Err(e) => eprintln!("{e}"),
                         }
@@ -1940,7 +1939,9 @@ async fn handle_slash(
                         .as_ref()
                         .filter(|m| !m.is_empty() && *m != "inherit")
                     {
-                        agent.config.model = m.clone();
+                        // Translate a catalog id to the gateway id,
+                        // as /model does (PR #71 review F6).
+                        agent.config.model = crate::models::gateway_model_id(m).to_string();
                     }
                     if !c.allowed_tools.is_empty() {
                         agent.permissions = crate::agent_run::build_permissions_with(
@@ -2373,8 +2374,15 @@ mod model_picker_tests {
         assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
         let old_llm = agent.llm.clone();
 
-        let msg =
-            apply_model_switch(&mut cfg, &mut agent, None, None, "deepseek-v4.1-flash").unwrap();
+        let msg = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "deepseek-v4.1-flash",
+        )
+        .unwrap();
         assert!(msg.contains("deepseek-v4.1-flash"), "{msg}");
         assert_eq!(agent.config.model, "deepseek-v4.1-flash");
         assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
@@ -2410,8 +2418,15 @@ mod model_picker_tests {
         let mut cfg = test_cfg();
         let old_llm = agent.llm.clone();
 
-        let msg =
-            apply_model_switch(&mut cfg, &mut agent, None, None, "qwen/qwen3-coder:free").unwrap();
+        let msg = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap();
         assert!(msg.contains("openrouter.ai"), "{msg}");
         assert_eq!(agent.config.model, "qwen/qwen3-coder:free");
         assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
@@ -2437,8 +2452,15 @@ mod model_picker_tests {
         let mut cfg = test_cfg();
         let old_llm = agent.llm.clone();
 
-        let err = apply_model_switch(&mut cfg, &mut agent, None, None, "qwen/qwen3-coder:free")
-            .unwrap_err();
+        let err = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap_err();
         assert!(err.contains("OPENROUTER_API_KEY"), "{err}");
         // Refused switch: previous model, provider and backend untouched.
         assert_eq!(agent.config.model, "google/gemini-4-argon:free");
@@ -2459,8 +2481,8 @@ mod model_picker_tests {
         });
         let mut agent = test_agent(backend.clone());
         let mut cfg = test_cfg();
-        let msg =
-            apply_model_switch(&mut cfg, &mut agent, None, None, "some-probed-model").unwrap();
+        let msg = apply_model_switch(&mut cfg, &mut agent, None, None, &None, "some-probed-model")
+            .unwrap();
         assert_eq!(msg, "model set to some-probed-model");
         assert_eq!(agent.config.model, "some-probed-model");
         assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
@@ -2480,6 +2502,113 @@ mod model_picker_tests {
         assert_eq!(humanise_context(Some(262_144)), "262K");
         assert_eq!(humanise_context(Some(131_072)), "131K");
         assert_eq!(humanise_context(None), "—");
+    }
+
+    #[test]
+    fn switch_round_trip_restores_home_key() {
+        // F1: experiential -> openrouter -> experiential must restore
+        // the startup key, not leak the OpenRouter key.
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        cfg.api_key = Some("exp-key".to_string());
+        let home_key = cfg.api_key.clone();
+
+        apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &home_key,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap();
+        assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+
+        apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &home_key,
+            "deepseek-v4.1-flash",
+        )
+        .unwrap();
+        assert_eq!(cfg.api_key.as_deref(), Some("exp-key"));
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(agent.config.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_keeps_experiential_default_on_default_base() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = test_cfg();
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(routed);
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn route_moves_openrouter_model_to_its_provider() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let mut cfg = test_cfg();
+        cfg.model = "qwen/qwen3-coder:free".to_string();
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(routed);
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_refuses_openrouter_model_without_key() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let mut cfg = test_cfg();
+        cfg.model = "qwen/qwen3-coder:free".to_string();
+        let err = crate::settings::route_catalog_model(&mut cfg).unwrap_err();
+        assert!(err.to_string().contains("OPENROUTER_API_KEY"), "{err}");
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_leaves_custom_base_url_untouched() {
+        // F3: the user pointed the client at another endpoint by
+        // hand while the model is still a catalog entry. Routing
+        // must not rewrite the model or the key for an endpoint it
+        // does not own - that broke working custom-base setups.
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = test_cfg();
+        cfg.base_url = "https://openrouter.ai/api/v1".to_string();
+        cfg.api_key = Some("custom-key".to_string());
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(!routed);
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.api_key.as_deref(), Some("custom-key"));
     }
 }
 

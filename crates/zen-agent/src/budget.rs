@@ -18,7 +18,9 @@ fn price_table(model: &str) -> Option<(f64, f64)> {
         // List price on the Experiential gateway (its public models
         // page, 2026-11-08): Gemini 4 Argon is NOT free, despite the
         // free catalog listing it. Pricing it honestly keeps /cost
-        // correct and lets a budget cap actually bite.
+        // correct and lets a budget cap actually bite. The $2/$10
+        // rate is promotional until 2026-11-30 (via PR #71 review);
+        // the list price rises to $4/$20 after - update this entry.
         "gemini-4-argon" => (2.00, 10.00),
 
         // Free $0 on the Experiential gateway Free plan (public pricing

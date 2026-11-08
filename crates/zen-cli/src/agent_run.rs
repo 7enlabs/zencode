@@ -758,8 +758,10 @@ pub(crate) async fn run_agent_with_result(
         let local = match name.as_str() {
             "model" if args.is_empty() => Some(format!("Current model: {}", agent.config.model)),
             "model" => {
-                agent.config.model = args.clone();
-                Some(format!("Set model to {}", args))
+                // Translate a catalog id to the id the gateway
+                // accepts, as /model does in the REPL (review F2).
+                agent.config.model = crate::models::gateway_model_id(args).to_string();
+                Some(format!("Set model to {}", agent.config.model))
             }
             "cost" => Some(commands::cost_report(
                 &agent.usage,
