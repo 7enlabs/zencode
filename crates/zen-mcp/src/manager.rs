@@ -11,7 +11,7 @@ use crate::transport::{handshake, RemoteTool, Transport};
 pub const MCP_MAX_CHARS: usize = zen_tools::builtin::BASH_MAX_CHARS;
 
 pub(crate) struct McpTool {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // floor-guard: item kept intentionally, unused for now
     pub server: String,
     pub remote_name: String,
     pub full_name: String,
@@ -229,7 +229,6 @@ pub(crate) fn validate(cfg: &McpServerConfig) -> Option<&'static str> {
     }
 }
 
-#[allow(clippy::type_complexity)]
 async fn start_one(
     cfg: &McpServerConfig,
     timeout_ms: u64,

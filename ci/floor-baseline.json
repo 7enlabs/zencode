@@ -1,3 +1,4 @@
 {
-  "min_rust_tests": 1300
+  "min_rust_tests": 1300,
+  "max_runtime_allows": 15
 }

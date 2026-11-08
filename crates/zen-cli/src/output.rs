@@ -194,7 +194,7 @@ pub struct StreamJsonSink {
 }
 
 impl StreamJsonSink {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
     pub fn new(
         buf: Arc<Buffered>,
         session_id: String,
@@ -218,7 +218,7 @@ impl StreamJsonSink {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
     pub fn with_partial(
         buf: Arc<Buffered>,
         session_id: String,

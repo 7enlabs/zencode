@@ -21,6 +21,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Architectural lint (layers, runtime #[allow])
+        run: python3 scripts/arch_lint.py
+      - name: Self-test the architectural lint
+        run: python3 -m unittest scripts/test_arch_lint.py
       - run: cargo test --workspace
   eval:
     # Deterministic eval gate (B7.1): the scripted mock solver needs no API key

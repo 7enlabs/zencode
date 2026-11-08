@@ -82,6 +82,12 @@ class ConstraintsAndBaseline(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(fg.check_baseline('{"min_rust_tests": 100}', '{"min_rust_tests": 120}'), [])
 
+    def test_baseline_max_raised(self):
+        found = fg.check_baseline('{"max_runtime_allows": 15}', '{"max_runtime_allows": 16}')
+        self.assertEqual(len(found), 1)
+        self.assertIn("max_runtime_allows", found[0].msg)
+        self.assertEqual(fg.check_baseline('{"max_runtime_allows": 15}', '{"max_runtime_allows": 14}'), [])
+
 
 class Ratchet(unittest.TestCase):
     def make(self, tests, floor):

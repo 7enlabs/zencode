@@ -1194,7 +1194,7 @@ fn rg_available() -> bool {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 async fn run_rg(
     target: &Path,
     cwd: &Path,
@@ -1307,7 +1307,7 @@ fn truncate_lines(text: &str, head_limit: usize) -> String {
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub fn search_builtin(
     target: &Path,
     cwd: &Path,

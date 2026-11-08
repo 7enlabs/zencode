@@ -197,7 +197,7 @@ async fn run_tool_once(
 
 const TOOL_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub(crate) async fn run_tool_with_heartbeat(
     tool: Arc<dyn Tool>,
     args: Value,
@@ -301,7 +301,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
     pub fn new(
         llm: Arc<dyn LlmBackend>,
         tools: ToolRegistry,

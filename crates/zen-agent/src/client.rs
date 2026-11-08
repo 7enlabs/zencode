@@ -280,7 +280,7 @@ impl OpenAiClient {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // floor-guard: item kept intentionally, unused for now
     fn key(&self) -> Option<&str> {
         self.api_key.as_deref()
     }
