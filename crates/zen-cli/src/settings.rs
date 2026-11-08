@@ -321,6 +321,18 @@ pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
     if cfg.ollama {
         return Ok(false);
     }
+    // Auto mode (Leader tin 7962): `auto` means the current
+    // provider's best free model. Resolve it to that entry's id
+    // first so the routing below treats it like any catalog pick.
+    if cfg.model == "auto" {
+        let Some(provider) = crate::models::provider_for_base_url(&cfg.base_url) else {
+            anyhow::bail!("model 'auto' needs a known provider base URL; set a model id instead");
+        };
+        let Some(entry) = crate::models::provider_default_model(provider) else {
+            anyhow::bail!("provider '{provider}' has no free model in the catalog");
+        };
+        cfg.model = entry.id.to_string();
+    }
     let Some(entry) = crate::models::catalog_entry(&cfg.model) else {
         return Ok(false);
     };

@@ -8,6 +8,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "/clear",
     "/compact",
     "/model",
+    "/provider",
     "/resume",
     "/cost",
     "/status",
@@ -59,6 +60,10 @@ pub const COMMAND_DESCRIPTIONS: &[(&str, &str)] = &[
     ("/clear", "Clear the conversation context"),
     ("/compact", "Compact the conversation to free context space"),
     ("/model", "Show or switch the current model"),
+    (
+        "/provider",
+        "Switch provider; model resets to that provider's best free model",
+    ),
     ("/resume", "Resume a saved session"),
     (
         "/continue",
@@ -114,10 +119,9 @@ pub const COMMAND_DESCRIPTIONS: &[(&str, &str)] = &[
 /// display-only; command names and descriptions do not change.
 pub fn help_group(name: &str) -> &'static str {
     match name {
-        "/help" | "/model" | "/cost" | "/status" | "/resume" | "/continue" | "/exit" | "/quit"
-        | "/theme" | "/personality" | "/vim" | "/terse" | "/quota" | "/config" | "/permissions" => {
-            "Session & model"
-        }
+        "/help" | "/model" | "/provider" | "/cost" | "/status" | "/resume" | "/continue"
+        | "/exit" | "/quit" | "/theme" | "/personality" | "/vim" | "/terse" | "/quota"
+        | "/config" | "/permissions" => "Session & model",
         "/clear" | "/compact" | "/context" | "/memory" | "/memories" | "/init" | "/add-dir"
         | "/scope" => "Context",
         "/diff" | "/review" | "/commit" | "/undo" | "/plan" | "/ci-fix" | "/pr_comments"
