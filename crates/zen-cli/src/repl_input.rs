@@ -114,14 +114,15 @@ impl Hinter for SlashHelper {
 }
 
 impl Highlighter for SlashHelper {
-    // The ghosted suggestion is the selected item at the typing point, so it
-    // is painted bold (brighter) instead of the default dim ghost style.
+    // The ghost hint must be returned verbatim, with no ANSI styling.
+    // rustyline 18 has no default dim ghost style to replace: its
+    // default highlight_hint already returns the hint as-is, and its
+    // layout math counts the bytes of any ANSI wrapper as visible
+    // columns. Wrapping the hint in bold ("\x1b[1m...\x1b[0m") added
+    // 6 phantom columns, so once the hint vanished the redraw left a
+    // 6-column gap inside the typed line.
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
-        if crate::repl_polish::Theme::colors_disabled() {
-            Cow::Borrowed(hint)
-        } else {
-            Cow::Owned(format!("\u{1b}[1m{hint}\u{1b}[0m"))
-        }
+        Cow::Borrowed(hint)
     }
 }
 
@@ -281,6 +282,24 @@ mod tests {
         assert_eq!(slash_hint("hello", 5), None);
         assert_eq!(slash_hint("/mo x", 5), None);
         assert_eq!(slash_hint("/mo", 2), None);
+    }
+
+    #[test]
+    fn highlight_hint_has_no_ansi_escapes() {
+        // Regression: the ghost hint used to be wrapped in bold ANSI
+        // ("\x1b[1m...\x1b[0m"). rustyline counts those 6 bytes as
+        // visible columns when it lays the line out, so once the hint
+        // vanished the redraw left a 6-column gap inside the typed
+        // line ("/d/" + 6 spaces + "dsadshjdh"). The hint must be
+        // returned verbatim: rustyline 18 has no default dim ghost
+        // style, its default highlight_hint already returns the hint
+        // as-is.
+        let hint = SlashHelper.highlight_hint("iff");
+        assert!(
+            !hint.contains("\x1b"),
+            "hint must not contain ANSI escapes, got: {hint:?}"
+        );
+        assert_eq!(hint.as_ref(), "iff");
     }
 
     #[test]
