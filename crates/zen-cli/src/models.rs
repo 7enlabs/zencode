@@ -81,6 +81,13 @@ pub fn canonical_provider(name: &str) -> Option<&'static str> {
         .find(|p| p.eq_ignore_ascii_case(name))
 }
 
+/// Whether a model string requests auto mode, matched
+/// case-insensitively: `auto` is user-facing (`/model Auto`), so
+/// casing must not change the meaning (PR #73 review follow-up).
+pub fn is_auto_model(model: &str) -> bool {
+    model.eq_ignore_ascii_case("auto")
+}
+
 /// Base URL of the provider that serves a catalog entry. `None` means
 /// the current base URL stays.
 pub fn provider_base_url(provider: &str) -> Option<&'static str> {
@@ -1693,6 +1700,19 @@ mod tests {
             "qwen/qwen3-coder:free"
         );
         assert!(provider_default_model("unknown-provider").is_none());
+    }
+
+    #[test]
+    fn auto_model_is_case_insensitive() {
+        // `/model Auto` must mean the same as `auto`
+        // (PR #73 review follow-up).
+        assert!(is_auto_model("auto"));
+        assert!(is_auto_model("Auto"));
+        assert!(is_auto_model("AUTO"));
+        assert!(is_auto_model("aUtO"));
+        assert!(!is_auto_model("automatic"));
+        assert!(!is_auto_model("auto "));
+        assert!(!is_auto_model(""));
     }
 
     #[test]

@@ -327,7 +327,7 @@ pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
     // review follow-up): refuse here with the real reason instead of
     // letting the literal "auto" reach the Ollama readiness check,
     // which would report the misleading hint `ollama pull auto`.
-    if cfg.ollama && cfg.model == "auto" {
+    if cfg.ollama && crate::models::is_auto_model(&cfg.model) {
         anyhow::bail!(
             "model 'auto' is not supported with the Ollama provider; \
              name a local model instead (e.g. --model ollama/qwen3-coder:30b)"
@@ -339,7 +339,7 @@ pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
     // Auto mode (Leader tin 7962): `auto` means the current
     // provider's best free model. Resolve it to that entry's id
     // first so the routing below treats it like any catalog pick.
-    if cfg.model == "auto" {
+    if crate::models::is_auto_model(&cfg.model) {
         let Some(provider) = crate::models::provider_for_base_url(&cfg.base_url) else {
             anyhow::bail!("model 'auto' needs a known provider base URL; set a model id instead");
         };
@@ -504,7 +504,7 @@ pub fn resolve_config_with_home(
     // Auto model mode (PR #72 review follow-up): on when the model
     // was requested as `auto` or when no model was chosen anywhere -
     // an explicit pin of the provider's default model is still a pin.
-    let model_auto = raw_model == "auto"
+    let model_auto = crate::models::is_auto_model(&raw_model)
         || (cli.model.is_none()
             && std::env::var("ZEN_MODEL")
                 .map(|v| v.is_empty())
@@ -1303,6 +1303,12 @@ mod tests {
         // Asking for auto explicitly turns it on.
         let mut cli = base_cli();
         cli.model = Some("auto".into());
+        let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
+        assert!(cfg.model_auto);
+        // Casing must not change the meaning (PR #73 review
+        // follow-up): `Auto` turns auto on too.
+        let mut cli = base_cli();
+        cli.model = Some("Auto".into());
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
         assert!(cfg.model_auto);
     }

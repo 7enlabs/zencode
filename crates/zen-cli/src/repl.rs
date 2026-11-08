@@ -1240,7 +1240,7 @@ async fn handle_slash(
                     "{}",
                     format_model_list(&agent.config.model, &rows, repl.auto_model)
                 );
-            } else if arg == "auto" {
+            } else if crate::models::is_auto_model(&arg) {
                 // Auto mode back on (Leader tin 7962): the current
                 // provider's best free model.
                 match crate::models::provider_for_base_url(&cfg.base_url)
@@ -2709,6 +2709,14 @@ mod model_picker_tests {
         let err = crate::settings::route_catalog_model(&mut cfg).unwrap_err();
         assert!(err.to_string().contains("Ollama"), "{err}");
         assert!(!err.to_string().contains("pull"), "{err}");
+        // Casing must not change the meaning (PR #73 review
+        // follow-up): `Auto` is refused with the same real reason.
+        let mut cfg = test_cfg();
+        cfg.ollama = true;
+        cfg.model = "Auto".to_string();
+        let err = crate::settings::route_catalog_model(&mut cfg).unwrap_err();
+        assert!(err.to_string().contains("Ollama"), "{err}");
+        assert!(!err.to_string().contains("pull"), "{err}");
     }
 
     #[test]
@@ -2733,6 +2741,15 @@ mod model_picker_tests {
         match old {
             Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
             None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+        // Casing must not change the meaning (PR #73 review
+        // follow-up): `Auto` and `AUTO` resolve the same way.
+        for spelling in ["Auto", "AUTO"] {
+            let mut cfg = test_cfg();
+            cfg.model = spelling.to_string();
+            let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+            assert!(routed, "{spelling}");
+            assert_eq!(cfg.model, "deepseek-v4.1-flash", "{spelling}");
         }
         // A custom base has no known provider: auto refuses clearly
         // instead of sending the literal string "auto" to the gateway.
