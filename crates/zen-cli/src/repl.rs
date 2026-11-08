@@ -251,7 +251,10 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     // v2 welcome box: theme, branch and previous sessions for the
     // greeting / Recent line. The long hint line is first-run-only
     // (returning users already know !cmd / @file / #note).
-    let (branch, _) = crate::git::git_info(cwd);
+    // Startup fast path: only the branch is shown, so run just
+    // rev-parse. git_info also runs `git status --porcelain` (a second
+    // process spawn, slow on Windows) and this caller discards it.
+    let branch = crate::git::current_branch(cwd);
     let sessions = home
         .map(|h| crate::session::list_sessions_for_cwd(h, cwd))
         .unwrap_or_default();
