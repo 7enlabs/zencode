@@ -329,8 +329,9 @@ pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
     // which would report the misleading hint `ollama pull auto`.
     if cfg.ollama && crate::models::is_auto_model(&cfg.model) {
         anyhow::bail!(
-            "model 'auto' is not supported with the Ollama provider; \
-             name a local model instead (e.g. --model ollama/qwen3-coder:30b)"
+            "model '{}' is not supported with the Ollama provider; \
+             name a local model instead (e.g. --model ollama/qwen3-coder:30b)",
+            cfg.model
         );
     }
     if cfg.ollama {
@@ -341,7 +342,10 @@ pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
     // first so the routing below treats it like any catalog pick.
     if crate::models::is_auto_model(&cfg.model) {
         let Some(provider) = crate::models::provider_for_base_url(&cfg.base_url) else {
-            anyhow::bail!("model 'auto' needs a known provider base URL; set a model id instead");
+            anyhow::bail!(
+                "model '{}' needs a known provider base URL; set a model id instead",
+                cfg.model
+            );
         };
         let Some(entry) = crate::models::provider_default_model(provider) else {
             anyhow::bail!("provider '{provider}' has no free model in the catalog");
