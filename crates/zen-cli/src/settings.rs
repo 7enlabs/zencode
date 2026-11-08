@@ -9,6 +9,11 @@ pub const DEFAULT_MAX_TURNS: usize = 50;
 #[derive(Debug, Clone)]
 pub struct ResolvedConfig {
     pub model: String,
+    /// True when the session runs in auto model mode: the model was
+    /// requested as `auto`, or no model was chosen anywhere (auto is
+    /// the default). An explicitly pinned model - even the provider's
+    /// default - is not auto (PR #72 review follow-up).
+    pub model_auto: bool,
 
     pub btw_model: Option<String>,
     pub base_url: String,
@@ -318,6 +323,16 @@ fn resolve_base_url(cli: &Cli, settings_url: Option<&str>) -> String {
 /// the model was routed. Shared by the REPL and headless entry
 /// points so every path sends an id its gateway accepts.
 pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
+    // Auto has no catalog meaning for the Ollama provider (PR #72
+    // review follow-up): refuse here with the real reason instead of
+    // letting the literal "auto" reach the Ollama readiness check,
+    // which would report the misleading hint `ollama pull auto`.
+    if cfg.ollama && cfg.model == "auto" {
+        anyhow::bail!(
+            "model 'auto' is not supported with the Ollama provider; \
+             name a local model instead (e.g. --model ollama/qwen3-coder:30b)"
+        );
+    }
     if cfg.ollama {
         return Ok(false);
     }
@@ -486,6 +501,15 @@ pub fn resolve_config_with_home(
     }
 
     let raw_model = resolve_model(cli, merged.model.as_deref());
+    // Auto model mode (PR #72 review follow-up): on when the model
+    // was requested as `auto` or when no model was chosen anywhere -
+    // an explicit pin of the provider's default model is still a pin.
+    let model_auto = raw_model == "auto"
+        || (cli.model.is_none()
+            && std::env::var("ZEN_MODEL")
+                .map(|v| v.is_empty())
+                .unwrap_or(true)
+            && merged.model.as_deref().is_none_or(|s| s.is_empty()));
     let btw_model = cli
         .btw_model
         .clone()
@@ -589,6 +613,7 @@ pub fn resolve_config_with_home(
 
     Ok(ResolvedConfig {
         model,
+        model_auto,
         btw_model,
         base_url,
         api_key,
@@ -1259,6 +1284,27 @@ mod tests {
         assert!(cfg.ollama);
         assert_eq!(cfg.model, "llama3.1");
         assert_eq!(cfg.base_url, "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn model_auto_defaults_on_and_pin_turns_it_off() {
+        let _env = env_lock();
+        clear_ollama_env();
+        // No model chosen anywhere: auto is on by default.
+        let cli = base_cli();
+        let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
+        assert!(cfg.model_auto);
+        // Pinning even the provider's default model is a pin, not
+        // auto (PR #72 review follow-up).
+        let mut cli = base_cli();
+        cli.model = Some(DEFAULT_MODEL.into());
+        let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
+        assert!(!cfg.model_auto);
+        // Asking for auto explicitly turns it on.
+        let mut cli = base_cli();
+        cli.model = Some("auto".into());
+        let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
+        assert!(cfg.model_auto);
     }
 
     #[test]

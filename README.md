@@ -100,6 +100,28 @@ ZEN_MAX_BUDGET_USD=5 ./target/release/zen        # same via env
 # --budget-warn-at 0.5 warns once at 50% (default 0.8). Free models never trip the cap.
 ```
 
+### Models: catalog, auto mode, `/provider`
+
+zen ships a small catalog of free models, scoped to the provider you
+are actually on: `/model` lists only the models the current provider
+serves, and a model id is never sent to another provider's gateway.
+
+Auto mode is on by default: with no model chosen, zen uses the current
+provider's best free model. In the REPL:
+
+- `/model` - list the current provider's models; the current one is
+  marked `(auto)` while auto mode is on.
+- `/model <name>` - pin a model; auto mode turns off. Pinning the
+  provider's default model is still a pin, not auto.
+- `/model auto` - turn auto mode back on.
+- `/provider <name>` - switch provider (`experientiallabs` or
+  `openrouter`, case-insensitive); the model resets to that provider's
+  best free model and auto mode turns on.
+
+Auto mode does not apply to Ollama: local models have no catalog, so
+`--provider ollama --model auto` is rejected - name a local model
+instead.
+
 ### Ollama (local models, $0)
 
 Run fully offline with [Ollama](https://ollama.com) - no API key, no rate
