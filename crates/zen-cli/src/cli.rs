@@ -745,6 +745,60 @@ pub enum SecretSubcommand {
         #[arg(long)]
         name: Option<String>,
     },
+
+    /// Register a secret name (Leader only, design section 4.3)
+    Register {
+        /// Canonical secret name, e.g. OPENROUTER_KEY
+        #[arg(long)]
+        name: String,
+
+        /// Class: seat or user
+        #[arg(long)]
+        class: String,
+
+        /// Service the secret unlocks, e.g. openrouter
+        #[arg(long)]
+        service: String,
+
+        /// Seat that owns the secret's lifecycle, or zen for a user secret
+        #[arg(long)]
+        owner: String,
+
+        /// Seat landing the registration: only zc-leader
+        #[arg(long = "by")]
+        by: String,
+
+        /// Default lifetime of an issuance, in days (at least 1)
+        #[arg(long = "default-until-days")]
+        default_until_days: i64,
+
+        /// Rotation interval, in days (at least 1)
+        #[arg(long = "rotation-days")]
+        rotation_days: i64,
+
+        /// The secret unlocks paid use: only Zen approves it
+        #[arg(long)]
+        paid: bool,
+
+        /// Reason for the registration: a group message id or task card id
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Deregister a secret name (Leader only, design section 4.3)
+    Deregister {
+        /// Canonical secret name, e.g. OPENROUTER_KEY
+        #[arg(long)]
+        name: String,
+
+        /// Seat landing the deregistration: only zc-leader
+        #[arg(long = "by")]
+        by: String,
+
+        /// Reason for the deregistration
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1456,6 +1510,67 @@ mod tests {
             },
             _ => panic!("expected Secret"),
         }
+        let cli = parse(&[
+            "secret",
+            "register",
+            "--name",
+            "OPENROUTER_KEY",
+            "--class",
+            "seat",
+            "--service",
+            "openrouter",
+            "--owner",
+            "zc-leader",
+            "--by",
+            "zc-leader",
+            "--default-until-days",
+            "7",
+            "--rotation-days",
+            "90",
+            "--reason",
+            "tin 8071",
+        ]);
+        match cli.subcommand {
+            Some(Commands::Secret(s)) => match s.command {
+                SecretSubcommand::Register {
+                    name,
+                    class,
+                    service,
+                    owner,
+                    by,
+                    default_until_days,
+                    rotation_days,
+                    paid,
+                    reason,
+                } => {
+                    assert_eq!(name, "OPENROUTER_KEY");
+                    assert_eq!(class, "seat");
+                    assert_eq!(service, "openrouter");
+                    assert_eq!(owner, "zc-leader");
+                    assert_eq!(by, "zc-leader");
+                    assert_eq!(default_until_days, 7);
+                    assert_eq!(rotation_days, 90);
+                    assert!(!paid);
+                    assert_eq!(reason, "tin 8071");
+                }
+                other => panic!("expected Register, got {:?}", other),
+            },
+            _ => panic!("expected Secret"),
+        }
+        let cli = parse(&[
+            "secret",
+            "deregister",
+            "--name",
+            "OPENROUTER_KEY",
+            "--by",
+            "zc-leader",
+            "--reason",
+            "service retired",
+        ]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Secret(s)) if matches!(s.command, SecretSubcommand::Deregister { .. })
+        ));
     }
 
     #[test]

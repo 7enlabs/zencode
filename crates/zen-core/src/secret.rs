@@ -17,7 +17,10 @@
 //!   one-shot issuance and for a user/Zen broker grant, 90-day rotation
 //!   for seat secrets, 30 days for paid-use secrets, 24-hour rotation
 //!   grace. A request may ask for less, never for more than the
-//!   registry default for that secret.
+//!   registry default for that secret - and a one-shot issuance or a
+//!   broker grant never lives past 24 hours even when the registry
+//!   default is longer; `request_secret` and `rotate_secret` enforce
+//!   that cap (review 5817478591, F1).
 //! - D3 Vault read path: the Leader or Z Ops reads the Vault and places
 //!   the value in the seat's runtime environment on its box. `issue`
 //!   records that act (issuer, time, Vault entry); it never carries
@@ -30,7 +33,8 @@
 //!   `approved`, `denied`, `issued`, `active`, `expired`, `revoked`,
 //!   `rotated`, and the CLI surface is `zen secret` with the
 //!   subcommands `request`, `list`, `approve`, `deny`, `issue`,
-//!   `revoke`, `rotate`, `status`.
+//!   `revoke`, `rotate`, `status`, plus `register` and `deregister`
+//!   (Leader only, review 5817478591, Q1).
 //! - D6 expiry needs a restart/reload: the check alone refuses after
 //!   the `until`, and the runtime must drop the value at its next
 //!   start. This module records the expiry and refuses the check; it
@@ -743,6 +747,14 @@ pub fn register_secret(
             input.name
         )));
     }
+    // Registration is a Leader act (design section 4.3): a seat may
+    // propose a registration, only the Leader lands it.
+    if input.registered_by != LEADER_APPROVER {
+        return Err(SecretError::forbidden(format!(
+            "only '{LEADER_APPROVER}' registers a secret: '{}' cannot register '{}'",
+            input.registered_by, input.name
+        )));
+    }
     refuse_shaped("service", &input.service)?;
     refuse_shaped("owner", &input.owner)?;
     refuse_shaped("reason", &input.reason)?;
@@ -798,6 +810,13 @@ pub fn deregister_secret(
     if entry.deregistered {
         return Err(SecretError::conflict(format!(
             "secret '{name}' is already deregistered"
+        )));
+    }
+    // Deregistration is a registration line, so the same Leader-only
+    // rule applies (design section 4.3).
+    if by != LEADER_APPROVER {
+        return Err(SecretError::forbidden(format!(
+            "only '{LEADER_APPROVER}' deregisters a secret: '{by}' cannot deregister '{name}'"
         )));
     }
     refuse_shaped("reason", reason)?;
@@ -861,6 +880,24 @@ fn next_request_id(requests: &[SecretRequest], now: DateTime<Utc>) -> String {
     format!("{prefix}{:03}", count + 1)
 }
 
+/// D2: the longest `until` a new request for this entry may carry.
+/// A one-shot issuance and a user-class broker grant live at most 24
+/// hours, even when the registry default for the secret is longer;
+/// anything else lives at most the registry default. The registry
+/// default is at least 1 day by construction, so the 24-hour cap is
+/// always the binding one when it applies.
+fn max_until(entry: &RegistryEntry, one_shot: bool, now: DateTime<Utc>) -> DateTime<Utc> {
+    let default_until = now + Duration::days(entry.default_until_days);
+    let short_cap = if one_shot {
+        now + Duration::hours(ONE_SHOT_LIFETIME_HOURS)
+    } else if entry.class == SecretClass::User {
+        now + Duration::hours(BROKER_GRANT_LIFETIME_HOURS)
+    } else {
+        return default_until;
+    };
+    default_until.min(short_cap)
+}
+
 /// File a request (state: `requested`). Refused without purpose, scope,
 /// or until; refused for an unregistered name; refused for a user/Zen
 /// secret asked as a value; refused when a field carries a
@@ -912,7 +949,24 @@ pub fn request_secret(
         )));
     }
     // A request may ask for less, never for more than the registry
-    // default for that secret without a Leader decision (D2).
+    // default for that secret without a Leader decision (D2). A
+    // one-shot issuance or a broker grant is refused past 24 hours
+    // even when the registry default is longer (F1): the constants
+    // above are the cap, not a comment.
+    if input.one_shot || entry.class == SecretClass::User {
+        let kind = if input.one_shot {
+            "one-shot"
+        } else {
+            "broker grant"
+        };
+        let cap = max_until(entry, input.one_shot, now);
+        if until > cap {
+            return Err(SecretError::validation(format!(
+                "lifetime-exceeds-24h: until {} is past the 24-hour limit for a {kind} of '{}'; ask for less, or get a Leader decision",
+                input.until, input.name
+            )));
+        }
+    }
     let default_until = now + Duration::days(entry.default_until_days);
     if until > default_until {
         return Err(SecretError::validation(format!(
@@ -1042,8 +1096,11 @@ pub fn approve_secret(
     Ok(req)
 }
 
-/// Move a request to `denied`, with the reason named. A denied request
-/// is never re-approved in place: the seat files a new request.
+/// Move a request to `denied`, with the reason named. Only the
+/// approver for the secret class denies (design section 4.4: the
+/// `denied` actor is "the approver", the same D1 authority as
+/// `approve`). A denied request is never re-approved in place: the
+/// seat files a new request.
 pub fn deny_secret(
     store: &SecretStore,
     request_id: &str,
@@ -1056,6 +1113,14 @@ pub fn deny_secret(
         return Err(SecretError::conflict(format!(
             "request '{request_id}' is {} and cannot be denied; only a requested request can be denied",
             req.state.as_str()
+        )));
+    }
+    let registry = load_registry(store)?;
+    let required = required_approver(&req, &registry);
+    if by != required {
+        return Err(SecretError::forbidden(format!(
+            "denier '{by}' lacks the authority for this request: a {} secret is denied by '{required}'",
+            req.class.as_str()
         )));
     }
     refuse_shaped("reason", reason)?;
@@ -1164,7 +1229,9 @@ pub fn issue_secret(
 }
 
 /// Move a live issuance to `revoked`. Immediate: the next check
-/// refuses. Revocation never deletes the request record.
+/// refuses. Only the issuer who placed the value, or the Leader,
+/// revokes (design sections 4.4 and 4.7: "the issuer or the Leader").
+/// Revocation never deletes the request record.
 pub fn revoke_secret(
     store: &SecretStore,
     request_id: &str,
@@ -1177,6 +1244,12 @@ pub fn revoke_secret(
         return Err(SecretError::conflict(format!(
             "request '{request_id}' is {} and has no live issuance to revoke",
             req.state.as_str()
+        )));
+    }
+    let issuer = req.issued_by.as_deref().unwrap_or("");
+    if by != issuer && by != LEADER_APPROVER {
+        return Err(SecretError::forbidden(format!(
+            "revoker '{by}' cannot revoke request '{request_id}': only the issuer '{issuer}' or '{LEADER_APPROVER}' revokes"
         )));
     }
     refuse_shaped("reason", reason)?;
@@ -1248,7 +1321,9 @@ pub fn rotate_secret(
         ),
         now,
     )?;
-    let until = now + Duration::days(entry.default_until_days);
+    // The new request carries the same cap as a fresh request: a
+    // broker grant rotated here lives at most 24 hours (D2, F1).
+    let until = max_until(&entry, false, now);
     let new_req = SecretRequest {
         v: 1,
         request_id: next_request_id(&requests, now),
@@ -2257,6 +2332,213 @@ mod tests {
             err.to_string().contains("lifetime-exceeds-default"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn one_shot_request_beyond_24h_is_refused() {
+        let (_dir, store) = temp_store("oneshot24");
+        let now = fixed_now();
+        register_openrouter(&store, now);
+        // A one-shot asked past 24 hours is refused, even though the
+        // registry default for the secret is 7 days (F1).
+        let err = request_secret(
+            &store,
+            RequestInput {
+                name: "OPENROUTER_KEY".to_string(),
+                seat: "zd-developer".to_string(),
+                task_id: None,
+                purpose: "one call".to_string(),
+                scope: "task:DS-7".to_string(),
+                until: rfc3339(now + Duration::days(2)),
+                one_shot: true,
+                broker_action: None,
+            },
+            now,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), exit_code::VALIDATION);
+        assert!(err.to_string().contains("lifetime-exceeds-24h"), "{err}");
+        assert!(load_requests(&store).unwrap().is_empty());
+        // Exactly 24 hours is the cap, not past it: allowed.
+        let at_cap = request_openrouter(&store, "zd-developer", now + Duration::hours(24), true);
+        assert_eq!(at_cap.until, rfc3339(now + Duration::hours(24)));
+        // A task-scoped request is unchanged: 7 days still allowed.
+        let task = request_openrouter(&store, "zd-developer", now + Duration::days(7), false);
+        assert_eq!(task.until, rfc3339(now + Duration::days(7)));
+    }
+
+    #[test]
+    fn broker_grant_beyond_24h_is_refused() {
+        let (_dir, store) = temp_store("broker24");
+        let now = fixed_now();
+        register_user_secret(&store, now);
+        let broker_request = |until: DateTime<Utc>| {
+            request_secret(
+                &store,
+                RequestInput {
+                    name: "ZEN_PERSONAL_LOGIN".to_string(),
+                    seat: "zd-developer".to_string(),
+                    task_id: Some("DS-7".to_string()),
+                    purpose: "read the inbox once".to_string(),
+                    scope: "task:DS-7".to_string(),
+                    until: rfc3339(until),
+                    one_shot: false,
+                    broker_action: Some("read inbox".to_string()),
+                },
+                now,
+            )
+        };
+        // Past 24 hours is refused, even though the registry default
+        // for this secret is 1 day (F1).
+        let err = broker_request(now + Duration::days(2)).unwrap_err();
+        assert_eq!(err.code(), exit_code::VALIDATION);
+        assert!(err.to_string().contains("lifetime-exceeds-24h"), "{err}");
+        // 12 hours is inside the cap: allowed.
+        let grant = broker_request(now + Duration::hours(12)).unwrap();
+        assert_eq!(grant.until, rfc3339(now + Duration::hours(12)));
+    }
+
+    #[test]
+    fn rotation_of_broker_grant_caps_at_24h() {
+        let (_dir, store) = temp_store("brokerotate");
+        let now = fixed_now();
+        // A user secret whose registry default is 7 days: without the
+        // cap, the rotated grant would live 7 days (the old code did).
+        register_secret(
+            &store,
+            RegisterInput {
+                name: "ZEN_PERSONAL_LOGIN".to_string(),
+                class: SecretClass::User,
+                service: "personal account".to_string(),
+                owner: "zen".to_string(),
+                registered_by: "zc-leader".to_string(),
+                default_until_days: 7,
+                rotation_days: 30,
+                paid: false,
+                reason: "broker-only personal login".to_string(),
+            },
+            now,
+        )
+        .unwrap();
+        let req = request_secret(
+            &store,
+            RequestInput {
+                name: "ZEN_PERSONAL_LOGIN".to_string(),
+                seat: "zd-developer".to_string(),
+                task_id: Some("DS-7".to_string()),
+                purpose: "read the inbox once".to_string(),
+                scope: "task:DS-7".to_string(),
+                until: rfc3339(now + Duration::hours(12)),
+                one_shot: false,
+                broker_action: Some("read inbox".to_string()),
+            },
+            now,
+        )
+        .unwrap();
+        approve_secret(&store, &req.request_id, ZEN_APPROVER, "tin 8071", now).unwrap();
+        issue_secret(&store, &req.request_id, OPERATOR_ISSUER, now).unwrap();
+        // The owner rotates; the new broker grant lives at most 24
+        // hours, not the registry default (F1, via rotate_secret).
+        let rotated = rotate_secret(&store, "ZEN_PERSONAL_LOGIN", "zen", "routine", now).unwrap();
+        assert_eq!(rotated.until, rfc3339(now + Duration::hours(24)));
+        assert_eq!(rotated.broker_action.as_deref(), Some("read inbox"));
+        assert_eq!(rotated.rotates.as_deref(), Some(req.request_id.as_str()));
+    }
+
+    #[test]
+    fn deny_requires_the_approver() {
+        let (_dir, store) = temp_store("denyauth");
+        let now = fixed_now();
+        register_openrouter(&store, now);
+        register_user_secret(&store, now);
+        // A seat secret is denied by the Leader only: the requesting
+        // seat and Zen are both refused (Q2, design section 4.4).
+        let req = request_openrouter(&store, "zd-developer", now + Duration::days(1), false);
+        let err = deny_secret(&store, &req.request_id, "zd-developer", "no", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        let err = deny_secret(&store, &req.request_id, ZEN_APPROVER, "no", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        let denied = deny_secret(&store, &req.request_id, LEADER_APPROVER, "no", now).unwrap();
+        assert_eq!(denied.state, RequestState::Denied);
+        // A user secret is denied by Zen only: the Leader is refused.
+        let broker = request_secret(
+            &store,
+            RequestInput {
+                name: "ZEN_PERSONAL_LOGIN".to_string(),
+                seat: "zd-developer".to_string(),
+                task_id: None,
+                purpose: "read the inbox once".to_string(),
+                scope: "task:DS-7".to_string(),
+                until: rfc3339(now + Duration::hours(12)),
+                one_shot: false,
+                broker_action: Some("read inbox".to_string()),
+            },
+            now,
+        )
+        .unwrap();
+        let err = deny_secret(&store, &broker.request_id, LEADER_APPROVER, "no", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        let denied = deny_secret(&store, &broker.request_id, ZEN_APPROVER, "no", now).unwrap();
+        assert_eq!(denied.state, RequestState::Denied);
+    }
+
+    #[test]
+    fn revoke_requires_issuer_or_leader() {
+        let (_dir, store) = temp_store("revokeauth");
+        let now = fixed_now();
+        register_openrouter(&store, now);
+        // Issued by Z Ops: the requesting seat and Zen are refused.
+        let issued = issue_openrouter(&store, "zd-developer", now);
+        let err = revoke_secret(&store, &issued.request_id, "zd-developer", "no", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        let err = revoke_secret(&store, &issued.request_id, ZEN_APPROVER, "no", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        let revoked =
+            revoke_secret(&store, &issued.request_id, OPERATOR_ISSUER, "no", now).unwrap();
+        assert_eq!(revoked.state, RequestState::Revoked);
+        // A second issuance is revoked by the Leader (Q2, design
+        // sections 4.4 and 4.7).
+        let issued = issue_openrouter(&store, "zd-developer", now);
+        let revoked =
+            revoke_secret(&store, &issued.request_id, LEADER_APPROVER, "no", now).unwrap();
+        assert_eq!(revoked.state, RequestState::Revoked);
+    }
+
+    #[test]
+    fn register_and_deregister_are_leader_only() {
+        let (_dir, store) = temp_store("regauth");
+        let now = fixed_now();
+        // A seat may propose a registration; only the Leader lands it
+        // (Q1, design section 4.3).
+        let err = register_secret(
+            &store,
+            RegisterInput {
+                name: "OTHER_KEY".to_string(),
+                class: SecretClass::Seat,
+                service: "other".to_string(),
+                owner: "zc-leader".to_string(),
+                registered_by: "zd-developer".to_string(),
+                default_until_days: 7,
+                rotation_days: 90,
+                paid: false,
+                reason: "proposed by a seat".to_string(),
+            },
+            now,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        assert!(load_registry(&store).unwrap().is_empty());
+        register_openrouter(&store, now);
+        let err = deregister_secret(
+            &store,
+            "OPENROUTER_KEY",
+            "zd-developer",
+            "a seat tries",
+            now,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        deregister_secret(&store, "OPENROUTER_KEY", LEADER_APPROVER, "retired", now).unwrap();
     }
 
     #[test]

@@ -16,9 +16,10 @@ use chrono::Utc;
 use crate::cli::{OutputFormat, SecretArgs, SecretSubcommand};
 use crate::{coded_error, exit_code};
 use zen_core::secret::{
-    approve_secret, check_use, deny_secret, issue_secret, list_requests, record_use,
-    request_secret, revoke_secret, rotate_secret, secret_status, CheckOutcome, RequestInput,
-    RequestState, SecretRequest, SecretStatus, SecretStore, UseOutcome,
+    approve_secret, check_use, deny_secret, deregister_secret, issue_secret, list_requests,
+    record_use, register_secret, request_secret, revoke_secret, rotate_secret, secret_status,
+    CheckOutcome, RegisterInput, RegistryEntry, RequestInput, RequestState, SecretClass,
+    SecretRequest, SecretStatus, SecretStore, UseOutcome,
 };
 
 fn print_json(value: &serde_json::Value, raw: bool) -> Result<()> {
@@ -72,6 +73,21 @@ fn render_status_text(status: &SecretStatus) -> String {
         ));
     }
     out
+}
+
+fn render_entry_text(entry: &RegistryEntry) -> String {
+    format!(
+        "{} class={} service={} owner={} registered-by={} default-until-days={} rotation-days={} paid={} deregistered={}",
+        entry.name,
+        entry.class.as_str(),
+        entry.service,
+        entry.owner,
+        entry.registered_by,
+        entry.default_until_days,
+        entry.rotation_days,
+        entry.paid,
+        entry.deregistered
+    )
 }
 
 /// The seat filing a request: `--seat`, or the `ZEN_SEAT` environment
@@ -247,6 +263,61 @@ pub fn run_secret(
                     OutputFormat::Text => {
                         println!("rotation {}", render_request_text(&req));
                     }
+                }
+            }
+            Ok(0)
+        }
+        SecretSubcommand::Register {
+            name,
+            class,
+            service,
+            owner,
+            by,
+            default_until_days,
+            rotation_days,
+            paid,
+            reason,
+        } => {
+            let class = SecretClass::parse(class).ok_or_else(|| {
+                coded_error(
+                    exit_code::VALIDATION,
+                    format!("invalid class '{class}': expected seat or user"),
+                )
+            })?;
+            let entry = register_secret(
+                &store,
+                RegisterInput {
+                    name: name.clone(),
+                    class,
+                    service: service.clone(),
+                    owner: owner.clone(),
+                    registered_by: by.clone(),
+                    default_until_days: *default_until_days,
+                    rotation_days: *rotation_days,
+                    paid: *paid,
+                    reason: reason.clone(),
+                },
+                now,
+            )
+            .map_err(map_err)?;
+            if !quiet {
+                match format {
+                    OutputFormat::Json | OutputFormat::StreamJson => {
+                        print_json(&serde_json::to_value(&entry)?, raw)?
+                    }
+                    OutputFormat::Text => println!("registered {}", render_entry_text(&entry)),
+                }
+            }
+            Ok(0)
+        }
+        SecretSubcommand::Deregister { name, by, reason } => {
+            let entry = deregister_secret(&store, name, by, reason, now).map_err(map_err)?;
+            if !quiet {
+                match format {
+                    OutputFormat::Json | OutputFormat::StreamJson => {
+                        print_json(&serde_json::to_value(&entry)?, raw)?
+                    }
+                    OutputFormat::Text => println!("deregistered {}", render_entry_text(&entry)),
                 }
             }
             Ok(0)
@@ -473,5 +544,103 @@ mod tests {
         );
         let requests = load_requests(&Store::new(home.join(".zen"))).unwrap();
         assert_eq!(requests[0].state, RequestState::Revoked);
+    }
+
+    fn register_args(by: &str) -> SecretArgs {
+        SecretArgs {
+            command: SecretSubcommand::Register {
+                name: "OPENROUTER_KEY".to_string(),
+                class: "seat".to_string(),
+                service: "openrouter".to_string(),
+                owner: "zc-leader".to_string(),
+                by: by.to_string(),
+                default_until_days: 7,
+                rotation_days: 90,
+                paid: false,
+                reason: "tin 8071".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn secret_register_deregister_round_trip() {
+        let home = temp_home("regcli");
+        assert_eq!(
+            run_secret(
+                &register_args("zc-leader"),
+                &OutputFormat::Text,
+                true,
+                false,
+                Some(&home)
+            )
+            .unwrap(),
+            0
+        );
+        // The registry now holds the name: a request files cleanly.
+        let until =
+            (Utc::now() + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        run_secret(
+            &request_args(&until),
+            &OutputFormat::Text,
+            true,
+            false,
+            Some(&home),
+        )
+        .unwrap();
+        let deregister = SecretArgs {
+            command: SecretSubcommand::Deregister {
+                name: "OPENROUTER_KEY".to_string(),
+                by: "zc-leader".to_string(),
+                reason: "service retired".to_string(),
+            },
+        };
+        assert_eq!(
+            run_secret(&deregister, &OutputFormat::Text, true, false, Some(&home)).unwrap(),
+            0
+        );
+        let entries = zen_core::secret::load_registry(&Store::new(home.join(".zen"))).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].deregistered);
+        // A new request under the deregistered name is refused.
+        let err = run_secret(
+            &request_args(&until),
+            &OutputFormat::Text,
+            true,
+            false,
+            Some(&home),
+        )
+        .unwrap_err();
+        assert_eq!(crate::exit_code_for_error(&err), exit_code::VALIDATION);
+    }
+
+    #[test]
+    fn secret_register_is_leader_only_through_cli() {
+        let home = temp_home("regauth");
+        let err = run_secret(
+            &register_args("zd-developer"),
+            &OutputFormat::Text,
+            true,
+            false,
+            Some(&home),
+        )
+        .unwrap_err();
+        assert_eq!(crate::exit_code_for_error(&err), exit_code::FORBIDDEN);
+        // An unknown class is a validation error, not a registration.
+        let bad_class = SecretArgs {
+            command: SecretSubcommand::Register {
+                name: "OPENROUTER_KEY".to_string(),
+                class: "shared".to_string(),
+                service: "openrouter".to_string(),
+                owner: "zc-leader".to_string(),
+                by: "zc-leader".to_string(),
+                default_until_days: 7,
+                rotation_days: 90,
+                paid: false,
+                reason: "tin 8071".to_string(),
+            },
+        };
+        let err =
+            run_secret(&bad_class, &OutputFormat::Text, true, false, Some(&home)).unwrap_err();
+        assert_eq!(crate::exit_code_for_error(&err), exit_code::VALIDATION);
     }
 }
