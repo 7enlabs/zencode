@@ -2392,6 +2392,8 @@ mod model_picker_tests {
 
         // The request the agent would send carries the gateway id,
         // not the catalog id the gateway rejects with HTTP 400.
+        // The env lock only guards setup; drop it before the await.
+        drop(_env);
         let req = zen_core::ChatRequest {
             model: agent.config.model.clone(),
             messages: vec![zen_core::ChatMessage::user("hi")],

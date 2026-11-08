@@ -60,7 +60,7 @@ pub fn catalog_entry(id: &str) -> Option<&'static CatalogModel> {
 /// Model string to put in the request for an id. Unknown ids (e.g. a
 /// probed pool entry, which already is a gateway id for the current
 /// provider) pass through unchanged.
-pub fn gateway_model_id<'a>(id: &'a str) -> &'a str {
+pub fn gateway_model_id(id: &str) -> &str {
     catalog_entry(id).map(|m| m.gateway_id).unwrap_or(id)
 }
 
