@@ -103,11 +103,13 @@ conflict) and line 15 (4 is validation).
 Leader decision tin 7803, 08/11/2026. The new replay condition in
 `claim_task_cas` is: the idempotency key on the card matches the
 retry key AND `lease.holder == by` AND `lease.version >=
-expected + 1` AND the card is not effectively ORPHAN.
+expected + 1` AND the card's `orphaned` flag is not set.
 
-1. A card the sweep has parked as ORPHAN does NOT replay: the
-   `!orphaned` arm (effective state derived by `aux_state`, line
-   590) is added; the retry falls through to the version check and
+1. A card the sweep has parked as ORPHAN does NOT replay: the replay arm checks the persisted `orphaned` flag directly,
+   not the time-derived effective state from `aux_state` (a heartbeat
+   can make the lease live again while the flag stays set, so the
+   derived state would wrongly allow a replay; review of PR #68, ZD
+   Developer, 08/11/2026); the retry falls through to the version check and
    returns CONFLICT (the lease version is still `expected + 1`,
    which differs from `expected`), so the holder re-reads the state
    and claims fresh. A fresh claim after ORPHAN already works: a new
@@ -121,10 +123,12 @@ expected + 1` AND the card is not effectively ORPHAN.
    the holder and never changes the key.
 3. The CONFLICT exit code stays 7 (see Q9).
 
-Six new tests cover the change (tasks.rs test module): replay after
+Seven new tests cover the change (tasks.rs test module): replay after
 one heartbeat, after two heartbeats, after another seat's heartbeat,
 conflict after another seat's CAS claim, refusal after heartbeat
-then dead-letter, and conflict (not replay) after an orphan sweep.
+then dead-letter, conflict (not replay) after an orphan sweep, and
+conflict (not replay) after an orphan sweep followed by a heartbeat
+that makes the lease live again (review of PR #68).
 The pre-existing intervening-claim conflict test is kept unchanged,
 and a full-suite regression run covers the rest. PR deadline
 19:30 18/11/2026.

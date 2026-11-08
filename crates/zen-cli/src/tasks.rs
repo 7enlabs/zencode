@@ -361,7 +361,10 @@ pub fn claim_task(
 ///   snapshot. A heartbeat between the claim and the retry only bumps
 ///   the version, so the retry stays a replay (Leader tin 7803,
 ///   08/11/2026); a card the sweep has parked as ORPHAN is never
-///   replayed.
+///   replayed. The ORPHAN check reads the persisted `orphaned` flag,
+///   not the time-derived effective state: a heartbeat can make the
+///   lease live again while the flag stays set, and such a card must
+///   still never replay (review of PR #68, ZD Developer, 08/11/2026).
 ///
 /// Returns `None` when the registry has no task with `id`; in that
 /// case nothing is written.
@@ -385,7 +388,7 @@ pub fn claim_task_cas(
     let key = claim_idempotency_key(id, by, expected);
     let current_version = existing.lease.as_ref().map_or(0, |l| l.version);
     if existing.idempotency_key.as_deref() == Some(key.as_str())
-        && aux_state(existing, now) != Some("orphan")
+        && !existing.orphaned
         && existing
             .lease
             .as_ref()
@@ -1511,6 +1514,52 @@ mod tests {
         }
         // Seed + claim + sweep; the refused retry writes nothing.
         assert_eq!(registry_lines(&path), 3);
+    }
+
+    #[test]
+    fn cas_replay_after_orphan_sweep_then_heartbeat_is_conflict_not_replayed() {
+        let path = temp_registry("cas_replay_orphan_hb");
+        let mut seeded = card("B-4", "fix install");
+        seeded.status = TaskStatus::Doing;
+        append_snapshot(&path, &seeded).unwrap();
+        claim_task_cas(&path, "B-4", "zc-developer", Some(0), fixed_now())
+            .unwrap()
+            .unwrap();
+        // One sweep past expiry returns the card to the queue as ORPHAN.
+        let outcome = sweep_tasks(&path, fixed_now_plus_hours(9), false).unwrap();
+        assert_eq!(outcome.entries.len(), 1);
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].orphaned);
+        // A heartbeat makes the lease live again but does not clear the
+        // parked flag: the card is still ORPHAN, so the retry must not
+        // replay (review of PR #68, ZD Developer, 08/11/2026).
+        let hb = heartbeat_task(&path, "B-4", "zc-developer", fixed_now_plus_hours(9))
+            .unwrap()
+            .expect("heartbeat recorded");
+        assert!(!hb.flagged);
+        let cards = load_registry(&path).unwrap();
+        assert!(cards[0].orphaned);
+        assert_eq!(aux_state(&cards[0], fixed_now_plus_hours(9)), None);
+        let cas = claim_task_cas(
+            &path,
+            "B-4",
+            "zc-developer",
+            Some(0),
+            fixed_now_plus_hours(9),
+        )
+        .unwrap()
+        .expect("task exists");
+        match cas {
+            CasClaim::Conflict { expected, actual } => {
+                assert_eq!(expected, 0);
+                assert_eq!(actual, 2);
+            }
+            CasClaim::Recorded(_) => panic!("expected Conflict, got Recorded"),
+            CasClaim::Replayed(_) => panic!("expected Conflict, got Replayed"),
+            CasClaim::DeadLetter => panic!("expected Conflict, got DeadLetter"),
+        }
+        // Seed + claim + sweep + heartbeat; the refused retry writes nothing.
+        assert_eq!(registry_lines(&path), 4);
     }
 
     #[test]
