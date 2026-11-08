@@ -585,7 +585,13 @@ fn untrusted_notice(skipped: &[String]) -> String {
 async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32> {
     use std::io::IsTerminal;
 
-    let cfg = settings::resolve_config_with_home(cli, cwd, home)?;
+    let mut cfg = settings::resolve_config_with_home(cli, cwd, home)?;
+    // Same provider routing as the REPL (PR #71 review F2): a
+    // catalog model must reach its own provider with the id that
+    // provider accepts, or the first headless prompt fails with
+    // the same HTTP 400. The plan flow re-resolves its own
+    // config and routes that one itself (PR #71 review F10).
+    settings::route_catalog_model(&mut cfg)?;
     if cfg.ollama {
         crate::ollama::ensure_ollama_ready(&cfg.base_url, &cfg.model).await?;
     }

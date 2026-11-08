@@ -215,7 +215,15 @@ fn welcome_box(
 }
 
 pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> {
-    let cfg = crate::settings::resolve_config_with_home(cli, cwd, home)?;
+    let mut cfg = crate::settings::resolve_config_with_home(cli, cwd, home)?;
+    // The key resolved for the configured route, kept verbatim: a
+    // /model round trip through another provider restores this key
+    // instead of leaking that provider's key (PR #71 review F1).
+    let home_api_key = cfg.api_key.clone();
+    // A catalog id is a picker label, not a wire id: route the model
+    // to its serving provider (gateway id, base URL, key) so the very
+    // first prompt does not fail with the same HTTP 400.
+    crate::settings::route_catalog_model(&mut cfg)?;
     if cfg.ollama {
         crate::ollama::ensure_ollama_ready(&cfg.base_url, &cfg.model).await?;
     }
@@ -334,6 +342,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         mcp_status: assembly.mcp_status.clone(),
         interrupts: interrupts.as_mut(),
         recorder: assembly.recorder.clone(),
+        home_api_key,
         goal: None,
         personality: repl_polish::Personality::default(),
         theme: repl_polish::Theme::default(),
@@ -373,7 +382,17 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     }
     let first_prompt = cli.prompt.join(" ").trim().to_string();
     if !first_prompt.is_empty() {
-        match handle_line(&first_prompt, cli, cwd, home, &cfg, &mut repl, &mut agent).await {
+        match handle_line(
+            &first_prompt,
+            cli,
+            cwd,
+            home,
+            &mut cfg,
+            &mut repl,
+            &mut agent,
+        )
+        .await
+        {
             Ok(LineAction::Exit) => {
                 crate::agent_run::run_session_end(
                     &agent.hooks,
@@ -436,7 +455,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
             continue;
         }
 
-        match handle_line(trimmed, cli, cwd, home, &cfg, &mut repl, &mut agent).await {
+        match handle_line(trimmed, cli, cwd, home, &mut cfg, &mut repl, &mut agent).await {
             Ok(LineAction::Exit) => break,
             Ok(LineAction::Continue) => {}
             Err(e) => eprintln!("error: {e:#}"),
@@ -475,6 +494,10 @@ struct ReplState<'a> {
     interrupts: Option<&'a mut ReplInterrupts>,
 
     recorder: Option<Arc<crate::eventlog::Recorder>>,
+
+    // API key resolved at startup for the configured route; a /model
+    // round trip restores it (see apply_model_switch, review F1).
+    home_api_key: Option<String>,
 
     goal: Option<String>,
 
@@ -750,7 +773,7 @@ async fn handle_line(
     cli: &Cli,
     cwd: &Path,
     home: Option<&Path>,
-    cfg: &crate::settings::ResolvedConfig,
+    cfg: &mut crate::settings::ResolvedConfig,
     repl: &mut ReplState<'_>,
     agent: &mut zen_agent::Agent,
 ) -> Result<LineAction> {
@@ -983,7 +1006,14 @@ fn format_model_list(current: &str, rows: &[ModelRow]) -> String {
     let show_latency = row_width < 56;
     let show_ctx = row_width < 64;
     for (i, row) in rows.iter().enumerate() {
-        let marker = if row.id == current { "▸ " } else { "  " };
+        // The current model is stored as the gateway id the
+        // provider accepts, so a catalog row also matches when its
+        // gateway id is the current one.
+        let marker = if row.id == current || crate::models::gateway_model_id(&row.id) == current {
+            "▸ "
+        } else {
+            "  "
+        };
         let latency = match row.latency_ms {
             Some(ms) => format!("{ms}ms"),
             None => "—".to_string(),
@@ -1039,12 +1069,75 @@ fn pick_model(arg: &str, rows: &[ModelRow]) -> Result<String, String> {
     }
 }
 
+/// Switch the REPL to a picked model, routing the request to the
+/// provider that actually serves it. A catalog entry carries both its
+/// provider and the gateway id the provider accepts; picking one must
+/// change the model string, the base URL, the API key and the live
+/// backend together - changing only the string is the HTTP 400
+/// "Invalid Model Name" bug (the old code sent OpenRouter-style ids to
+/// the Experiential gateway, and experiential ids with the wrong shape).
+/// Returns the line to print, or an error to print; on error the switch
+/// is refused and the previous model and backend stay untouched.
+fn apply_model_switch(
+    cfg: &mut crate::settings::ResolvedConfig,
+    agent: &mut zen_agent::Agent,
+    recorder: Option<&Arc<crate::eventlog::Recorder>>,
+    home: Option<&Path>,
+    home_api_key: &Option<String>,
+    id: &str,
+) -> Result<String, String> {
+    let Some(entry) = crate::models::catalog_entry(id) else {
+        // Not a catalog entry (e.g. a probed pool id, already a gateway
+        // id for the current provider): only the string changes.
+        agent.config.model = id.to_string();
+        cfg.model = id.to_string();
+        return Ok(format!("model set to {id}"));
+    };
+    let Some(base_url) = crate::models::provider_base_url(entry.provider) else {
+        agent.config.model = entry.gateway_id.to_string();
+        cfg.model = entry.gateway_id.to_string();
+        return Ok(format!(
+            "model set to {} (sending {})",
+            id, entry.gateway_id
+        ));
+    };
+    let key = match crate::models::provider_api_key_env(entry.provider) {
+        Some(env) => match std::env::var(env).ok().filter(|v| !v.is_empty()) {
+            Some(k) => Some(k),
+            None => {
+                return Err(format!(
+                    "cannot switch to {id}: {env} is not set; keeping {}",
+                    agent.config.model
+                ));
+            }
+        },
+        // No dedicated env var: the home provider. Restore the key
+        // resolved at startup - never cfg.api_key, which a previous
+        // switch may have overwritten with another provider's key
+        // (PR #71 review F1).
+        None => home_api_key.clone(),
+    };
+    if base_url != cfg.base_url || key != cfg.api_key {
+        cfg.base_url = base_url.to_string();
+        cfg.api_key = key;
+        agent.llm = crate::eventlog::wrap(cfg.gated_llm_client(agent.sink.clone(), home), recorder);
+    }
+    agent.config.model = entry.gateway_id.to_string();
+    // Keep cfg.model in step with what is actually sent, so anything
+    // that re-reads it later sees the effective model (review F7).
+    cfg.model = entry.gateway_id.to_string();
+    Ok(format!(
+        "model set to {} (sending {} to {})",
+        id, entry.gateway_id, base_url
+    ))
+}
+
 async fn handle_slash(
     line: &str,
     cli: &Cli,
     cwd: &Path,
     home: Option<&Path>,
-    cfg: &crate::settings::ResolvedConfig,
+    cfg: &mut crate::settings::ResolvedConfig,
     repl: &mut ReplState<'_>,
     agent: &mut zen_agent::Agent,
 ) -> Result<LineAction> {
@@ -1127,10 +1220,19 @@ async fn handle_slash(
             } else {
                 match pick_model(&arg, &rows) {
                     Ok(id) => {
-                        agent.config.model = id.clone();
-                        println!("model set to {}", id);
+                        match apply_model_switch(
+                            cfg,
+                            agent,
+                            repl.recorder.as_ref(),
+                            home,
+                            &repl.home_api_key,
+                            &id,
+                        ) {
+                            Ok(msg) => println!("{msg}"),
+                            Err(e) => eprintln!("{e}"),
+                        }
                     }
-                    Err(e) => eprintln!("{}", e),
+                    Err(e) => eprintln!("{e}"),
                 }
             }
         }
@@ -1838,7 +1940,9 @@ async fn handle_slash(
                         .as_ref()
                         .filter(|m| !m.is_empty() && *m != "inherit")
                     {
-                        agent.config.model = m.clone();
+                        // Translate a catalog id to the gateway id,
+                        // as /model does (PR #71 review F6).
+                        agent.config.model = crate::models::gateway_model_id(m).to_string();
                     }
                     if !c.allowed_tools.is_empty() {
                         agent.permissions = crate::agent_run::build_permissions_with(
@@ -2106,9 +2210,9 @@ mod model_picker_tests {
     fn rows() -> Vec<ModelRow> {
         vec![
             ModelRow {
-                id: "google/gemini-4-argon:free".to_string(),
-                provider: "google".to_string(),
-                short: "gemini-4-argon:free".to_string(),
+                id: "deepseek-v4.1-flash".to_string(),
+                provider: "experientiallabs".to_string(),
+                short: "deepseek-v4.1-flash".to_string(),
                 context_window: Some(1_000_000),
                 latency_ms: Some(210),
             },
@@ -2134,8 +2238,8 @@ mod model_picker_tests {
         let out = format_model_list("cohere/north-mini-code:free", &rows());
         assert!(out.contains("Models — current: north-mini-code:free"));
         // Short name + provider + context + latency columns.
-        assert!(out.contains("1. gemini-4-argon:free"));
-        assert!(out.contains("google"));
+        assert!(out.contains("1. deepseek-v4.1-flash"));
+        assert!(out.contains("experientiallabs"));
         assert!(out.contains("1M ctx"));
         assert!(out.contains("210ms"));
         // Current row gets the leading ▸ marker.
@@ -2148,10 +2252,7 @@ mod model_picker_tests {
 
     #[test]
     fn pick_by_number_is_one_based() {
-        assert_eq!(
-            pick_model("1", &rows()).unwrap(),
-            "google/gemini-4-argon:free"
-        );
+        assert_eq!(pick_model("1", &rows()).unwrap(), "deepseek-v4.1-flash");
         assert_eq!(
             pick_model("3", &rows()).unwrap(),
             "nvidia/nemotron-3-nano:free"
@@ -2182,12 +2283,333 @@ mod model_picker_tests {
         assert!(pick_model("does-not-exist", &rows()).is_err());
     }
 
+    // Mock backend that records the model string each request
+    // actually carries - the wire id, not the picker label.
+    struct RecordingBackend {
+        models: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl zen_core::LlmBackend for RecordingBackend {
+        async fn chat(&self, req: zen_core::ChatRequest) -> anyhow::Result<zen_core::ChatResponse> {
+            self.models.lock().unwrap().push(req.model);
+            Ok(zen_core::ChatResponse {
+                message: zen_core::ChatMessage::assistant(Some("ok".into()), None),
+                usage: zen_core::Usage::default(),
+                finish_reason: None,
+            })
+        }
+    }
+
+    struct AllowAll;
+
+    impl zen_core::PermissionChecker for AllowAll {
+        fn check(
+            &self,
+            _name: &str,
+            _input: &serde_json::Value,
+            _read_only: bool,
+            _ctx: &zen_core::ToolContext,
+        ) -> zen_core::PermissionDecision {
+            zen_core::PermissionDecision::Allow
+        }
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_cfg() -> crate::settings::ResolvedConfig {
+        use clap::Parser;
+        // Caller holds ENV_LOCK; isolate from ambient model/base-url env
+        // so the resolved config is the plain default one.
+        let old_model = std::env::var("ZEN_MODEL").ok();
+        let old_base = std::env::var("ZEN_BASE_URL").ok();
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        let cli = crate::cli::Cli::parse_from(["zen"]);
+        let dir = std::env::temp_dir().join(format!("zen_model400_cfg_{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir().join(format!("zen_model400_home_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let cfg = crate::settings::resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&home).ok();
+        match old_model {
+            Some(v) => std::env::set_var("ZEN_MODEL", v),
+            None => std::env::remove_var("ZEN_MODEL"),
+        }
+        match old_base {
+            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
+            None => std::env::remove_var("ZEN_BASE_URL"),
+        }
+        cfg
+    }
+
+    fn test_agent(llm: std::sync::Arc<RecordingBackend>) -> zen_agent::Agent {
+        let dir = std::env::temp_dir().join(format!("zen_model400_ctx_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = zen_core::ToolContext::new(dir, "test-session");
+        let config = zen_agent::AgentConfig {
+            model: "google/gemini-4-argon:free".to_string(),
+            ..Default::default()
+        };
+        zen_agent::Agent::new(
+            llm,
+            zen_core::ToolRegistry::new(),
+            std::sync::Arc::new(AllowAll),
+            None,
+            std::sync::Arc::new(zen_core::NoHooks),
+            std::sync::Arc::new(zen_core::NullSink),
+            ctx,
+            config,
+        )
+    }
+
+    #[tokio::test]
+    async fn switch_to_experiential_model_sends_bare_slug() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        let old_llm = agent.llm.clone();
+
+        let msg = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "deepseek-v4.1-flash",
+        )
+        .unwrap();
+        assert!(msg.contains("deepseek-v4.1-flash"), "{msg}");
+        assert_eq!(agent.config.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        // Same provider, same key: the backend is left alone.
+        assert!(std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
+
+        // The request the agent would send carries the gateway id,
+        // not the catalog id the gateway rejects with HTTP 400.
+        // The env lock only guards setup; drop it before the await.
+        drop(_env);
+        let req = zen_core::ChatRequest {
+            model: agent.config.model.clone(),
+            messages: vec![zen_core::ChatMessage::user("hi")],
+            tools: vec![],
+            max_tokens: Some(10),
+        };
+        agent.llm.chat(req).await.unwrap();
+        assert_eq!(
+            backend.models.lock().unwrap().as_slice(),
+            ["deepseek-v4.1-flash"]
+        );
+    }
+
+    #[test]
+    fn switch_to_openrouter_model_changes_provider() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key");
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        let old_llm = agent.llm.clone();
+
+        let msg = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap();
+        assert!(msg.contains("openrouter.ai"), "{msg}");
+        assert_eq!(agent.config.model, "qwen/qwen3-coder:free");
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.api_key.as_deref(), Some("test-openrouter-key"));
+        // Provider changed: the live backend must have been rebuilt.
+        assert!(!std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
+
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn switch_to_openrouter_model_without_key_is_refused() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        let old_llm = agent.llm.clone();
+
+        let err = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap_err();
+        assert!(err.contains("OPENROUTER_API_KEY"), "{err}");
+        // Refused switch: previous model, provider and backend untouched.
+        assert_eq!(agent.config.model, "google/gemini-4-argon:free");
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        assert!(std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
+
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn switch_to_unknown_pool_id_keeps_string_only() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        let msg = apply_model_switch(&mut cfg, &mut agent, None, None, &None, "some-probed-model")
+            .unwrap();
+        assert_eq!(msg, "model set to some-probed-model");
+        assert_eq!(agent.config.model, "some-probed-model");
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn model_list_marks_current_by_gateway_id() {
+        let out = format_model_list("deepseek-v4.1-flash", &rows());
+        assert!(out.contains("Models — current: deepseek-v4.1-flash"));
+        let first = out.lines().nth(1).unwrap();
+        assert!(first.starts_with("▸ 1."), "{first}");
+    }
+
     #[test]
     fn humanise_context_formats() {
         assert_eq!(humanise_context(Some(1_000_000)), "1M");
         assert_eq!(humanise_context(Some(262_144)), "262K");
         assert_eq!(humanise_context(Some(131_072)), "131K");
         assert_eq!(humanise_context(None), "—");
+    }
+
+    #[test]
+    fn switch_round_trip_restores_home_key() {
+        // F1: experiential -> openrouter -> experiential must restore
+        // the startup key, not leak the OpenRouter key.
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        cfg.api_key = Some("exp-key".to_string());
+        let home_key = cfg.api_key.clone();
+
+        apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &home_key,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap();
+        assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+
+        apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &home_key,
+            "deepseek-v4.1-flash",
+        )
+        .unwrap();
+        assert_eq!(cfg.api_key.as_deref(), Some("exp-key"));
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(agent.config.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_keeps_experiential_default_on_default_base() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = test_cfg();
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(routed);
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn route_moves_openrouter_model_to_its_provider() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let mut cfg = test_cfg();
+        cfg.model = "qwen/qwen3-coder:free".to_string();
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(routed);
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_refuses_openrouter_model_without_key() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let mut cfg = test_cfg();
+        cfg.model = "qwen/qwen3-coder:free".to_string();
+        let err = crate::settings::route_catalog_model(&mut cfg).unwrap_err();
+        assert!(err.to_string().contains("OPENROUTER_API_KEY"), "{err}");
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_leaves_custom_base_url_untouched() {
+        // F3: the user pointed the client at another endpoint by
+        // hand while the model is still a catalog entry. Routing
+        // must not rewrite the model or the key for an endpoint it
+        // does not own - that broke working custom-base setups.
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = test_cfg();
+        cfg.base_url = "https://openrouter.ai/api/v1".to_string();
+        cfg.api_key = Some("custom-key".to_string());
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(!routed);
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.api_key.as_deref(), Some("custom-key"));
     }
 }
 

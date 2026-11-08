@@ -3,7 +3,7 @@ use anyhow::Result;
 use zen_core::{PermissionSettings, Settings};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.experientiallabs.ai/api/v1";
-pub const DEFAULT_MODEL: &str = "google/gemini-4-argon:free";
+pub const DEFAULT_MODEL: &str = "deepseek-v4.1-flash";
 pub const DEFAULT_MAX_TURNS: usize = 50;
 
 #[derive(Debug, Clone)]
@@ -104,11 +104,33 @@ impl ResolvedConfig {
         sink: std::sync::Arc<dyn zen_core::EventSink>,
         home: Option<&std::path::Path>,
     ) -> std::sync::Arc<dyn zen_core::LlmBackend> {
-        let client = self.llm_client(sink);
+        self.gated_llm_client_for(&self.base_url, self.api_key.clone(), sink, home)
+    }
+
+    /// Build the rate-gated backend for an explicit provider endpoint
+    /// and key (used by `/model` when a switch changes provider).
+    pub fn gated_llm_client_for(
+        &self,
+        base_url: &str,
+        api_key: Option<String>,
+        sink: std::sync::Arc<dyn zen_core::EventSink>,
+        home: Option<&std::path::Path>,
+    ) -> std::sync::Arc<dyn zen_core::LlmBackend> {
+        let client = zen_agent::make_backend_with(
+            base_url.to_string(),
+            api_key,
+            sink,
+            self.retry_max_wait_secs.saturating_mul(1000),
+            zen_agent::HttpTimeouts::from_secs(
+                base_url,
+                self.request_timeout_secs,
+                self.idle_timeout_secs,
+            ),
+        );
         let (settings, store_path) = self.rate_gate_for(home);
         std::sync::Arc::new(zen_agent::RateGate::new(
             client,
-            self.base_url.clone(),
+            base_url.to_string(),
             settings,
             store_path,
         ))
@@ -284,6 +306,48 @@ fn resolve_base_url(cli: &Cli, settings_url: Option<&str>) -> String {
         .filter(|s| !s.is_empty())
         .map(String::from)
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+}
+
+/// Route a catalog model to the provider that serves it: rewrite
+/// `cfg.model` to the id that provider accepts, and - when the base
+/// URL is still the default - point `base_url` and `api_key` at that
+/// provider. A custom base URL is the user's explicit endpoint
+/// choice: routing leaves the whole config untouched then, so a
+/// catalog id is never rewritten for a gateway that would reject
+/// the rewritten form (PR #71 review F2/F3). Returns Ok(true) when
+/// the model was routed. Shared by the REPL and headless entry
+/// points so every path sends an id its gateway accepts.
+pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
+    if cfg.ollama {
+        return Ok(false);
+    }
+    let Some(entry) = crate::models::catalog_entry(&cfg.model) else {
+        return Ok(false);
+    };
+    let Some(base_url) = crate::models::provider_base_url(entry.provider) else {
+        return Ok(false);
+    };
+    if cfg.base_url == DEFAULT_BASE_URL && base_url != DEFAULT_BASE_URL {
+        // Cross-provider: the request must carry that provider's key.
+        if let Some(env) = crate::models::provider_api_key_env(entry.provider) {
+            match std::env::var(env).ok().filter(|v| !v.is_empty()) {
+                Some(key) => cfg.api_key = Some(key),
+                None => anyhow::bail!(
+                    "model '{}' needs its provider's key: set {} before starting",
+                    entry.id,
+                    env
+                ),
+            }
+        }
+        cfg.base_url = base_url.to_string();
+        cfg.model = entry.gateway_id.to_string();
+        return Ok(true);
+    }
+    if cfg.base_url == DEFAULT_BASE_URL || cfg.base_url == base_url {
+        cfg.model = entry.gateway_id.to_string();
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn resolve_api_key(api_key_env: Option<&str>) -> Option<String> {
@@ -1077,7 +1141,7 @@ mod tests {
         std::env::remove_var("ZEN_MODEL");
         let cli = base_cli();
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
-        assert_eq!(cfg.model, "google/gemini-4-argon:free");
+        assert_eq!(cfg.model, DEFAULT_MODEL);
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
         assert!(cfg
             .warnings

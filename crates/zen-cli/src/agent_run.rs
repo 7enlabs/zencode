@@ -646,11 +646,16 @@ pub(crate) async fn run_agent_with_result(
         None => expand_slash_prompt_cmd(cli, cwd, home, prompt, cfg, session_id)?,
     };
 
-    let effective_model = slash_cmd
+    let raw_model = slash_cmd
         .as_ref()
         .and_then(|c| c.model.clone())
         .filter(|m| !m.is_empty() && m != "inherit")
         .unwrap_or_else(|| cfg.model.clone());
+    // A slash command can pin a catalog id the routed cfg never
+    // carried; send the id the serving provider accepts, the same
+    // translation the builtin `model` command applies (PR #71
+    // review F11).
+    let effective_model = crate::models::gateway_model_id(&raw_model).to_string();
 
     let assembly = assemble(cli, cwd, home, cfg, session_id, transcript_path).await?;
 
@@ -758,8 +763,10 @@ pub(crate) async fn run_agent_with_result(
         let local = match name.as_str() {
             "model" if args.is_empty() => Some(format!("Current model: {}", agent.config.model)),
             "model" => {
-                agent.config.model = args.clone();
-                Some(format!("Set model to {}", args))
+                // Translate a catalog id to the id the gateway
+                // accepts, as /model does in the REPL (review F2).
+                agent.config.model = crate::models::gateway_model_id(args).to_string();
+                Some(format!("Set model to {}", agent.config.model))
             }
             "cost" => Some(commands::cost_report(
                 &agent.usage,
@@ -1051,7 +1058,12 @@ pub async fn run_plan_flow(
     plan_cli.plan = false;
     plan_cli.until = None;
     plan_cli.permission_mode = Some(crate::cli::PermissionMode::Plan);
-    let plan_cfg = crate::settings::resolve_config_with_home(&plan_cli, cwd, home)?;
+    let mut plan_cfg = crate::settings::resolve_config_with_home(&plan_cli, cwd, home)?;
+    // The plan phase re-resolves its own config, so routing the
+    // caller's cfg never reaches it (PR #71 review F10): route the
+    // plan config itself, or the plan phase sends a catalog id its
+    // gateway rejects with the same HTTP 400.
+    crate::settings::route_catalog_model(&mut plan_cfg)?;
     let (plan_code, plan_result) = run_agent_with_result(
         &plan_cli,
         cwd,
