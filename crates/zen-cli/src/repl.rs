@@ -2208,9 +2208,9 @@ mod model_picker_tests {
     fn rows() -> Vec<ModelRow> {
         vec![
             ModelRow {
-                id: "google/gemini-4-argon:free".to_string(),
-                provider: "google".to_string(),
-                short: "gemini-4-argon:free".to_string(),
+                id: "deepseek-v4.1-flash".to_string(),
+                provider: "experientiallabs".to_string(),
+                short: "deepseek-v4.1-flash".to_string(),
                 context_window: Some(1_000_000),
                 latency_ms: Some(210),
             },
@@ -2236,8 +2236,8 @@ mod model_picker_tests {
         let out = format_model_list("cohere/north-mini-code:free", &rows());
         assert!(out.contains("Models — current: north-mini-code:free"));
         // Short name + provider + context + latency columns.
-        assert!(out.contains("1. gemini-4-argon:free"));
-        assert!(out.contains("google"));
+        assert!(out.contains("1. deepseek-v4.1-flash"));
+        assert!(out.contains("experientiallabs"));
         assert!(out.contains("1M ctx"));
         assert!(out.contains("210ms"));
         // Current row gets the leading ▸ marker.
@@ -2250,10 +2250,7 @@ mod model_picker_tests {
 
     #[test]
     fn pick_by_number_is_one_based() {
-        assert_eq!(
-            pick_model("1", &rows()).unwrap(),
-            "google/gemini-4-argon:free"
-        );
+        assert_eq!(pick_model("1", &rows()).unwrap(), "deepseek-v4.1-flash");
         assert_eq!(
             pick_model("3", &rows()).unwrap(),
             "nvidia/nemotron-3-nano:free"
@@ -2376,16 +2373,10 @@ mod model_picker_tests {
         assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
         let old_llm = agent.llm.clone();
 
-        let msg = apply_model_switch(
-            &mut cfg,
-            &mut agent,
-            None,
-            None,
-            "google/gemini-4-argon:free",
-        )
-        .unwrap();
-        assert!(msg.contains("gemini-4-argon"), "{msg}");
-        assert_eq!(agent.config.model, "gemini-4-argon");
+        let msg =
+            apply_model_switch(&mut cfg, &mut agent, None, None, "deepseek-v4.1-flash").unwrap();
+        assert!(msg.contains("deepseek-v4.1-flash"), "{msg}");
+        assert_eq!(agent.config.model, "deepseek-v4.1-flash");
         assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
         // Same provider, same key: the backend is left alone.
         assert!(std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
@@ -2403,7 +2394,7 @@ mod model_picker_tests {
         agent.llm.chat(req).await.unwrap();
         assert_eq!(
             backend.models.lock().unwrap().as_slice(),
-            ["gemini-4-argon"]
+            ["deepseek-v4.1-flash"]
         );
     }
 
@@ -2477,8 +2468,8 @@ mod model_picker_tests {
 
     #[test]
     fn model_list_marks_current_by_gateway_id() {
-        let out = format_model_list("gemini-4-argon", &rows());
-        assert!(out.contains("Models — current: gemini-4-argon"));
+        let out = format_model_list("deepseek-v4.1-flash", &rows());
+        assert!(out.contains("Models — current: deepseek-v4.1-flash"));
         let first = out.lines().nth(1).unwrap();
         assert!(first.starts_with("▸ 1."), "{first}");
     }

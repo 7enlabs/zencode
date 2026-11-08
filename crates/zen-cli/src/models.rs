@@ -13,7 +13,7 @@ pub struct CatalogModel {
     /// Exact model string the serving provider's endpoint accepts.
     /// OpenRouter-style ids (`provider/model:free`) are only valid on
     /// OpenRouter; the Experiential gateway wants the bare slug
-    /// (`gemini-4-argon`), so the catalog id must never be sent to it
+    /// (`deepseek-v4.1-flash`), so the catalog id must never be sent to it
     /// verbatim - that is what the gateway rejects with HTTP 400
     /// "Invalid Model Name".
     pub gateway_id: &'static str,
@@ -21,10 +21,15 @@ pub struct CatalogModel {
 
 pub const FREE_MODEL_CATALOG: &[CatalogModel] = &[
     CatalogModel {
-        id: "google/gemini-4-argon:free",
+        // Default model (Leader decision, tin 7887, 2026-11-08): the
+        // strongest free model on the Experiential gateway Free plan
+        // ($0, public pricing page). Context window 1M tokens per the
+        // DeepSeek-V4.1-Flash model card; the gateway accepts the bare
+        // slug, so id and gateway_id are the same here.
+        id: "deepseek-v4.1-flash",
         provider: "experientiallabs",
         context_window: 1_000_000,
-        gateway_id: "gemini-4-argon",
+        gateway_id: "deepseek-v4.1-flash",
     },
     CatalogModel {
         id: "qwen/qwen3-coder:free",
@@ -1585,8 +1590,8 @@ mod tests {
         // its public model page); sending the catalog id verbatim is the
         // HTTP 400 "Invalid Model Name" bug.
         assert_eq!(
-            gateway_model_id("google/gemini-4-argon:free"),
-            "gemini-4-argon"
+            gateway_model_id("deepseek-v4.1-flash"),
+            "deepseek-v4.1-flash"
         );
         // OpenRouter entries keep their own id: it IS the wire id there.
         assert_eq!(
@@ -1617,6 +1622,25 @@ mod tests {
             Some("OPENROUTER_API_KEY")
         );
         assert_eq!(provider_api_key_env("experientiallabs"), None);
+    }
+
+    #[test]
+    fn default_model_is_a_free_catalog_entry_with_gateway_id() {
+        // Leader decision (tin 7887, 2026-11-08): the default must be a
+        // free catalog entry, and the gateway must accept its gateway_id
+        // verbatim. The HTTP 400 "Invalid Model Name" bug was a default
+        // whose catalog id was sent to the gateway unchanged.
+        let entry = catalog_entry(crate::settings::DEFAULT_MODEL)
+            .expect("default model must be listed in FREE_MODEL_CATALOG");
+        assert_eq!(entry.provider, "experientiallabs");
+        assert_eq!(entry.gateway_id, "deepseek-v4.1-flash");
+        assert_eq!(
+            gateway_model_id(crate::settings::DEFAULT_MODEL),
+            "deepseek-v4.1-flash"
+        );
+        assert!(zen_agent::budget::is_free_model(
+            crate::settings::DEFAULT_MODEL
+        ));
     }
 
     #[test]

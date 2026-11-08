@@ -77,7 +77,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## Run
 
 ```bash
-# defaults: base URL https://api.experientiallabs.ai/api/v1, model google/gemini-4-argon:free
+# defaults: base URL https://api.experientiallabs.ai/api/v1, model deepseek-v4.1-flash
 ./target/release/zen                                   # interactive REPL
 ./target/release/zen -p "list files and summarize README" --output-format json
 echo "explain this log" | ./target/release/zen -p --output-format text

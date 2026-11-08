@@ -3,7 +3,7 @@ use anyhow::Result;
 use zen_core::{PermissionSettings, Settings};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.experientiallabs.ai/api/v1";
-pub const DEFAULT_MODEL: &str = "google/gemini-4-argon:free";
+pub const DEFAULT_MODEL: &str = "deepseek-v4.1-flash";
 pub const DEFAULT_MAX_TURNS: usize = 50;
 
 #[derive(Debug, Clone)]
@@ -1099,7 +1099,7 @@ mod tests {
         std::env::remove_var("ZEN_MODEL");
         let cli = base_cli();
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
-        assert_eq!(cfg.model, "google/gemini-4-argon:free");
+        assert_eq!(cfg.model, DEFAULT_MODEL);
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
         assert!(cfg
             .warnings
