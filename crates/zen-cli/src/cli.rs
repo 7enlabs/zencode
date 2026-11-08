@@ -388,6 +388,9 @@ pub enum Commands {
     /// Inspect the P0-3 multi-seat task registry (observe-only)
     Task(TaskArgs),
 
+    /// Request, approve, issue, revoke and rotate secrets (DS-7)
+    Secret(SecretArgs),
+
     /// Run the built-in evaluation tasks
     Eval(EvalArgs),
 
@@ -605,6 +608,142 @@ pub enum TaskSubcommand {
         /// Report what would change without writing any snapshot
         #[arg(long = "dry-run")]
         dry_run: bool,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen secret request --name OPENROUTER_KEY --purpose \"verification runs\" --scope task:DS-7 --until 2026-11-15T08:00:00Z --seat zd-developer\n  zen secret list --state issued\n  zen secret approve --request sr-20261108-001 --by zc-leader --evidence \"tin 8071\"\n  zen secret issue --request sr-20261108-001 --by z-ops\n  zen secret status --name OPENROUTER_KEY\n  zen secret rotate --name OPENROUTER_KEY --by zc-leader --reason \"90-day rotation\"\n\nSecrets are named, never shown: no command prints a secret value.\nThe seat filing a request is --seat, or the ZEN_SEAT environment variable."
+)]
+pub struct SecretArgs {
+    #[command(subcommand)]
+    pub command: SecretSubcommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum SecretSubcommand {
+    /// File a secret request (state: requested)
+    Request {
+        /// Canonical secret name, e.g. OPENROUTER_KEY
+        #[arg(long)]
+        name: String,
+
+        /// What the secret is needed for
+        #[arg(long)]
+        purpose: String,
+
+        /// Scope of the work, e.g. task:DS-7
+        #[arg(long)]
+        scope: String,
+
+        /// End of the issuance, RFC 3339, e.g. 2026-11-15T08:00:00Z
+        #[arg(long)]
+        until: String,
+
+        /// Task id the secret is needed for
+        #[arg(long)]
+        task: Option<String>,
+
+        /// One-shot: the issuance dies after its first real use
+        #[arg(long = "one-shot")]
+        one_shot: bool,
+
+        /// Broker action, required for a user-class secret
+        #[arg(long = "broker-action")]
+        broker_action: Option<String>,
+
+        /// Seat filing the request (default: ZEN_SEAT)
+        #[arg(long)]
+        seat: Option<String>,
+    },
+
+    /// List requests by name, seat, state and until
+    List {
+        /// Only requests from this seat
+        #[arg(long)]
+        seat: Option<String>,
+
+        /// Only requests in this state
+        #[arg(long)]
+        state: Option<String>,
+    },
+
+    /// Approve a request (Leader for seat secrets, Zen for user/paid)
+    Approve {
+        /// Request id, e.g. sr-20261108-001
+        #[arg(long)]
+        request: String,
+
+        /// Approver seat, e.g. zc-leader
+        #[arg(long = "by")]
+        by: String,
+
+        /// Evidence link: a group message id or a task card id
+        #[arg(long)]
+        evidence: String,
+    },
+
+    /// Deny a request, with the reason named
+    Deny {
+        /// Request id, e.g. sr-20261108-001
+        #[arg(long)]
+        request: String,
+
+        /// Seat recording the denial
+        #[arg(long = "by")]
+        by: String,
+
+        /// Reason for the denial
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Record the issuance: the value was placed in the seat runtime
+    Issue {
+        /// Request id, e.g. sr-20261108-001
+        #[arg(long)]
+        request: String,
+
+        /// Issuer: the Leader or Z Ops, the human who placed the value
+        #[arg(long = "by")]
+        by: String,
+    },
+
+    /// Revoke a live issuance at once
+    Revoke {
+        /// Request id, e.g. sr-20261108-001
+        #[arg(long)]
+        request: String,
+
+        /// Seat recording the revocation
+        #[arg(long = "by")]
+        by: String,
+
+        /// Reason for the revocation
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Start a rotation: a new request linked to the old one
+    Rotate {
+        /// Canonical secret name, e.g. OPENROUTER_KEY
+        #[arg(long)]
+        name: String,
+
+        /// Owner of the secret, or the Leader
+        #[arg(long = "by")]
+        by: String,
+
+        /// Reason for the rotation
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Per-secret status: registered, class, live issuances, rotation due
+    Status {
+        /// Canonical secret name; omit for every registered secret
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -1179,6 +1318,143 @@ mod tests {
                 other => panic!("expected Revive, got {:?}", other),
             },
             _ => panic!("expected Task"),
+        }
+    }
+
+    #[test]
+    fn parse_secret_subcommands() {
+        let cli = parse(&[
+            "secret",
+            "request",
+            "--name",
+            "OPENROUTER_KEY",
+            "--purpose",
+            "verification runs",
+            "--scope",
+            "task:DS-7",
+            "--until",
+            "2026-11-15T08:00:00Z",
+            "--seat",
+            "zd-developer",
+        ]);
+        match cli.subcommand {
+            Some(Commands::Secret(s)) => match s.command {
+                SecretSubcommand::Request {
+                    name,
+                    purpose,
+                    scope,
+                    until,
+                    task,
+                    one_shot,
+                    broker_action,
+                    seat,
+                } => {
+                    assert_eq!(name, "OPENROUTER_KEY");
+                    assert_eq!(purpose, "verification runs");
+                    assert_eq!(scope, "task:DS-7");
+                    assert_eq!(until, "2026-11-15T08:00:00Z");
+                    assert_eq!(task, None);
+                    assert!(!one_shot);
+                    assert!(broker_action.is_none());
+                    assert_eq!(seat.as_deref(), Some("zd-developer"));
+                }
+                other => panic!("expected Request, got {:?}", other),
+            },
+            _ => panic!("expected Secret"),
+        }
+        let cli = parse(&["secret", "list", "--state", "issued"]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Secret(s)) if matches!(s.command, SecretSubcommand::List { .. })
+        ));
+        let cli = parse(&[
+            "secret",
+            "approve",
+            "--request",
+            "sr-20261108-001",
+            "--by",
+            "zc-leader",
+            "--evidence",
+            "tin 8071",
+        ]);
+        match cli.subcommand {
+            Some(Commands::Secret(s)) => match s.command {
+                SecretSubcommand::Approve {
+                    request,
+                    by,
+                    evidence,
+                } => {
+                    assert_eq!(request, "sr-20261108-001");
+                    assert_eq!(by, "zc-leader");
+                    assert_eq!(evidence, "tin 8071");
+                }
+                other => panic!("expected Approve, got {:?}", other),
+            },
+            _ => panic!("expected Secret"),
+        }
+        let cli = parse(&[
+            "secret",
+            "deny",
+            "--request",
+            "sr-20261108-001",
+            "--by",
+            "zc-leader",
+            "--reason",
+            "not needed",
+        ]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Secret(s)) if matches!(s.command, SecretSubcommand::Deny { .. })
+        ));
+        let cli = parse(&[
+            "secret",
+            "issue",
+            "--request",
+            "sr-20261108-001",
+            "--by",
+            "z-ops",
+        ]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Secret(s)) if matches!(s.command, SecretSubcommand::Issue { .. })
+        ));
+        let cli = parse(&[
+            "secret",
+            "revoke",
+            "--request",
+            "sr-20261108-001",
+            "--by",
+            "zc-leader",
+            "--reason",
+            "leak suspected",
+        ]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Secret(s)) if matches!(s.command, SecretSubcommand::Revoke { .. })
+        ));
+        let cli = parse(&[
+            "secret",
+            "rotate",
+            "--name",
+            "OPENROUTER_KEY",
+            "--by",
+            "zc-leader",
+            "--reason",
+            "90-day rotation",
+        ]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Secret(s)) if matches!(s.command, SecretSubcommand::Rotate { .. })
+        ));
+        let cli = parse(&["secret", "status", "--name", "OPENROUTER_KEY"]);
+        match cli.subcommand {
+            Some(Commands::Secret(s)) => match s.command {
+                SecretSubcommand::Status { name } => {
+                    assert_eq!(name.as_deref(), Some("OPENROUTER_KEY"));
+                }
+                other => panic!("expected Status, got {:?}", other),
+            },
+            _ => panic!("expected Secret"),
         }
     }
 

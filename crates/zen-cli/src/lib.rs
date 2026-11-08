@@ -28,6 +28,7 @@ pub mod repl_progress;
 pub mod repomap;
 pub mod review;
 pub mod safety;
+pub mod secret;
 pub mod session;
 pub mod session_mgmt;
 pub mod settings;
@@ -378,6 +379,13 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             Ok(0)
         }
         Commands::Task(args) => tasks::run_task(
+            args,
+            &cli.effective_output_format(),
+            cli.quiet,
+            cli.raw,
+            home,
+        ),
+        Commands::Secret(args) => secret::run_secret(
             args,
             &cli.effective_output_format(),
             cli.quiet,
