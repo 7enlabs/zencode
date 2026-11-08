@@ -343,12 +343,10 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         interrupts: interrupts.as_mut(),
         recorder: assembly.recorder.clone(),
         home_api_key,
-        // Auto is on when the routed startup model is already the
-        // current provider's best free model (the default path).
-        auto_model: crate::models::provider_for_base_url(&cfg.base_url)
-            .and_then(crate::models::provider_default_model)
-            .map(|e| e.gateway_id == cfg.model.as_str())
-            .unwrap_or(false),
+        // Auto state comes from config resolution, not from model
+        // equality: pinning the provider's default model is a pin,
+        // not auto (PR #72 review follow-up).
+        auto_model: cfg.model_auto,
         goal: None,
         personality: repl_polish::Personality::default(),
         theme: repl_polish::Theme::default(),
@@ -2697,6 +2695,20 @@ mod model_picker_tests {
             Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
             None => std::env::remove_var("OPENROUTER_API_KEY"),
         }
+    }
+
+    #[test]
+    fn route_auto_with_ollama_bails_with_real_reason() {
+        // `--provider ollama --model auto` must not end at the Ollama
+        // readiness check, whose hint would be `ollama pull auto`
+        // (PR #72 review follow-up).
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = test_cfg();
+        cfg.ollama = true;
+        cfg.model = "auto".to_string();
+        let err = crate::settings::route_catalog_model(&mut cfg).unwrap_err();
+        assert!(err.to_string().contains("Ollama"), "{err}");
+        assert!(!err.to_string().contains("pull"), "{err}");
     }
 
     #[test]

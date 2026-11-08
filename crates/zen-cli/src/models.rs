@@ -72,12 +72,21 @@ pub fn gateway_model_id(id: &str) -> &str {
 /// Base URL of the OpenRouter provider.
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
+/// Canonical name of a catalog provider, matched case-insensitively:
+/// provider names are user-facing (`/provider OpenRouter`), so casing
+/// must not change the meaning. `None` for an unknown provider.
+pub fn canonical_provider(name: &str) -> Option<&'static str> {
+    ["experientiallabs", "openrouter"]
+        .into_iter()
+        .find(|p| p.eq_ignore_ascii_case(name))
+}
+
 /// Base URL of the provider that serves a catalog entry. `None` means
 /// the current base URL stays.
 pub fn provider_base_url(provider: &str) -> Option<&'static str> {
-    match provider {
-        "experientiallabs" => Some(crate::settings::DEFAULT_BASE_URL),
-        "openrouter" => Some(OPENROUTER_BASE_URL),
+    match canonical_provider(provider) {
+        Some("experientiallabs") => Some(crate::settings::DEFAULT_BASE_URL),
+        Some("openrouter") => Some(OPENROUTER_BASE_URL),
         _ => None,
     }
 }
@@ -98,22 +107,24 @@ pub fn provider_for_base_url(base_url: &str) -> Option<&'static str> {
 
 /// Catalog entries the provider really serves, in catalog order.
 pub fn models_for_provider(provider: &str) -> Vec<&'static CatalogModel> {
+    let provider = canonical_provider(provider);
     FREE_MODEL_CATALOG
         .iter()
-        .filter(|m| m.provider == provider)
+        .filter(|m| Some(m.provider) == provider)
         .collect()
 }
 
 /// First catalog entry for a provider: the provider's default model.
 pub fn provider_default_model(provider: &str) -> Option<&'static CatalogModel> {
+    let provider = canonical_provider(provider)?;
     FREE_MODEL_CATALOG.iter().find(|m| m.provider == provider)
 }
 
 /// Environment variable holding the provider's API key. `None` means
 /// keep the key the session already uses.
 pub fn provider_api_key_env(provider: &str) -> Option<&'static str> {
-    match provider {
-        "openrouter" => Some("OPENROUTER_API_KEY"),
+    match canonical_provider(provider) {
+        Some("openrouter") => Some("OPENROUTER_API_KEY"),
         _ => None,
     }
 }
@@ -1682,6 +1693,31 @@ mod tests {
             "qwen/qwen3-coder:free"
         );
         assert!(provider_default_model("unknown-provider").is_none());
+    }
+
+    #[test]
+    fn provider_names_are_case_insensitive() {
+        // `/provider OpenRouter` must mean the same as `openrouter`
+        // (PR #72 review follow-up).
+        assert_eq!(canonical_provider("OpenRouter"), Some("openrouter"));
+        assert_eq!(
+            canonical_provider("EXPERIENTIALLABS"),
+            Some("experientiallabs")
+        );
+        assert_eq!(canonical_provider("unknown-provider"), None);
+        assert_eq!(
+            provider_default_model("OpenRouter").map(|e| e.id),
+            provider_default_model("openrouter").map(|e| e.id)
+        );
+        assert_eq!(provider_base_url("OpenRouter"), Some(OPENROUTER_BASE_URL));
+        assert_eq!(
+            models_for_provider("OpenRouter").len(),
+            models_for_provider("openrouter").len()
+        );
+        assert_eq!(
+            provider_api_key_env("OpenRouter"),
+            Some("OPENROUTER_API_KEY")
+        );
     }
 
     #[test]
