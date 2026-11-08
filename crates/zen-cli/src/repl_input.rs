@@ -184,15 +184,12 @@ pub fn strip_ansi(s: &str) -> String {
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            match chars.next() {
-                Some('[') => {
-                    for c2 in chars.by_ref() {
-                        if ('@'..='~').contains(&c2) {
-                            break;
-                        }
+            if let Some('[') = chars.next() {
+                for c2 in chars.by_ref() {
+                    if ('@'..='~').contains(&c2) {
+                        break;
                     }
                 }
-                Some(_) | None => {}
             }
         } else {
             out.push(c);
@@ -204,7 +201,7 @@ pub fn strip_ansi(s: &str) -> String {
 /// The prompt actually handed to the line editor: the last prompt
 /// line with all styling removed. rustyline's contract is that the
 /// prompt passed to `readline` is unstyled - its layout code counts
-/// any ANSI bytes in it as printable columns (a cyan "> " measured 9
+/// any ANSI bytes in it as printable columns (a cyan "> " measured 11
 /// columns instead of 2), and on Windows every redraw clears and
 /// repositions from that wrong layout, which is how typed characters
 /// ended up shifted or erased instead of echoing. The styling is
@@ -389,7 +386,7 @@ mod tests {
     fn editor_prompt_is_unstyled_with_true_width() {
         // Regression (no-echo on Windows): the prompt handed to
         // rustyline used to carry the cyan SGR codes, so rustyline
-        // laid the line out as if the prompt were 9 columns wide
+        // laid the line out as if the prompt were 11 columns wide
         // instead of 2 and every redraw on Windows cleared and
         // repositioned from that wrong layout.
         let p = editor_prompt("\x1b[36m> \x1b[0m");
