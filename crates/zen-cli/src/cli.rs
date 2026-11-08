@@ -613,7 +613,7 @@ pub enum TaskSubcommand {
 
 #[derive(Args, Debug, Clone)]
 #[command(
-    after_help = "Examples:\n  zen secret request --name OPENROUTER_KEY --purpose \"verification runs\" --scope task:DS-7 --until 2026-11-15T08:00:00Z --seat zd-developer\n  zen secret list --state issued\n  zen secret approve --request sr-20261108-001 --by zc-leader --evidence \"tin 8071\"\n  zen secret issue --request sr-20261108-001 --by z-ops\n  zen secret status --name OPENROUTER_KEY\n  zen secret rotate --name OPENROUTER_KEY --by zc-leader --reason \"90-day rotation\"\n\nSecrets are named, never shown: no command prints a secret value.\nThe seat filing a request is --seat, or the ZEN_SEAT environment variable."
+    after_help = "Examples:\n  zen secret request --name OPENROUTER_KEY --purpose \"verification runs\" --scope task:DS-7 --until 2026-11-15T08:00:00Z --seat zd-developer\n  zen secret list --state issued\n  zen secret approve --request sr-20261108-001 --by zc-leader --evidence \"tin 8071\"\n  zen secret withdraw --request sr-20261108-001 --by zd-developer --reason \"no longer needed\"\n  zen secret issue --request sr-20261108-001 --by z-ops\n  zen secret status --name OPENROUTER_KEY\n  zen secret rotate --name OPENROUTER_KEY --by zc-leader --reason \"90-day rotation\"\n\nSecrets are named, never shown: no command prints a secret value.\nThe seat filing a request is --seat, or the ZEN_SEAT environment variable."
 )]
 pub struct SecretArgs {
     #[command(subcommand)]
@@ -694,6 +694,21 @@ pub enum SecretSubcommand {
         by: String,
 
         /// Reason for the denial
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Withdraw a request: the requesting seat takes back its own undecided request
+    Withdraw {
+        /// Request id, e.g. sr-20261108-001
+        #[arg(long)]
+        request: String,
+
+        /// Seat withdrawing the request: the seat that filed it
+        #[arg(long = "by")]
+        by: String,
+
+        /// Reason for the withdrawal
         #[arg(long)]
         reason: String,
     },
@@ -1460,6 +1475,31 @@ mod tests {
             cli.subcommand,
             Some(Commands::Secret(s)) if matches!(s.command, SecretSubcommand::Deny { .. })
         ));
+        let cli = parse(&[
+            "secret",
+            "withdraw",
+            "--request",
+            "sr-20261108-001",
+            "--by",
+            "zd-developer",
+            "--reason",
+            "no longer needed",
+        ]);
+        match cli.subcommand {
+            Some(Commands::Secret(s)) => match s.command {
+                SecretSubcommand::Withdraw {
+                    request,
+                    by,
+                    reason,
+                } => {
+                    assert_eq!(request, "sr-20261108-001");
+                    assert_eq!(by, "zd-developer");
+                    assert_eq!(reason, "no longer needed");
+                }
+                other => panic!("expected Withdraw, got {:?}", other),
+            },
+            _ => panic!("expected Secret"),
+        }
         let cli = parse(&[
             "secret",
             "issue",

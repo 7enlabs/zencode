@@ -29,12 +29,13 @@
 //!   seat's access can be revoked without cutting off another seat.
 //!   The entry id recorded on issuance is `<NAME>:<seat>`.
 //! - D5 command and field names are kept as designed: request ids look
-//!   like `sr-YYYYMMDD-NNN`, the eight states are `requested`,
-//!   `approved`, `denied`, `issued`, `active`, `expired`, `revoked`,
-//!   `rotated`, and the CLI surface is `zen secret` with the
-//!   subcommands `request`, `list`, `approve`, `deny`, `issue`,
-//!   `revoke`, `rotate`, `status`, plus `register` and `deregister`
-//!   (Leader only, review 5817478591, Q1).
+//!   like `sr-YYYYMMDD-NNN`, the states are `requested`, `approved`,
+//!   `denied`, `issued`, `active`, `expired`, `revoked`, `rotated`,
+//!   plus `withdrawn` (follow-up F1, Leader tin 8174), and the CLI
+//!   surface is `zen secret` with the subcommands `request`, `list`,
+//!   `approve`, `deny`, `issue`, `revoke`, `rotate`, `status`, plus
+//!   `register` and `deregister` (Leader only, review 5817478591, Q1)
+//!   and `withdraw` (follow-up F1).
 //! - D6 expiry needs a restart/reload: the check alone refuses after
 //!   the `until`, and the runtime must drop the value at its next
 //!   start. This module records the expiry and refuses the check; it
@@ -68,6 +69,19 @@
 //! - D8 the first real issuance on one secret, with the Leader
 //!   watching, is future work outside this module: it is the proof
 //!   of the Vault handover, not a code step.
+//!
+//! Follow-ups after PR #76 merged (Leader tin 8174):
+//!
+//! - F1 withdraw: `withdraw_secret` lets the requesting seat take back
+//!   its own request while it is still `requested`; the request moves
+//!   to the terminal state `withdrawn` and is never decided
+//!   afterwards. The approver's `deny` is unchanged: deny is the
+//!   approver's act, withdraw is the requester's own act.
+//! - F2 Zen revokes a user-class broker grant: `revoke_secret` accepts
+//!   Zen (`zen`) as the revoker for a user-class issuance, alongside
+//!   the issuer and the Leader. Zen owns the credential the grant
+//!   touches, so he can cut the grant off directly. A seat-class
+//!   issuance is unchanged: Zen cannot revoke it.
 //!
 //! Files, all under `<home>/.zen/` (the same tree that holds the task
 //! registry and the session transcripts):
@@ -217,8 +231,9 @@ impl SecretClass {
     }
 }
 
-/// The eight request states (design section 4.4). State moves forward
-/// only, except `denied` and `revoked`, which are terminal.
+/// The request states (design section 4.4, plus `withdrawn` from
+/// follow-up F1, Leader tin 8174). State moves forward only, except
+/// `denied`, `withdrawn`, and `revoked`, which are terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RequestState {
@@ -230,6 +245,7 @@ pub enum RequestState {
     Expired,
     Revoked,
     Rotated,
+    Withdrawn,
 }
 
 impl RequestState {
@@ -243,6 +259,7 @@ impl RequestState {
             RequestState::Expired => "expired",
             RequestState::Revoked => "revoked",
             RequestState::Rotated => "rotated",
+            RequestState::Withdrawn => "withdrawn",
         }
     }
 
@@ -256,6 +273,7 @@ impl RequestState {
             "expired" => RequestState::Expired,
             "revoked" => RequestState::Revoked,
             "rotated" => RequestState::Rotated,
+            "withdrawn" => RequestState::Withdrawn,
             _ => return None,
         })
     }
@@ -311,6 +329,10 @@ pub struct SecretRequest {
     pub decided_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// The reason the request ended: the denial, withdrawal,
+    /// revocation, or one-shot consumption reason. The audit line
+    /// carries the same reason; this field keeps the record itself
+    /// explainable without reading the audit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deny_reason: Option<String>,
     /// A one-shot issuance is consumed by its first real use and then
@@ -1133,6 +1155,45 @@ pub fn deny_secret(
     Ok(req)
 }
 
+/// Withdraw a request (follow-up F1, Leader tin 8174): the requesting
+/// seat takes back its own request while it is still undecided. Only
+/// from `requested`, and only by the seat that filed it (exit 5
+/// otherwise): the Leader denies instead of withdrawing, and any
+/// other seat has no act of its own on the request. A withdrawn
+/// request is terminal: it is never approved, denied, issued, or
+/// revoked afterwards, and the seat files a new request if it still
+/// needs the secret. An approved request cannot be withdrawn - it
+/// lapses at its `until` - and a live issuance is ended by `revoke`,
+/// not by withdraw. The reason is recorded in `deny_reason`, the
+/// terminal-reason field, and in the audit line.
+pub fn withdraw_secret(
+    store: &SecretStore,
+    request_id: &str,
+    by: &str,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> SecretResult<SecretRequest> {
+    let mut req = load_request(store, request_id)?;
+    if req.state != RequestState::Requested {
+        return Err(SecretError::conflict(format!(
+            "request '{request_id}' is {} and cannot be withdrawn; only a requested request can be withdrawn",
+            req.state.as_str()
+        )));
+    }
+    if by != req.seat {
+        return Err(SecretError::forbidden(format!(
+            "only the requesting seat '{}' withdraws request '{request_id}': '{by}' did not file it",
+            req.seat
+        )));
+    }
+    refuse_shaped("reason", reason)?;
+    req.state = RequestState::Withdrawn;
+    req.deny_reason = Some(reason.to_string());
+    append_request(store, &req)?;
+    audit(store, &req, by, reason, now)?;
+    Ok(req)
+}
+
 /// The check that gates issuance (design section 4.5, step 1): the
 /// request must be `approved`, the name registered and not
 /// deregistered, and the `until` still in the future. Until the DS-5
@@ -1230,7 +1291,11 @@ pub fn issue_secret(
 
 /// Move a live issuance to `revoked`. Immediate: the next check
 /// refuses. Only the issuer who placed the value, or the Leader,
-/// revokes (design sections 4.4 and 4.7: "the issuer or the Leader").
+/// revokes (design sections 4.4 and 4.7: "the issuer or the Leader") -
+/// and, for a user-class broker grant, Zen too (follow-up F2, Leader
+/// tin 8174): Zen owns the credential the grant touches, so he can
+/// cut the grant off directly instead of asking the issuer or the
+/// Leader. A seat-class issuance is unchanged: Zen cannot revoke it.
 /// Revocation never deletes the request record.
 pub fn revoke_secret(
     store: &SecretStore,
@@ -1247,9 +1312,20 @@ pub fn revoke_secret(
         )));
     }
     let issuer = req.issued_by.as_deref().unwrap_or("");
-    if by != issuer && by != LEADER_APPROVER {
+    // F2: Zen revokes a user-class broker grant directly. The class
+    // check keeps this closed for seat secrets, where Zen is still
+    // refused (the issuer or the Leader revokes those).
+    let zen_may_revoke = req.class == SecretClass::User && by == ZEN_APPROVER;
+    if by != issuer && by != LEADER_APPROVER && !zen_may_revoke {
+        let allowed = if req.class == SecretClass::User {
+            format!(
+                "only the issuer '{issuer}', '{LEADER_APPROVER}', or '{ZEN_APPROVER}' (for a user-class broker grant) revokes"
+            )
+        } else {
+            format!("only the issuer '{issuer}' or '{LEADER_APPROVER}' revokes")
+        };
         return Err(SecretError::forbidden(format!(
-            "revoker '{by}' cannot revoke request '{request_id}': only the issuer '{issuer}' or '{LEADER_APPROVER}' revokes"
+            "revoker '{by}' cannot revoke request '{request_id}': {allowed}"
         )));
     }
     refuse_shaped("reason", reason)?;
@@ -2502,6 +2578,190 @@ mod tests {
         let revoked =
             revoke_secret(&store, &issued.request_id, LEADER_APPROVER, "no", now).unwrap();
         assert_eq!(revoked.state, RequestState::Revoked);
+    }
+
+    fn request_user_broker(store: &SecretStore, seat: &str, now: DateTime<Utc>) -> SecretRequest {
+        request_secret(
+            store,
+            RequestInput {
+                name: "ZEN_PERSONAL_LOGIN".to_string(),
+                seat: seat.to_string(),
+                task_id: None,
+                purpose: "read the inbox once".to_string(),
+                scope: "task:DS-7".to_string(),
+                until: rfc3339(now + Duration::hours(12)),
+                one_shot: false,
+                broker_action: Some("read inbox".to_string()),
+            },
+            now,
+        )
+        .unwrap()
+    }
+
+    fn issue_user_broker(store: &SecretStore, seat: &str, now: DateTime<Utc>) -> SecretRequest {
+        let req = request_user_broker(store, seat, now);
+        approve_secret(store, &req.request_id, ZEN_APPROVER, "tin 1", now).unwrap();
+        issue_secret(store, &req.request_id, OPERATOR_ISSUER, now).unwrap()
+    }
+
+    #[test]
+    fn withdraw_is_the_requesting_seat_own_act() {
+        let (_dir, store) = temp_store("withdraw");
+        let now = fixed_now();
+        register_openrouter(&store, now);
+        let req = request_openrouter(&store, "zd-developer", now + Duration::days(1), false);
+        // Anyone but the requesting seat is refused: another seat,
+        // and the Leader, who denies instead of withdrawing (F1).
+        for by in ["zc-developer", LEADER_APPROVER] {
+            let err =
+                withdraw_secret(&store, &req.request_id, by, "changed my mind", now).unwrap_err();
+            assert_eq!(err.code(), exit_code::FORBIDDEN);
+        }
+        let stored = load_request(&store, &req.request_id).unwrap();
+        assert_eq!(stored.state, RequestState::Requested);
+        // The requesting seat withdraws its own undecided request.
+        let withdrawn = withdraw_secret(
+            &store,
+            &req.request_id,
+            "zd-developer",
+            "no longer needed",
+            now,
+        )
+        .unwrap();
+        assert_eq!(withdrawn.state, RequestState::Withdrawn);
+        assert_eq!(withdrawn.deny_reason.as_deref(), Some("no longer needed"));
+        // Withdrawn is terminal: no approve, deny, issue, revoke, or
+        // second withdraw afterwards; the seat files a new request.
+        assert_eq!(
+            approve_secret(&store, &req.request_id, LEADER_APPROVER, "tin 1", now)
+                .unwrap_err()
+                .code(),
+            exit_code::CONFLICT
+        );
+        assert_eq!(
+            deny_secret(&store, &req.request_id, LEADER_APPROVER, "no", now)
+                .unwrap_err()
+                .code(),
+            exit_code::CONFLICT
+        );
+        assert_eq!(
+            issue_secret(&store, &req.request_id, OPERATOR_ISSUER, now)
+                .unwrap_err()
+                .code(),
+            exit_code::CONFLICT
+        );
+        assert_eq!(
+            revoke_secret(&store, &req.request_id, LEADER_APPROVER, "no", now)
+                .unwrap_err()
+                .code(),
+            exit_code::CONFLICT
+        );
+        assert_eq!(
+            withdraw_secret(&store, &req.request_id, "zd-developer", "again", now)
+                .unwrap_err()
+                .code(),
+            exit_code::CONFLICT
+        );
+        // The check refuses a withdrawn request, and the audit shows
+        // who withdrew it.
+        let check = check_use(&store, &req.request_id, "zd-developer", now).unwrap();
+        assert!(!check.allowed);
+        assert!(check.reason.contains("withdrawn"), "{}", check.reason);
+        let audit = load_audit(&store).unwrap();
+        assert!(audit.iter().any(|e| e.state == RequestState::Withdrawn
+            && e.actor == "zd-developer"
+            && e.reason == "no longer needed"));
+        // Listing by the withdrawn state finds it.
+        let listed = list_requests(&store, None, Some(RequestState::Withdrawn), now).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].request_id, req.request_id);
+    }
+
+    #[test]
+    fn withdraw_only_from_requested() {
+        let (_dir, store) = temp_store("withdrawstate");
+        let now = fixed_now();
+        register_openrouter(&store, now);
+        // An approved request cannot be withdrawn: nothing is issued
+        // yet, so it lapses at its until; a live issuance is ended by
+        // revoke, not by withdraw.
+        let req = request_openrouter(&store, "zd-developer", now + Duration::days(1), false);
+        approve_secret(&store, &req.request_id, LEADER_APPROVER, "tin 1", now).unwrap();
+        let err =
+            withdraw_secret(&store, &req.request_id, "zd-developer", "too late", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::CONFLICT);
+        assert!(err.to_string().contains("approved"), "{}", err);
+        let stored = load_request(&store, &req.request_id).unwrap();
+        assert_eq!(stored.state, RequestState::Approved);
+        // A denied request cannot be withdrawn either.
+        let denied = request_openrouter(&store, "zd-developer", now + Duration::days(1), false);
+        deny_secret(&store, &denied.request_id, LEADER_APPROVER, "no", now).unwrap();
+        let err = withdraw_secret(&store, &denied.request_id, "zd-developer", "too late", now)
+            .unwrap_err();
+        assert_eq!(err.code(), exit_code::CONFLICT);
+    }
+
+    #[test]
+    fn withdraw_refuses_a_secret_shaped_reason() {
+        let (_dir, store) = temp_store("withdrawshaped");
+        let now = fixed_now();
+        register_openrouter(&store, now);
+        let req = request_openrouter(&store, "zd-developer", now + Duration::days(1), false);
+        // A 40-hex string built at run time, never a literal in the
+        // source: the writer refuses it with the pattern named.
+        let shaped = format!("leaked {:040x}", 0xdeadbeefu64);
+        let err =
+            withdraw_secret(&store, &req.request_id, "zd-developer", &shaped, now).unwrap_err();
+        assert_eq!(err.code(), exit_code::VALIDATION);
+        assert!(err.to_string().contains("40-hex"), "{}", err);
+        let stored = load_request(&store, &req.request_id).unwrap();
+        assert_eq!(stored.state, RequestState::Requested);
+        assert!(!file_has_shaped_value(&store));
+    }
+
+    #[test]
+    fn zen_revokes_a_user_class_broker_grant() {
+        let (_dir, store) = temp_store("zenrevoke");
+        let now = fixed_now();
+        register_openrouter(&store, now);
+        register_user_secret(&store, now);
+        // A broker grant issued by Z Ops: Zen revokes it directly
+        // (F2, Leader tin 8174). The grant is live before, dead after.
+        let grant = issue_user_broker(&store, "zd-developer", now);
+        assert_eq!(grant.state, RequestState::Issued);
+        assert!(grant.vault_entry.is_none());
+        let check = check_use(&store, &grant.request_id, "zd-developer", now).unwrap();
+        assert!(check.allowed, "{check:?}");
+        let revoked = revoke_secret(
+            &store,
+            &grant.request_id,
+            ZEN_APPROVER,
+            "key rotated by Zen",
+            now,
+        )
+        .unwrap();
+        assert_eq!(revoked.state, RequestState::Revoked);
+        let check = check_use(&store, &grant.request_id, "zd-developer", now).unwrap();
+        assert!(!check.allowed);
+        assert!(check.reason.contains("revoked"), "{}", check.reason);
+        // The issuer and the Leader can still revoke a user grant;
+        // any other seat cannot.
+        let grant = issue_user_broker(&store, "zd-developer", now);
+        let revoked =
+            revoke_secret(&store, &grant.request_id, OPERATOR_ISSUER, "done", now).unwrap();
+        assert_eq!(revoked.state, RequestState::Revoked);
+        let grant = issue_user_broker(&store, "zd-developer", now);
+        let revoked =
+            revoke_secret(&store, &grant.request_id, LEADER_APPROVER, "done", now).unwrap();
+        assert_eq!(revoked.state, RequestState::Revoked);
+        let grant = issue_user_broker(&store, "zd-developer", now);
+        let err = revoke_secret(&store, &grant.request_id, "zc-developer", "no", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
+        // Unchanged for a seat secret: Zen still cannot revoke it
+        // (revoke_requires_issuer_or_leader pins this).
+        let issued = issue_openrouter(&store, "zd-developer", now);
+        let err = revoke_secret(&store, &issued.request_id, ZEN_APPROVER, "no", now).unwrap_err();
+        assert_eq!(err.code(), exit_code::FORBIDDEN);
     }
 
     #[test]

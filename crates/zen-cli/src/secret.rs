@@ -18,8 +18,8 @@ use crate::{coded_error, exit_code};
 use zen_core::secret::{
     approve_secret, check_use, deny_secret, deregister_secret, issue_secret, list_requests,
     record_use, register_secret, request_secret, revoke_secret, rotate_secret, secret_status,
-    CheckOutcome, RegisterInput, RegistryEntry, RequestInput, RequestState, SecretClass,
-    SecretRequest, SecretStatus, SecretStore, UseOutcome,
+    withdraw_secret, CheckOutcome, RegisterInput, RegistryEntry, RequestInput, RequestState,
+    SecretClass, SecretRequest, SecretStatus, SecretStore, UseOutcome,
 };
 
 fn print_json(value: &serde_json::Value, raw: bool) -> Result<()> {
@@ -170,7 +170,7 @@ pub fn run_secret(
                     coded_error(
                         exit_code::VALIDATION,
                         format!(
-                            "invalid state '{s}': expected one of requested, approved, denied, issued, active, expired, revoked, rotated"
+                            "invalid state '{s}': expected one of requested, approved, denied, issued, active, expired, revoked, rotated, withdrawn"
                         ),
                     )
                 })?),
@@ -221,6 +221,22 @@ pub fn run_secret(
                         print_json(&serde_json::to_value(&req)?, raw)?
                     }
                     OutputFormat::Text => println!("denied {}", render_request_text(&req)),
+                }
+            }
+            Ok(0)
+        }
+        SecretSubcommand::Withdraw {
+            request,
+            by,
+            reason,
+        } => {
+            let req = withdraw_secret(&store, request, by, reason, now).map_err(map_err)?;
+            if !quiet {
+                match format {
+                    OutputFormat::Json | OutputFormat::StreamJson => {
+                        print_json(&serde_json::to_value(&req)?, raw)?
+                    }
+                    OutputFormat::Text => println!("withdrawn {}", render_request_text(&req)),
                 }
             }
             Ok(0)
@@ -394,6 +410,26 @@ mod tests {
                 rotation_days: 90,
                 paid: false,
                 reason: "provider key for verification runs".to_string(),
+            },
+            Utc::now(),
+        )
+        .unwrap();
+    }
+
+    fn seed_user_registry(home: &Path) {
+        let store = Store::new(home.join(".zen"));
+        register_secret(
+            &store,
+            RegisterInput {
+                name: "ZEN_PERSONAL_LOGIN".to_string(),
+                class: SecretClass::User,
+                service: "personal account".to_string(),
+                owner: "zen".to_string(),
+                registered_by: "zc-leader".to_string(),
+                default_until_days: 1,
+                rotation_days: 30,
+                paid: false,
+                reason: "broker-only personal login".to_string(),
             },
             Utc::now(),
         )
@@ -642,5 +678,169 @@ mod tests {
         let err =
             run_secret(&bad_class, &OutputFormat::Text, true, false, Some(&home)).unwrap_err();
         assert_eq!(crate::exit_code_for_error(&err), exit_code::VALIDATION);
+    }
+
+    #[test]
+    fn secret_withdraw_round_trip_through_cli() {
+        let home = temp_home("withdrawcli");
+        seed_registry(&home);
+        let until =
+            (Utc::now() + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        run_secret(
+            &request_args(&until),
+            &OutputFormat::Text,
+            true,
+            false,
+            Some(&home),
+        )
+        .unwrap();
+        let requests = load_requests(&Store::new(home.join(".zen"))).unwrap();
+        let id = requests[0].request_id.clone();
+        // Another seat cannot withdraw it, exit 5.
+        let other = SecretArgs {
+            command: SecretSubcommand::Withdraw {
+                request: id.clone(),
+                by: "zc-developer".to_string(),
+                reason: "not mine".to_string(),
+            },
+        };
+        let err = run_secret(&other, &OutputFormat::Text, true, false, Some(&home)).unwrap_err();
+        assert_eq!(crate::exit_code_for_error(&err), exit_code::FORBIDDEN);
+        // The requesting seat withdraws it, exit 0.
+        let withdraw = SecretArgs {
+            command: SecretSubcommand::Withdraw {
+                request: id.clone(),
+                by: "zd-developer".to_string(),
+                reason: "no longer needed".to_string(),
+            },
+        };
+        assert_eq!(
+            run_secret(&withdraw, &OutputFormat::Text, true, false, Some(&home)).unwrap(),
+            0
+        );
+        let requests = load_requests(&Store::new(home.join(".zen"))).unwrap();
+        assert_eq!(requests[0].state, RequestState::Withdrawn);
+        // Approving a withdrawn request is a conflict, exit 7.
+        let approve = SecretArgs {
+            command: SecretSubcommand::Approve {
+                request: id.clone(),
+                by: "zc-leader".to_string(),
+                evidence: "tin 1".to_string(),
+            },
+        };
+        let err = run_secret(&approve, &OutputFormat::Text, true, false, Some(&home)).unwrap_err();
+        assert_eq!(crate::exit_code_for_error(&err), exit_code::CONFLICT);
+    }
+
+    fn user_request_args(until: &str) -> SecretArgs {
+        SecretArgs {
+            command: SecretSubcommand::Request {
+                name: "ZEN_PERSONAL_LOGIN".to_string(),
+                purpose: "read the inbox once".to_string(),
+                scope: "task:DS-7".to_string(),
+                until: until.to_string(),
+                task: None,
+                one_shot: false,
+                broker_action: Some("read inbox".to_string()),
+                seat: Some("zd-developer".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn secret_zen_revokes_user_broker_grant_through_cli() {
+        let home = temp_home("zenrevokecli");
+        seed_registry(&home);
+        seed_user_registry(&home);
+        // A user-class broker grant: Zen approves, Z Ops issues, Zen
+        // revokes it directly (F2).
+        let until =
+            (Utc::now() + Duration::hours(12)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        run_secret(
+            &user_request_args(&until),
+            &OutputFormat::Text,
+            true,
+            false,
+            Some(&home),
+        )
+        .unwrap();
+        let requests = load_requests(&Store::new(home.join(".zen"))).unwrap();
+        let id = requests[0].request_id.clone();
+        let approve = SecretArgs {
+            command: SecretSubcommand::Approve {
+                request: id.clone(),
+                by: "zen".to_string(),
+                evidence: "tin 1".to_string(),
+            },
+        };
+        assert_eq!(
+            run_secret(&approve, &OutputFormat::Text, true, false, Some(&home)).unwrap(),
+            0
+        );
+        let issue = SecretArgs {
+            command: SecretSubcommand::Issue {
+                request: id.clone(),
+                by: "z-ops".to_string(),
+            },
+        };
+        assert_eq!(
+            run_secret(&issue, &OutputFormat::Text, true, false, Some(&home)).unwrap(),
+            0
+        );
+        let revoke = SecretArgs {
+            command: SecretSubcommand::Revoke {
+                request: id.clone(),
+                by: "zen".to_string(),
+                reason: "key rotated by Zen".to_string(),
+            },
+        };
+        assert_eq!(
+            run_secret(&revoke, &OutputFormat::Text, true, false, Some(&home)).unwrap(),
+            0
+        );
+        let requests = load_requests(&Store::new(home.join(".zen"))).unwrap();
+        assert_eq!(requests[0].state, RequestState::Revoked);
+        // Unchanged for a seat secret: Zen cannot revoke it, exit 5.
+        let seat_until =
+            (Utc::now() + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        run_secret(
+            &request_args(&seat_until),
+            &OutputFormat::Text,
+            true,
+            false,
+            Some(&home),
+        )
+        .unwrap();
+        let requests = load_requests(&Store::new(home.join(".zen"))).unwrap();
+        let seat_id = requests
+            .iter()
+            .find(|r| r.name == "OPENROUTER_KEY")
+            .unwrap()
+            .request_id
+            .clone();
+        let approve = SecretArgs {
+            command: SecretSubcommand::Approve {
+                request: seat_id.clone(),
+                by: "zc-leader".to_string(),
+                evidence: "tin 1".to_string(),
+            },
+        };
+        run_secret(&approve, &OutputFormat::Text, true, false, Some(&home)).unwrap();
+        let issue = SecretArgs {
+            command: SecretSubcommand::Issue {
+                request: seat_id.clone(),
+                by: "z-ops".to_string(),
+            },
+        };
+        run_secret(&issue, &OutputFormat::Text, true, false, Some(&home)).unwrap();
+        let revoke = SecretArgs {
+            command: SecretSubcommand::Revoke {
+                request: seat_id.clone(),
+                by: "zen".to_string(),
+                reason: "no".to_string(),
+            },
+        };
+        let err = run_secret(&revoke, &OutputFormat::Text, true, false, Some(&home)).unwrap_err();
+        assert_eq!(crate::exit_code_for_error(&err), exit_code::FORBIDDEN);
     }
 }
