@@ -28,6 +28,7 @@ pub enum ReadOutcome {
 pub struct LineReader {
     editor: Option<Editor<SlashHelper, DefaultHistory>>,
     history: Option<PathBuf>,
+    prompt_sgr: Option<u8>,
 }
 
 /// Where the REPL history lives, under the user's home.
@@ -49,7 +50,13 @@ pub fn split_prompt(prompt: &str) -> (&str, &str) {
 /// cursor as a hint, and Esc cancels the list; both keys are named in the
 /// REPL banner.
 #[derive(Clone, Copy, Default)]
-pub struct SlashHelper;
+pub struct SlashHelper {
+    /// SGR code that paints the trailing "> " of the prompt, or None
+    /// for no styling. Taken from the active theme on every read; the
+    /// prompt string itself is always handed to rustyline unstyled
+    /// (see `editor_prompt`).
+    pub prompt_sgr: Option<u8>,
+}
 
 /// The word being completed is a slash command when the text before the
 /// cursor starts with a slash and has no whitespace yet (arguments are not
@@ -114,6 +121,27 @@ impl Hinter for SlashHelper {
 }
 
 impl Highlighter for SlashHelper {
+    /// Paint only the trailing "> " marker of the prompt. This is the
+    /// one place prompt styling may live: rustyline measures the
+    /// prompt string it is given, so styling baked into that string
+    /// counts as printable columns and corrupts every redraw (on
+    /// Windows, up to erasing freshly typed characters). The layout
+    /// math always sees the unstyled prompt; only the displayed copy
+    /// returned here carries the SGR codes.
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        _default: bool,
+    ) -> Cow<'b, str> {
+        match self.prompt_sgr {
+            Some(code) if prompt.ends_with("> ") => {
+                let head = &prompt[..prompt.len() - 2];
+                Cow::Owned(format!("{head}\x1b[{code}m> \x1b[0m"))
+            }
+            _ => Cow::Borrowed(prompt),
+        }
+    }
+
     // The ghost hint must be returned verbatim, with no ANSI styling.
     // rustyline 18 has no default dim ghost style to replace: its
     // default highlight_hint already returns the hint as-is, and its
@@ -149,6 +177,39 @@ fn editor_config() -> Config {
         .build()
 }
 
+/// Remove ANSI escape sequences from `s`: CSI sequences (ESC [ ...
+/// final byte in @ through ~) and any other two-byte ESC sequence.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if let Some('[') = chars.next() {
+                for c2 in chars.by_ref() {
+                    if ('@'..='~').contains(&c2) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The prompt actually handed to the line editor: the last prompt
+/// line with all styling removed. rustyline's contract is that the
+/// prompt passed to `readline` is unstyled - its layout code counts
+/// any ANSI bytes in it as printable columns (a cyan "> " measured 11
+/// columns instead of 2), and on Windows every redraw clears and
+/// repositions from that wrong layout, which is how typed characters
+/// ended up shifted or erased instead of echoing. The styling is
+/// re-applied for display only, by `SlashHelper::highlight_prompt`.
+pub fn editor_prompt(last: &str) -> String {
+    strip_ansi(last)
+}
+
 impl LineReader {
     pub fn new(home: Option<&std::path::Path>) -> Self {
         if plain_wanted() {
@@ -159,7 +220,7 @@ impl LineReader {
             Ok(e) => e,
             Err(_) => return Self::plain(),
         };
-        editor.set_helper(Some(SlashHelper));
+        editor.set_helper(Some(SlashHelper::default()));
         let _ = editor.set_max_history_size(HISTORY_MAX);
         let _ = editor.set_history_ignore_dups(true);
         let history = history_path(home);
@@ -169,6 +230,7 @@ impl LineReader {
         Self {
             editor: Some(editor),
             history,
+            prompt_sgr: None,
         }
     }
 
@@ -176,11 +238,19 @@ impl LineReader {
         Self {
             editor: None,
             history: None,
+            prompt_sgr: None,
         }
     }
 
     pub fn is_editing(&self) -> bool {
         self.editor.is_some()
+    }
+
+    /// Record the active theme's prompt styling for the next read.
+    /// The helper is re-installed with this value in `read`, because
+    /// the theme can change mid-session.
+    pub fn set_prompt_style(&mut self, theme: crate::repl_polish::Theme) {
+        self.prompt_sgr = theme.prompt_sgr();
     }
 
     pub fn set_vi(&mut self, on: bool) {
@@ -191,6 +261,7 @@ impl LineReader {
 
     pub fn read(&mut self, prompt: &str) -> ReadOutcome {
         let (before, last) = split_prompt(prompt);
+        let prompt_sgr = self.prompt_sgr;
         match self.editor.as_mut() {
             None => {
                 print!("{prompt}");
@@ -206,7 +277,8 @@ impl LineReader {
                     print!("{before}");
                     std::io::stdout().flush().ok();
                 }
-                match editor.readline(last) {
+                editor.set_helper(Some(SlashHelper { prompt_sgr }));
+                match editor.readline(&editor_prompt(last)) {
                     Ok(line) => ReadOutcome::Line(line),
                     Err(ReadlineError::Interrupted) => ReadOutcome::Interrupted,
                     Err(_) => ReadOutcome::Eof,
@@ -294,12 +366,49 @@ mod tests {
         // returned verbatim: rustyline 18 has no default dim ghost
         // style, its default highlight_hint already returns the hint
         // as-is.
-        let hint = SlashHelper.highlight_hint("iff");
+        let hint = SlashHelper::default().highlight_hint("iff");
         assert!(
             !hint.contains("\x1b"),
             "hint must not contain ANSI escapes, got: {hint:?}"
         );
         assert_eq!(hint.as_ref(), "iff");
+    }
+
+    #[test]
+    fn strip_ansi_removes_sgr_sequences() {
+        assert_eq!(strip_ansi("\x1b[36m> \x1b[0m"), "> ");
+        assert_eq!(strip_ansi("\x1b[38;5;27mblue\x1b[0m"), "blue");
+        assert_eq!(strip_ansi("plain"), "plain");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn editor_prompt_is_unstyled_with_true_width() {
+        // Regression (no-echo on Windows): the prompt handed to
+        // rustyline used to carry the cyan SGR codes, so rustyline
+        // laid the line out as if the prompt were 11 columns wide
+        // instead of 2 and every redraw on Windows cleared and
+        // repositioned from that wrong layout.
+        let p = editor_prompt("\x1b[36m> \x1b[0m");
+        assert!(!p.contains('\x1b'), "prompt must be unstyled: {p:?}");
+        assert_eq!(p, "> ");
+        assert_eq!(editor_prompt("[PLAN] \x1b[36m> \x1b[0m"), "[PLAN] > ");
+        assert_eq!(editor_prompt("... "), "... ");
+    }
+
+    #[test]
+    fn highlight_prompt_paints_only_trailing_marker() {
+        let h = SlashHelper {
+            prompt_sgr: Some(36),
+        };
+        assert_eq!(h.highlight_prompt("> ", true).as_ref(), "\x1b[36m> \x1b[0m");
+        assert_eq!(
+            h.highlight_prompt("[PLAN] > ", true).as_ref(),
+            "[PLAN] \x1b[36m> \x1b[0m"
+        );
+        assert_eq!(h.highlight_prompt("... ", true).as_ref(), "... ");
+        let plain = SlashHelper { prompt_sgr: None };
+        assert_eq!(plain.highlight_prompt("> ", true).as_ref(), "> ");
     }
 
     #[test]

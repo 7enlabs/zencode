@@ -405,6 +405,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
             p
         };
         reader.set_vi(repl.vim_mode);
+        reader.set_prompt_style(repl.theme);
 
         let line = match reader.read(&prompt) {
             crate::repl_input::ReadOutcome::Line(l) => {
