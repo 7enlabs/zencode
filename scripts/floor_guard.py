@@ -10,7 +10,8 @@ Reads CONSTRAINTS.md's rules as code. Three kinds of check:
   - F2  a workflow made softer: `continue-on-error: true`, `|| true`, or a removed
         `-D warnings` that no added line puts back.
   - F3  a removed or changed line inside CONSTRAINTS.md's "## Floor" or
-        "## Task guard" section, or a lowered number in ci/floor-baseline.json.
+        "## Task guard" section, or a lowered min_* / raised max_* number
+        in ci/floor-baseline.json.
 * Ratchet (whole tree): the number of Rust test functions must not fall below
   ci/floor-baseline.json's `min_rust_tests`.
 * Task guard (P0-3 section 4.3 layer 2, section 6 step 5): one task = one
@@ -188,6 +189,8 @@ def check_baseline(base_text: str | None, head_text: str | None) -> list[Finding
     for key, val in old.items():
         if key.startswith("min_") and isinstance(val, int) and new.get(key, 0) < val:
             out.append(Finding("F3", BASELINE, 0, f"{key} lowered from {val} to {new.get(key)}"))
+        if key.startswith("max_") and isinstance(val, int) and new.get(key, 0) > val:
+            out.append(Finding("F3", BASELINE, 0, f"{key} raised from {val} to {new.get(key)}"))
     return out
 
 

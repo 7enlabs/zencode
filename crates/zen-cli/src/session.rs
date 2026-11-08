@@ -233,7 +233,7 @@ pub fn append_record(path: &Path, record: &Value) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub fn append_typed(
     path: &Path,
     r#type: &str,

@@ -127,7 +127,7 @@ pub fn select_builtin_tools(
         .collect())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub async fn assemble(
     cli: &Cli,
     cwd: &Path,
@@ -568,7 +568,7 @@ fn tool_context(cwd: &Path, cfg: &ResolvedConfig, cli: &Cli, session_id: &str) -
     ctx
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub async fn run_agent_headless(
     cli: &Cli,
     cwd: &Path,
@@ -595,7 +595,7 @@ pub async fn run_agent_headless(
     Ok(code)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub(crate) async fn run_agent_with_result(
     cli: &Cli,
     cwd: &Path,
@@ -1042,7 +1042,7 @@ pub(crate) async fn run_agent_with_result(
     Ok((if result.is_error { 1 } else { 0 }, result))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub async fn run_plan_flow(
     cli: &Cli,
     cwd: &Path,

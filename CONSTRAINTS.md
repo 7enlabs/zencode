@@ -11,6 +11,7 @@ Task guard on every pull request (`.github/workflows/floor-guard.yml`).
 - Do not ship stubs: no new `todo!()` or `unimplemented!()`. Check: same command.
 - Do not soften CI: no `continue-on-error: true`, no `|| true`, no removed `-D warnings` in `.github/workflows/`. Check: same command.
 - Do not commit secrets. Check: the `secrets` job in `ci.yml` (gitleaks).
+- No unmarked inline-disable in runtime Rust code: no `#[allow(...)]` or `#![allow(...)]` in `crates/*/src` outside test files and `#[cfg(test)]` modules unless the line carries `// floor-guard: <reason>`; the count of justified runtime allows never exceeds `max_runtime_allows` in `ci/floor-baseline.json`. Check: `python3 scripts/arch_lint.py`.
 - Do not loosen this file to get a change through: removing or rewording a Floor line, or lowering a number in `ci/floor-baseline.json`, fails the guard. Check: same command.
 
 A line that truly needs one of these carries `// floor-guard: <reason>` on the same line
@@ -24,6 +25,7 @@ or the line above it. A human reviewer who accepts the reason adds the
   raise the number in the same or the next PR so the gain is locked in.
 - Clippy stays at zero warnings. Check: `cargo clippy --workspace --all-targets -- -D warnings`.
 - Formatting stays clean. Check: `cargo fmt --all -- --check`.
+- Runtime `#[allow]` count never exceeds `max_runtime_allows` in `ci/floor-baseline.json`; raising the number fails the guard (needs the `floor-change-approved` label). Check: `python3 scripts/arch_lint.py`.
 
 ## Task guard
 

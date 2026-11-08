@@ -1,4 +1,4 @@
-#![allow(clippy::module_inception)]
+#![allow(clippy::module_inception)] // floor-guard: module agent shares the crate name, rename deferred
 
 pub mod budget;
 mod client;

@@ -20,9 +20,9 @@ texts. This document explains how the pieces fit together so you can study the c
                          (wire types, Tool/LlmBackend/PermissionChecker/HookRunner/EventSink traits)
 ```
 
-**Why so many crates?** Each crate owns one concern and depends only on `zen-core`, so they can be
+**Why so many crates?** Each crate owns one concern and depends only on `zen-core` - except `zen-mcp`, which also uses `zen-tools` for the shared output-spill limit (`BASH_MAX_CHARS`, `spill_output`) - so they can be
 built, tested and understood in isolation (they were literally written in parallel by separate
-workers). Only `zen-cli` depends on everything; it is the composition root. Cross-crate needs that
+workers). Only `zen-cli` depends on everything; it is the composition root. The layer map is enforced by `scripts/arch_lint.py` (rule A1). Cross-crate needs that
 would create cycles are expressed as traits in `zen-core` - e.g. the `Task` tool (zen-mcp) needs to run
 an agent (zen-agent), so it receives an `Arc<dyn SubAgentRunner>` that zen-cli builds from zen-agent.
 

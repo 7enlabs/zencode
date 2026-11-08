@@ -416,7 +416,7 @@ impl LspClient {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // floor-guard: item kept intentionally, unused for now
     pub(crate) fn kill(&self) {
         let pid = self.child_pid.lock().ok().and_then(|mut g| g.take());
         if let Ok(mut guard) = self.child.lock() {
