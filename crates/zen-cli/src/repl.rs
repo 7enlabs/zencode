@@ -343,6 +343,12 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         interrupts: interrupts.as_mut(),
         recorder: assembly.recorder.clone(),
         home_api_key,
+        // Auto is on when the routed startup model is already the
+        // current provider's best free model (the default path).
+        auto_model: crate::models::provider_for_base_url(&cfg.base_url)
+            .and_then(crate::models::provider_default_model)
+            .map(|e| e.gateway_id == cfg.model.as_str())
+            .unwrap_or(false),
         goal: None,
         personality: repl_polish::Personality::default(),
         theme: repl_polish::Theme::default(),
@@ -498,6 +504,10 @@ struct ReplState<'a> {
     // API key resolved at startup for the configured route; a /model
     // round trip restores it (see apply_model_switch, review F1).
     home_api_key: Option<String>,
+
+    // Auto mode (Leader tin 7962): on by default. A pinned /model
+    // switch turns it off; /model auto and /provider turn it back on.
+    auto_model: bool,
 
     goal: Option<String>,
 
@@ -998,10 +1008,11 @@ fn available_model_rows(home: Option<&Path>, base_url: &str) -> Vec<ModelRow> {
 /// Numbered model table for `/model`: short name, provider, context
 /// window and probe latency, with the current model marked by a leading
 /// `▸`. Pure formatting so it is unit-testable without a provider.
-fn format_model_list(current: &str, rows: &[ModelRow]) -> String {
+fn format_model_list(current: &str, rows: &[ModelRow], auto: bool) -> String {
     let mut out = String::new();
     let (_, current_short) = split_model_id(current);
-    out.push_str(&format!("Models — current: {current_short}\n"));
+    let auto_mark = if auto { " (auto)" } else { "" };
+    out.push_str(&format!("Models — current: {current_short}{auto_mark}\n"));
     // Drop columns on narrow output: latency first, then context.
     let name_width = rows
         .iter()
@@ -1227,7 +1238,37 @@ async fn handle_slash(
         "/model" => {
             let rows = available_model_rows(home, &cfg.base_url);
             if arg.is_empty() {
-                print!("{}", format_model_list(&agent.config.model, &rows));
+                print!(
+                    "{}",
+                    format_model_list(&agent.config.model, &rows, repl.auto_model)
+                );
+            } else if arg == "auto" {
+                // Auto mode back on (Leader tin 7962): the current
+                // provider's best free model.
+                match crate::models::provider_for_base_url(&cfg.base_url)
+                    .and_then(crate::models::provider_default_model)
+                {
+                    Some(entry) => {
+                        let id = entry.id.to_string();
+                        match apply_model_switch(
+                            cfg,
+                            agent,
+                            repl.recorder.as_ref(),
+                            home,
+                            &repl.home_api_key,
+                            &id,
+                        ) {
+                            Ok(msg) => {
+                                repl.auto_model = true;
+                                println!("{msg} (auto)");
+                            }
+                            Err(e) => eprintln!("{e}"),
+                        }
+                    }
+                    None => {
+                        eprintln!("auto needs a known provider; the current base URL is custom")
+                    }
+                }
             } else {
                 match pick_model(&arg, &rows) {
                     Ok(id) => {
@@ -1239,11 +1280,46 @@ async fn handle_slash(
                             &repl.home_api_key,
                             &id,
                         ) {
-                            Ok(msg) => println!("{msg}"),
+                            Ok(msg) => {
+                                // A pinned model turns auto off.
+                                repl.auto_model = false;
+                                println!("{msg}");
+                            }
                             Err(e) => eprintln!("{e}"),
                         }
                     }
                     Err(e) => eprintln!("{e}"),
+                }
+            }
+        }
+        "/provider" => {
+            // Switch provider (Leader tin 7962): the model resets to
+            // the new provider's best free model, and auto turns on.
+            // apply_model_switch moves base URL, key and backend
+            // together, so the switch cannot strand a model on the
+            // wrong gateway (the PR #71 HTTP 400 bug).
+            if arg.is_empty() {
+                println!("usage: /provider <experientiallabs|openrouter> — switch provider; model resets to that provider's best free model");
+            } else {
+                match crate::models::provider_default_model(&arg) {
+                    Some(entry) => {
+                        let id = entry.id.to_string();
+                        match apply_model_switch(
+                            cfg,
+                            agent,
+                            repl.recorder.as_ref(),
+                            home,
+                            &repl.home_api_key,
+                            &id,
+                        ) {
+                            Ok(msg) => {
+                                repl.auto_model = true;
+                                println!("{msg} (auto)");
+                            }
+                            Err(e) => eprintln!("{e}"),
+                        }
+                    }
+                    None => eprintln!("unknown provider '{arg}' (experientiallabs, openrouter)"),
                 }
             }
         }
@@ -2246,7 +2322,7 @@ mod model_picker_tests {
 
     #[test]
     fn model_list_marks_the_current_model() {
-        let out = format_model_list("cohere/north-mini-code:free", &rows());
+        let out = format_model_list("cohere/north-mini-code:free", &rows(), false);
         assert!(out.contains("Models — current: north-mini-code:free"));
         // Short name + provider + context + latency columns.
         assert!(out.contains("1. deepseek-v4.1-flash"));
@@ -2519,7 +2595,7 @@ mod model_picker_tests {
 
     #[test]
     fn model_list_marks_current_by_gateway_id() {
-        let out = format_model_list("deepseek-v4.1-flash", &rows());
+        let out = format_model_list("deepseek-v4.1-flash", &rows(), false);
         assert!(out.contains("Models — current: deepseek-v4.1-flash"));
         let first = out.lines().nth(1).unwrap();
         assert!(first.starts_with("▸ 1."), "{first}");
@@ -2621,6 +2697,38 @@ mod model_picker_tests {
             Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
             None => std::env::remove_var("OPENROUTER_API_KEY"),
         }
+    }
+
+    #[test]
+    fn route_auto_resolves_to_provider_default() {
+        // Auto mode (Leader tin 7962): `auto` means the current
+        // provider's best free model.
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = test_cfg();
+        cfg.model = "auto".to_string();
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(routed);
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        // On the OpenRouter base, auto is that provider's default.
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let mut cfg = test_cfg();
+        cfg.model = "auto".to_string();
+        cfg.base_url = crate::models::OPENROUTER_BASE_URL.to_string();
+        let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
+        assert!(routed);
+        assert_eq!(cfg.model, "qwen/qwen3-coder:free");
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+        // A custom base has no known provider: auto refuses clearly
+        // instead of sending the literal string "auto" to the gateway.
+        let mut cfg = test_cfg();
+        cfg.model = "auto".to_string();
+        cfg.base_url = "https://example.invalid/v1".to_string();
+        let err = crate::settings::route_catalog_model(&mut cfg).unwrap_err();
+        assert!(err.to_string().contains("known provider"), "{err}");
     }
 
     #[test]
