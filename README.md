@@ -262,6 +262,23 @@ project commands/skills. Everything from `~/.zen/` always loads; project deny ru
 - CI/scripts that rely on a repo's own hooks or MCP servers: add `--trust-folder` (or set
   `ZEN_TRUST_FOLDER=1`).
 
+### Anonymous usage counter
+
+ZenCode counts how many installs are active, so the team can see whether anyone uses it.
+Once per 24 hours at startup the CLI sends one anonymous ping with exactly four fields:
+a random install id (generated on first run, stored in `~/.zen/user-counter.json`), the CLI
+version, the OS, and the CPU architecture. The server stores only a SHA-256 hash of the
+install id and never stores your IP address. No email, no account, no prompts, no code,
+no file paths. Aggregates are public at `GET https://count.runzen.dev/stats`.
+
+Opt out at any time, through any of:
+
+- `DO_NOT_TRACK=1`
+- `ZENCODE_TELEMETRY=0`
+- `"telemetry": "off"` in `~/.zen/settings.json`
+
+Full details: `docs/privacy.md`. Backend source: `workers/user-counter/`.
+
 ## `zen models` - free-model auto-discovery
 
 Free-model catalogs rotate constantly, so `zen models` probes the configured

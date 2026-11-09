@@ -16,6 +16,9 @@ pub struct ResolvedConfig {
     pub model_auto: bool,
 
     pub btw_model: Option<String>,
+    /// Merged "telemetry" setting ("off" opts out of the anonymous
+    /// user counter, Viec 7); read from the settings extra map.
+    pub telemetry: Option<String>,
     pub base_url: String,
     pub api_key: Option<String>,
 
@@ -518,6 +521,11 @@ pub fn resolve_config_with_home(
         .btw_model
         .clone()
         .or_else(|| crate::btw::settings_btw_model(&merged.extra));
+    let telemetry = merged
+        .extra
+        .get("telemetry")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     let spec = zen_agent::providers::ModelSpec::parse(&raw_model, DEFAULT_BASE_URL, false);
     let provider_key = spec
@@ -619,6 +627,7 @@ pub fn resolve_config_with_home(
         model,
         model_auto,
         btw_model,
+        telemetry,
         base_url,
         api_key,
         api_key_env: merged.api_key_env.clone(),

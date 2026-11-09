@@ -216,6 +216,7 @@ fn welcome_box(
 
 pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> {
     let mut cfg = crate::settings::resolve_config_with_home(cli, cwd, home)?;
+    crate::telemetry::maybe_ping(home, cfg.telemetry.as_deref());
     // The key resolved for the configured route, kept verbatim: a
     // /model round trip through another provider restores this key
     // instead of leaking that provider's key (PR #71 review F1).

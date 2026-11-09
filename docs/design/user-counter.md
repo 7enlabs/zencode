@@ -23,7 +23,7 @@ A "user" = a distinct install_id. Multi-device installs count as multiple - docu
 
 On startup, `zen` checks `~/.config/zencode/config.toml`:
 - If `telemetry = "off"` or env `DO_NOT_TRACK=1` / `ZENCODE_TELEMETRY=0` → skip entirely.
-- If last ping > 24h ago → POST `https://count.zencodego.com/ping` with body:
+- If last ping > 24h ago → POST `https://count.runzen.dev/ping` with body:
   ```json
   {"install_id": "<uuid>", "version": "0.1.0", "os": "linux", "arch": "x86_64"}
   ```
