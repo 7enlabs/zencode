@@ -13,10 +13,11 @@
 //! - ZENCODE_TELEMETRY=0
 //! - "telemetry": "off" in ~/.zen/settings.json
 //!
-//! The design doc phrases the settings opt-out as
-//! "zen config set telemetry off"; this build has no config
-//! subcommand, so the settings file and the env vars are the working
-//! opt-out paths and the first-run notice below names them.
+//! The design doc (OPT-OUT, §2/§3) names the same three opt-out
+//! paths - DO_NOT_TRACK=1, ZENCODE_TELEMETRY=0, and "telemetry": "off"
+//! in ~/.zen/settings.json. This build has no `zen config` subcommand,
+//! so the settings file and the env vars are the working opt-out
+//! paths and the first-run notice below names them.
 //!
 //! The ping is fire-and-forget: a 3 second timeout, every failure
 //! swallowed, and the state file is updated before the send so a
