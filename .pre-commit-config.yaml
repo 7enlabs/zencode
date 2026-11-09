@@ -1,0 +1,26 @@
+# Tier 0 of the tiered pipeline: local checks, budget < 60 seconds.
+# Only fast, deterministic checks live here - clippy and the test suite
+# belong to the MR tier (ci.yml), never to pre-commit.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+  - repo: local
+    hooks:
+      - id: cargo-fmt-check
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        types: [rust]
+      - id: arch-lint
+        name: architectural lint
+        entry: python3 scripts/arch_lint.py
+        language: system
+        pass_filenames: false
+        types: [rust]

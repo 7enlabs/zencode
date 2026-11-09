@@ -10,7 +10,32 @@ concurrency:
   cancel-in-progress: true
 env:
   CARGO_TERM_COLOR: always
+  # Tiered pipeline (buffer task): incremental artifacts bloat the
+  # rust-cache and slow restores, and CI builds are one-shot anyway.
+  CARGO_INCREMENTAL: "0"
 jobs:
+  changes:
+    # Paths filter by PR type: the expensive cross-platform build
+    # matrices only run when Rust code or the build config changed.
+    # The check/eval/security/deny gates always run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/windows-test.yml'
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -75,8 +100,8 @@ jobs:
           command: check ${{ matrix.checks }}
 
   build-linux:
-    if: github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v')
-    needs: check
+    if: ${{ needs.changes.outputs.rust == 'true' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [check, changes]
     strategy:
       fail-fast: false
       matrix:
@@ -108,8 +133,8 @@ jobs:
           path: target/${{ matrix.target }}/release/zen
 
   build:
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    needs: check
+    if: ${{ needs.changes.outputs.rust == 'true' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    needs: [check, changes]
     strategy:
       fail-fast: false
       matrix:
@@ -152,3 +177,31 @@ jobs:
         with:
           name: zen-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/zen${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  mutants:
+    # Tier 1 (MR budget < 15 min): mutation-test only the lines the PR
+    # changes, so the mutant count stays proportional to the diff.
+    # Surviving mutants fail the job. The job gets its own rust-cache
+    # namespace: it rebuilds the workspace per mutant batch and cannot
+    # share the one-shot cache of the other jobs.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: mutants }
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-mutants }
+      - name: Diff against the PR base
+        run: git diff ${{ github.event.pull_request.base.sha }}...HEAD > mutants.diff
+      - name: cargo mutants --in-diff
+        shell: bash
+        run: |
+          if [ ! -s mutants.diff ]; then
+            echo "empty diff - no mutants to check"
+            exit 0
+          fi
+          cargo mutants --in-diff mutants.diff
