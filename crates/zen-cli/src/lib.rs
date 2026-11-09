@@ -36,6 +36,7 @@ pub mod skill_registry;
 pub mod skills;
 pub mod system_prompt;
 pub mod tasks;
+pub mod telemetry;
 pub mod update;
 
 pub use cli::{
@@ -600,6 +601,7 @@ async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32>
     // the same HTTP 400. The plan flow re-resolves its own
     // config and routes that one itself (PR #71 review F10).
     settings::route_catalog_model(&mut cfg)?;
+    crate::telemetry::maybe_ping(home, cfg.telemetry.as_deref());
     if cfg.ollama {
         crate::ollama::ensure_ollama_ready(&cfg.base_url, &cfg.model).await?;
     }

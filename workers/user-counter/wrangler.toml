@@ -1,0 +1,14 @@
+name = "user-counter"
+main = "worker.js"
+compatibility_date = "2026-11-09"
+
+# Custom domain route is enabled at deploy time, once DNS for
+# count.runzen.dev exists. Until then the worker is reachable on its
+# workers.dev URL for end-to-end tests.
+# routes = [{ pattern = "count.runzen.dev", custom_domain = true }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "zencode-user-counter"
+# Fill in at deploy time: wrangler d1 create zencode-user-counter
+database_id = "REPLACE_AT_DEPLOY"
