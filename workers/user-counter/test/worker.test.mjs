@@ -208,3 +208,20 @@ test("wrong method is 405 and unknown path is 404", async () => {
   );
   assert.equal(miss.status, 404);
 });
+
+test("fetch with ExecutionContext as 3rd arg falls back to Date.now()", async () => {
+  // Regression: in the Workers runtime the 3rd fetch argument is the
+  // ExecutionContext object, not a timestamp. Passing it to dayOf used
+  // to throw RangeError: Invalid time value (HTTP 500 / error 1101).
+  const fakeCtx = { waitUntil() {}, passThroughOnException() {} };
+  const e = env();
+  const res = await worker.fetch(
+    new Request("https://count.runzen.dev/stats"),
+    e,
+    fakeCtx,
+  );
+  assert.equal(res.status, 200);
+  const s = await res.json();
+  assert.equal(s.installs, 0);
+  assert.equal(s.dau, 0);
+});
