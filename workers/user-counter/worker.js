@@ -108,8 +108,11 @@ async function handleStats(env, now) {
 }
 
 export default {
-  // `now` is injectable for tests; production calls pass Date.now().
-  async fetch(request, env, now = Date.now()) {
+  // `now` is injectable for tests (a millisecond timestamp). In the
+  // Workers runtime the 3rd fetch argument is ExecutionContext, not a
+  // timestamp, so fall back to Date.now() unless a number was passed.
+  async fetch(request, env, now) {
+    if (typeof now !== "number") now = Date.now();
     const url = new URL(request.url);
     if (url.pathname === "/ping" && request.method === "POST") {
       return handlePing(request, env, now);
