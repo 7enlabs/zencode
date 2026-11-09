@@ -215,6 +215,27 @@ impl ToolJournal for Recorder {
     }
 }
 
+/// Pure stream-json (NDJSON) parsing for the session journal, split
+/// from I/O so the parser can be unit-tested, fuzzed and checked under
+/// Miri without touching the filesystem. One journal line is one JSON
+/// value. These entry points are lenient - blank or invalid lines are
+/// skipped - because the journal is append-only: a torn last line must
+/// never lose the records before it. `rebuild` stays strict on purpose
+/// (it reports the exact line that fails) and does not use them.
+pub fn parse_event_line(line: &str) -> Option<Value> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    serde_json::from_str(line).ok()
+}
+
+/// Parse a whole journal text into its records, in order, skipping
+/// blank or invalid lines. Pure: same input, same output, no I/O.
+pub fn parse_event_stream(text: &str) -> Vec<Value> {
+    text.lines().filter_map(parse_event_line).collect()
+}
+
 fn scan(path: &Path) -> (u64, HashSet<String>) {
     let mut next = 0;
     let mut hashes = HashSet::new();
@@ -222,7 +243,7 @@ fn scan(path: &Path) -> (u64, HashSet<String>) {
         return (next, hashes);
     };
     for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
+        let Some(v) = parse_event_line(line) else {
             continue;
         };
         match v.get("type").and_then(|t| t.as_str()) {
@@ -372,10 +393,7 @@ fn interrupted_turn(path: &Path) -> Result<Option<Vec<ChatMessage>>> {
         return Ok(None);
     }
     let text = std::fs::read_to_string(path)?;
-    let recs: Vec<Value> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l.trim()).ok())
-        .collect();
+    let recs: Vec<Value> = parse_event_stream(&text);
     let kind = |v: &Value| {
         v.get("type")
             .and_then(|t| t.as_str())
@@ -504,6 +522,27 @@ mod tests {
         fn check(&self, _: &str, _: &Value, _: bool, _: &ToolContext) -> PermissionDecision {
             PermissionDecision::Allow
         }
+    }
+
+    #[test]
+    fn parse_event_line_skips_blank_and_invalid() {
+        assert!(parse_event_line("").is_none());
+        assert!(parse_event_line("   ").is_none());
+        assert!(parse_event_line("not json").is_none());
+        let v = parse_event_line("{\"type\":\"request\",\"seq\":1}").unwrap();
+        assert_eq!(v["type"], "request");
+        assert_eq!(v["seq"], 1);
+    }
+
+    #[test]
+    fn parse_event_stream_keeps_valid_lines_in_order() {
+        // The last line is torn (unterminated), as after a crash
+        // mid-append: it is skipped, earlier records survive.
+        let text = "{\"a\":1}\n\nbroken\n{\"b\":2}\n{\"c\":3";
+        let recs = parse_event_stream(text);
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0]["a"], 1);
+        assert_eq!(recs[1]["b"], 2);
     }
 
     fn tmp(tag: &str) -> PathBuf {

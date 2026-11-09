@@ -13,3 +13,10 @@ proxylog*
 .zen/
 .env*
 __pycache__/
+
+# cargo-fuzz output (tiered pipeline)
+fuzz/target/
+fuzz/artifacts/
+
+# cargo-mutants local output
+mutants.out/
