@@ -1,0 +1,20 @@
+[package]
+name = "zen-cli-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+zen-cli = { path = "../crates/zen-cli" }
+
+# This crate is its own workspace so the main workspace build and
+# `cargo test --workspace` never pull in libfuzzer-sys.
+[workspace]
+
+[[bin]]
+name = "parse_event_stream"
+path = "fuzz_targets/parse_event_stream.rs"
