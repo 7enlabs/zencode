@@ -5,7 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.1.0] - 2026-11-10
+
+Note: release v0.1.0 was published on GitHub on 2026-11-10 (tag v0.1.0 on
+main c512981). The Windows installer now downloads the prebuilt release
+binary and verifies it by SHA-256 instead of building from source.
+An older entry further below also carries the 0.1.0 label; it records the
+pre-release state as of 2026-10-17, when no v0.1.0 tag existed yet.
 
 ### Added
 -  now groups the estimate into instructions, memory (ZEN.md / AGENTS.md text inside the system prompt), tool schemas and message history, with history split into conversation and tool calls/results. The groups add up to the printed total, and the line for the last API-reported prompt size shows how the estimate compares (B4.3).
