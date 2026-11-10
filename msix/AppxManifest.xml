@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  TEMPLATE - not a buildable manifest yet.
-
-  Before packing, fill in the two identity values from Partner Center
-  (the team lead reserves the app name and sends the exact strings):
-    Identity Name       - the reserved package name, e.g. Publisher.App
-    Identity Publisher  - the publisher string issued by Partner Center
-                          (CN=<GUID>), character for character.
-  Do not invent these values: an upload with a mismatched Publisher is
-  rejected, and a sideload test package must be signed with a
-  certificate whose subject equals the Publisher below.
+  Identity filled from the Partner Center reservation (2026-11-10, via the team lead):
+    Identity Name       - 7ENLabs.ZenCode
+    Identity Publisher  - CN=3B32146C-7F74-4349-BE62-4416DB18376F
+    Store ID            - 9NK3CWNMJKM9
+    Package Family Name - 7ENLabs.ZenCode_meqb5mtvkpysg
+  Do not invent or edit these values: an upload with a mismatched
+  Publisher is rejected, and a sideload test package must be signed
+  with a certificate whose subject equals the Publisher below.
+  (PublisherDisplayName "7EN Labs" is still the plan proposal,
+  pending confirmation by Zen.)
 
   Framework follows Microsoft Learn, "Generating MSIX package
   components" (desktop-to-uwp-manual-conversion) plus the
@@ -24,11 +24,10 @@
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap uap5 uap10 rescap">
 
-  <!-- TODO(Partner Center): replace Name and Publisher with the exact
-       strings from the reserved app. Version is four-part and must
-       increase on every Store submission. -->
+  <!-- Identity from the Partner Center reservation (2026-11-10).
+       Version is four-part and must increase on every Store submission. -->
   <Identity Name="7ENLabs.ZenCode" Version="0.1.0.0"
-            Publisher="CN=00000000-0000-0000-0000-000000000000"
+            Publisher="CN=3B32146C-7F74-4349-BE62-4416DB18376F"
             ProcessorArchitecture="x64" />
 
   <Properties>

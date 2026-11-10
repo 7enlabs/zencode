@@ -4,12 +4,15 @@ Packages the Windows build of `zen.exe` as an MSIX for the Microsoft
 Store. A Store package is re-signed by Microsoft, so users install
 without SmartScreen / Smart App Control warnings.
 
-Status: **template, ready to pack once two inputs land.**
+Status: **template, identity filled - ready to pack once the logo assets land.**
 
-1. **Identity** - the exact `Name` and `Publisher` (`CN=...`) strings
-   from Partner Center, supplied by the team lead after the app name
-   is reserved. `AppxManifest.xml` still carries placeholders; do not
-   invent values, an upload with a mismatched Publisher is rejected.
+1. **Identity** - filled from the Partner Center reservation
+   (team lead, 2026-11-10): Name 7ENLabs.ZenCode, Publisher
+   CN=3B32146C-7F74-4349-BE62-4416DB18376F, Version 0.1.0.0,
+   Store ID 9NK3CWNMJKM9, Package Family Name
+   7ENLabs.ZenCode_meqb5mtvkpysg. Do not invent values, an upload
+   with a mismatched Publisher is rejected. PublisherDisplayName
+   7EN Labs is the plan proposal, pending confirmation by Zen.
 2. **Logo assets** - the PNG files listed in `Assets/README.md`, from
    the brand owner. None exist yet; do not fabricate them.
 
@@ -37,9 +40,10 @@ machine with the SDK installed.
 .\build-msix.ps1 -ExePath C:\path\to\zen.exe
 ```
 
-The script refuses to pack while the manifest still contains the
-placeholder Publisher, unless identity overrides are passed for a
-sideload test build:
+The script still refuses to pack if the manifest carries the
+placeholder Publisher (guard against an unfilled template); with the
+real identity in place, a plain run packs the Store package. For a
+sideload test build, pass identity overrides:
 
 ```powershell
 # Sideload test only: identity must match the test certificate subject.
