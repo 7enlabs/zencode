@@ -527,13 +527,20 @@ pub fn resolve_config_with_home(
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
+    // Catalog ids win over direct provider routing (bug hunt fix #4):
+    // `deepseek/deepseek-r1:free` is a free OpenRouter catalog entry,
+    // but its `deepseek/` prefix is also a registry provider, so
+    // ModelSpec::parse would strip it and route_direct would send it to
+    // DeepSeek's paid API. Check the catalog first; only non-catalog
+    // ids take the direct path.
+    let is_catalog_id = crate::models::catalog_entry(&raw_model).is_some();
     let spec = zen_agent::providers::ModelSpec::parse(&raw_model, DEFAULT_BASE_URL, false);
     let provider_key = spec
         .api_key_env
         .as_deref()
         .and_then(|e| std::env::var(e).ok())
         .filter(|v| !v.is_empty());
-    let route_direct = spec.provider != "default" && provider_key.is_some();
+    let route_direct = spec.provider != "default" && provider_key.is_some() && !is_catalog_id;
     let model = if route_direct {
         spec.model.clone()
     } else {
@@ -552,6 +559,7 @@ pub fn resolve_config_with_home(
         }
     } else if spec.provider != "default"
         && spec.provider != "ollama"
+        && !is_catalog_id
         && (cli.model.is_some()
             || std::env::var("ZEN_MODEL")
                 .map(|v| !v.is_empty())
@@ -1264,6 +1272,93 @@ mod tests {
             std::env::set_var("DEEPSEEK_API_KEY", o);
         } else {
             std::env::remove_var("DEEPSEEK_API_KEY");
+        }
+    }
+
+    #[test]
+    fn catalog_id_wins_over_direct_routing_when_provider_key_set() {
+        // Bug hunt fix #4: `deepseek/deepseek-r1:free` is a free OpenRouter
+        // catalog entry, but its `deepseek/` prefix is also a registry
+        // provider, so ModelSpec::parse used to strip it and route_direct
+        // sent it to DeepSeek's paid API. Catalog ids must win.
+        let _env = env_lock();
+        let old_ds = std::env::var("DEEPSEEK_API_KEY").ok();
+        let old_or = std::env::var("OPENROUTER_API_KEY").ok();
+        let old_m = std::env::var("ZEN_MODEL").ok();
+        let old_u = std::env::var("ZEN_BASE_URL").ok();
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds");
+        std::env::set_var("OPENROUTER_API_KEY", "test-key-or");
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        let cli = Cli::parse_from(["zen", "--model", "deepseek/deepseek-r1:free"]);
+        let mut cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
+        // resolve_config alone must keep the full catalog id on the
+        // default base URL (no strip, no DeepSeek re-point).
+        assert_eq!(cfg.model, "deepseek/deepseek-r1:free");
+        assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
+        assert!(cfg
+            .warnings
+            .iter()
+            .all(|w| !w.contains("provider 'deepseek'")));
+        // The catalog router then sends it to OpenRouter with its key.
+        assert!(route_catalog_model(&mut cfg).unwrap());
+        assert_eq!(cfg.base_url, crate::models::OPENROUTER_BASE_URL);
+        assert_eq!(cfg.model, "deepseek/deepseek-r1:free");
+        assert_eq!(cfg.api_key.as_deref(), Some("test-key-or"));
+        if let Some(o) = old_ds {
+            std::env::set_var("DEEPSEEK_API_KEY", o);
+        } else {
+            std::env::remove_var("DEEPSEEK_API_KEY");
+        }
+        if let Some(o) = old_or {
+            std::env::set_var("OPENROUTER_API_KEY", o);
+        } else {
+            std::env::remove_var("OPENROUTER_API_KEY");
+        }
+        if let Some(o) = old_m {
+            std::env::set_var("ZEN_MODEL", o);
+        }
+        if let Some(o) = old_u {
+            std::env::set_var("ZEN_BASE_URL", o);
+        }
+    }
+
+    #[test]
+    fn catalog_id_not_rerouted_to_paid_api_without_openrouter_key() {
+        // Same catalog id, only the DeepSeek key set: resolve_config must
+        // still not rewrite it, and the catalog router must refuse with
+        // the OpenRouter key hint instead of silently sending the id to
+        // DeepSeek's paid API.
+        let _env = env_lock();
+        let old_ds = std::env::var("DEEPSEEK_API_KEY").ok();
+        let old_or = std::env::var("OPENROUTER_API_KEY").ok();
+        let old_m = std::env::var("ZEN_MODEL").ok();
+        let old_u = std::env::var("ZEN_BASE_URL").ok();
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds");
+        std::env::remove_var("OPENROUTER_API_KEY");
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        let cli = Cli::parse_from(["zen", "--model", "deepseek/deepseek-r1:free"]);
+        let mut cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
+        assert_eq!(cfg.model, "deepseek/deepseek-r1:free");
+        assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
+        let err = route_catalog_model(&mut cfg).unwrap_err();
+        assert!(err.to_string().contains("OPENROUTER_API_KEY"), "{err}");
+        if let Some(o) = old_ds {
+            std::env::set_var("DEEPSEEK_API_KEY", o);
+        } else {
+            std::env::remove_var("DEEPSEEK_API_KEY");
+        }
+        if let Some(o) = old_or {
+            std::env::set_var("OPENROUTER_API_KEY", o);
+        } else {
+            std::env::remove_var("OPENROUTER_API_KEY");
+        }
+        if let Some(o) = old_m {
+            std::env::set_var("ZEN_MODEL", o);
+        }
+        if let Some(o) = old_u {
+            std::env::set_var("ZEN_BASE_URL", o);
         }
     }
 
