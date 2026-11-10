@@ -384,6 +384,40 @@ pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
     Ok(false)
 }
 
+/// Route `cfg` to a catalog entry's provider: the model string that
+/// provider accepts, that provider's base URL, and its key. Unlike
+/// `route_catalog_model`, an explicit base URL does NOT win here: the
+/// entry names a specific provider's model (a `/model` switch or a
+/// slash-command `model:` pin), and sending it to another gateway
+/// fails with HTTP 400 "Invalid Model Name" (PR #71). `home_api_key`
+/// is the key resolved at startup for the configured route, restored
+/// for the home provider (which has no dedicated env var). On error
+/// (the provider key is unset) `cfg` is left untouched.
+pub fn route_to_catalog_entry(
+    cfg: &mut ResolvedConfig,
+    entry: &crate::models::CatalogModel,
+    home_api_key: &Option<String>,
+) -> anyhow::Result<()> {
+    let Some(base_url) = crate::models::provider_base_url(entry.provider) else {
+        return Ok(());
+    };
+    let key = match crate::models::provider_api_key_env(entry.provider) {
+        Some(env) => match std::env::var(env).ok().filter(|v| !v.is_empty()) {
+            Some(k) => Some(k),
+            None => anyhow::bail!(
+                "model '{}' needs its provider's key: set {} before starting",
+                entry.id,
+                env
+            ),
+        },
+        None => home_api_key.clone(),
+    };
+    cfg.base_url = base_url.to_string();
+    cfg.api_key = key;
+    cfg.model = entry.gateway_id.to_string();
+    Ok(())
+}
+
 fn resolve_api_key(api_key_env: Option<&str>) -> Option<String> {
     if let Ok(v) = std::env::var("ZEN_API_KEY") {
         if !v.is_empty() {
@@ -1324,6 +1358,26 @@ mod tests {
     }
 
     #[test]
+    fn route_to_catalog_entry_routes_cross_provider_pin() {
+        let _env = env_lock();
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
+        cfg.model = DEFAULT_MODEL.to_string();
+        cfg.base_url = DEFAULT_BASE_URL.to_string();
+        cfg.api_key = Some("exp-key".to_string());
+        let entry = crate::models::catalog_entry("qwen/qwen3-coder:free").unwrap();
+        route_to_catalog_entry(&mut cfg, entry, &None).unwrap();
+        assert_eq!(cfg.base_url, crate::models::OPENROUTER_BASE_URL);
+        assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
+        assert_eq!(cfg.model, "qwen/qwen3-coder:free");
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
     fn catalog_id_not_rerouted_to_paid_api_without_openrouter_key() {
         // Same catalog id, only the DeepSeek key set: resolve_config must
         // still not rewrite it, and the catalog router must refuse with
@@ -1360,6 +1414,59 @@ mod tests {
         if let Some(o) = old_u {
             std::env::set_var("ZEN_BASE_URL", o);
         }
+    }
+
+    #[test]
+    fn route_to_catalog_entry_pin_wins_over_explicit_base_url() {
+        let _env = env_lock();
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
+        cfg.model = DEFAULT_MODEL.to_string();
+        cfg.base_url = "http://127.0.0.1:9".to_string();
+        cfg.api_key = None;
+        let entry = crate::models::catalog_entry("qwen/qwen3-coder:free").unwrap();
+        route_to_catalog_entry(&mut cfg, entry, &None).unwrap();
+        assert_eq!(cfg.base_url, crate::models::OPENROUTER_BASE_URL);
+        assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_to_catalog_entry_missing_key_errors_without_mutating() {
+        let _env = env_lock();
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
+        cfg.model = DEFAULT_MODEL.to_string();
+        cfg.base_url = DEFAULT_BASE_URL.to_string();
+        cfg.api_key = Some("exp-key".to_string());
+        let before = (cfg.model.clone(), cfg.base_url.clone(), cfg.api_key.clone());
+        let entry = crate::models::catalog_entry("qwen/qwen3-coder:free").unwrap();
+        let err = route_to_catalog_entry(&mut cfg, entry, &None).unwrap_err();
+        assert!(err.to_string().contains("OPENROUTER_API_KEY"), "{err}");
+        assert_eq!((cfg.model, cfg.base_url, cfg.api_key), before);
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn route_to_catalog_entry_restores_home_key_for_home_provider() {
+        let _env = env_lock();
+        let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
+        cfg.model = "qwen/qwen3-coder:free".to_string();
+        cfg.base_url = crate::models::OPENROUTER_BASE_URL.to_string();
+        cfg.api_key = Some("or-key".to_string());
+        let entry = crate::models::catalog_entry("deepseek-v4.1-flash").unwrap();
+        route_to_catalog_entry(&mut cfg, entry, &Some("exp-key".to_string())).unwrap();
+        assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
+        assert_eq!(cfg.api_key.as_deref(), Some("exp-key"));
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
     }
 
     fn clear_ollama_env() {

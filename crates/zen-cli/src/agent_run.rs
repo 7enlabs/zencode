@@ -646,16 +646,27 @@ pub(crate) async fn run_agent_with_result(
         None => expand_slash_prompt_cmd(cli, cwd, home, prompt, cfg, session_id)?,
     };
 
-    let raw_model = slash_cmd
+    let pinned_model = slash_cmd
         .as_ref()
         .and_then(|c| c.model.clone())
-        .filter(|m| !m.is_empty() && m != "inherit")
-        .unwrap_or_else(|| cfg.model.clone());
+        .filter(|m| !m.is_empty() && m != "inherit");
+    let raw_model = pinned_model.clone().unwrap_or_else(|| cfg.model.clone());
     // A slash command can pin a catalog id the routed cfg never
-    // carried; send the id the serving provider accepts, the same
-    // translation the builtin `model` command applies (PR #71
-    // review F11).
+    // carried; route the run to that model's provider (base URL +
+    // key), as /model does, so the pin is not sent to the wrong
+    // gateway (HTTP 400, PR #71 class). Only a real pin routes:
+    // the startup model keeps its explicit base URL.
+    let mut routed_cfg = cfg.clone();
+    if let Some(pin) = &pinned_model {
+        if let Some(entry) = crate::models::catalog_entry(pin) {
+            crate::settings::route_to_catalog_entry(&mut routed_cfg, entry, &cfg.api_key)?;
+        }
+    }
     let effective_model = crate::models::gateway_model_id(&raw_model).to_string();
+    // The routed config governs the rest of the run: the client is
+    // built from it in assemble, and the pin's provider is the one
+    // that serves this run.
+    let cfg = &routed_cfg;
 
     let assembly = assemble(cli, cwd, home, cfg, session_id, transcript_path).await?;
 
