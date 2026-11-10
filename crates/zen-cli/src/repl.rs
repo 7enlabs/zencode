@@ -2780,7 +2780,10 @@ mod model_picker_tests {
         let path = dir.join(".zen").join("settings.local.json");
         assert!(path.exists(), "report_model_switch must persist choice");
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("deepseek-v4.1-flash"), "saved model id missing");
+        assert!(
+            text.contains("deepseek-v4.1-flash"),
+            "saved model id missing"
+        );
         std::fs::remove_dir_all(&dir).ok();
         match old_model {
             Some(v) => std::env::set_var("ZEN_MODEL", v),
