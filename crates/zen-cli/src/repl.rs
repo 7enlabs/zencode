@@ -1133,25 +1133,18 @@ fn apply_model_switch(
             id, entry.gateway_id
         ));
     };
-    let key = match crate::models::provider_api_key_env(entry.provider) {
-        Some(env) => match std::env::var(env).ok().filter(|v| !v.is_empty()) {
-            Some(k) => Some(k),
-            None => {
-                return Err(format!(
-                    "cannot switch to {id}: {env} is not set; keeping {}",
-                    agent.config.model
-                ));
-            }
-        },
-        // No dedicated env var: the home provider. Restore the key
-        // resolved at startup - never cfg.api_key, which a previous
-        // switch may have overwritten with another provider's key
-        // (PR #71 review F1).
-        None => home_api_key.clone(),
-    };
-    if base_url != cfg.base_url || key != cfg.api_key {
-        cfg.base_url = base_url.to_string();
-        cfg.api_key = key;
+    let old_base_url = cfg.base_url.clone();
+    let old_key = cfg.api_key.clone();
+    // Route model + base URL + key together (shared with the slash
+    // `model:` pin and the headless pin path). A refused route (the
+    // provider key is unset) leaves everything untouched.
+    if let Err(e) = crate::settings::route_to_catalog_entry(cfg, entry, home_api_key) {
+        return Err(format!(
+            "cannot switch to {id}: {e}; keeping {}",
+            agent.config.model
+        ));
+    }
+    if cfg.base_url != old_base_url || cfg.api_key != old_key {
         agent.llm = crate::eventlog::wrap(cfg.gated_llm_client(agent.sink.clone(), home), recorder);
     }
     agent.config.model = entry.gateway_id.to_string();
@@ -2047,15 +2040,34 @@ async fn handle_slash(
 
                 let saved_model = agent.config.model.clone();
                 let saved_perms = agent.permissions.clone();
+                // A slash `model:` pin routes for this turn only; the
+                // startup route is restored after the turn (below).
+                let saved_base_url = cfg.base_url.clone();
+                let saved_api_key = cfg.api_key.clone();
+                let saved_cfg_model = cfg.model.clone();
+                let saved_llm = agent.llm.clone();
                 if let Some(c) = &slash_cmd {
                     if let Some(m) = c
                         .model
                         .as_ref()
                         .filter(|m| !m.is_empty() && *m != "inherit")
                     {
-                        // Translate a catalog id to the gateway id,
-                        // as /model does (PR #71 review F6).
-                        agent.config.model = crate::models::gateway_model_id(m).to_string();
+                        // Route the pin like /model for this turn only:
+                        // model + base URL + key + live backend together.
+                        // A refused route (the provider key is unset)
+                        // prints the reason and skips the turn instead
+                        // of sending the id to the wrong gateway.
+                        if let Err(e) = apply_model_switch(
+                            cfg,
+                            agent,
+                            repl.recorder.as_ref(),
+                            home,
+                            &repl.home_api_key,
+                            m,
+                        ) {
+                            eprintln!("{e}");
+                            return Ok(LineAction::Continue);
+                        }
                     }
                     if !c.allowed_tools.is_empty() {
                         agent.permissions = crate::agent_run::build_permissions_with(
@@ -2070,6 +2082,10 @@ async fn handle_slash(
                 let result =
                     run_turn_interruptible(agent, &expanded, repl.interrupts.as_deref_mut()).await;
                 record_turn_cost(home, repl.session_id.as_str(), cfg, agent, &usage_before);
+                cfg.base_url = saved_base_url;
+                cfg.api_key = saved_api_key;
+                cfg.model = saved_cfg_model;
+                agent.llm = saved_llm;
                 agent.config.model = saved_model;
                 agent.permissions = saved_perms;
                 print_turn(result);
@@ -2662,6 +2678,86 @@ mod model_picker_tests {
             Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
             None => std::env::remove_var("OPENROUTER_API_KEY"),
         }
+    }
+
+    #[tokio::test]
+    async fn slash_pin_to_openrouter_model_without_key_is_refused() {
+        // Bug hunt #1 (Scout B P1-1 + Scout C F3): a slash command pinning
+        // a cross-provider catalog id must route like /model does. With
+        // the provider key unset the turn must be refused before any
+        // request is sent - not run against the current gateway with
+        // the foreign id (HTTP 400, PR #71 class).
+        use clap::Parser;
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let dir = std::env::temp_dir().join(format!("zen_slash_pin_{}", uuid::Uuid::new_v4()));
+        let cmd_dir = dir.join(".zen").join("commands");
+        std::fs::create_dir_all(&cmd_dir).unwrap();
+        std::fs::write(
+            cmd_dir.join("probe.md"),
+            "---\nmodel: qwen/qwen3-coder:free\n---\nSay hi.\n",
+        )
+        .unwrap();
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        let cli = crate::cli::Cli::parse_from(["zen"]);
+        let session_path = dir.join("session.jsonl");
+        let mut session_id = crate::session::new_session_id();
+        let mut writer = crate::session::TranscriptWriter::new(session_path, &session_id, &dir);
+        let mut repl = ReplState {
+            session_id: &mut session_id,
+            writer: &mut writer,
+            mcp_status: vec![],
+            interrupts: None,
+            recorder: None,
+            home_api_key: None,
+            auto_model: false,
+            goal: None,
+            personality: repl_polish::Personality::default(),
+            theme: repl_polish::Theme::default(),
+            vim_mode: false,
+            base_system_prompt: String::new(),
+            pre_plan_mode: zen_core::PermissionMode::Default,
+            pending_plan: None,
+            scope: crate::doneguard::ScopeGuard::default(),
+            scope_seeded: false,
+            checkpoints: std::sync::Arc::new(zen_tools::checkpoint::Checkpoints::new(
+                dir.join("checkpoints"),
+            )),
+            progress: std::sync::Arc::new(crate::repl_progress::ReplProgressSink::new()),
+        };
+        // The env lock only guards setup; drop it before the await
+        // (clippy::await_holding_lock), as the sibling async test does.
+        drop(_env);
+        let action = handle_slash(
+            "/probe hi",
+            &cli,
+            &dir,
+            None,
+            &mut cfg,
+            &mut repl,
+            &mut agent,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(action, LineAction::Continue));
+        // Refused before the turn: no request sent, nothing switched.
+        assert!(backend.models.lock().unwrap().is_empty());
+        assert_eq!(agent.config.model, "google/gemini-4-argon:free");
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+
+        // Re-acquire the lock for the env restore.
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
