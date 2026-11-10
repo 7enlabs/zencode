@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Identity filled from the Partner Center reservation (2026-11-10, via the team lead):
+    Identity Name       - 7ENLabs.ZenCode
+    Identity Publisher  - CN=3B32146C-7F74-4349-BE62-4416DB18376F
+    Store ID            - 9NK3CWNMJKM9
+    Package Family Name - 7ENLabs.ZenCode_meqb5mtvkpysg
+  Do not invent or edit these values: an upload with a mismatched
+  Publisher is rejected, and a sideload test package must be signed
+  with a certificate whose subject equals the Publisher below.
+  (PublisherDisplayName "7EN Labs" is still the plan proposal,
+  pending confirmation by Zen.)
+
+  Framework follows Microsoft Learn, "Generating MSIX package
+  components" (desktop-to-uwp-manual-conversion) plus the
+  uap5:AppExecutionAlias extension, so `zen` works from any terminal
+  after install.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 uap10 rescap">
+
+  <!-- Identity from the Partner Center reservation (2026-11-10).
+       Version is four-part and must increase on every Store submission. -->
+  <Identity Name="7ENLabs.ZenCode" Version="0.1.0.0"
+            Publisher="CN=3B32146C-7F74-4349-BE62-4416DB18376F"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>ZenCode</DisplayName>
+    <PublisherDisplayName>7EN Labs</PublisherDisplayName>
+    <Description>ZenCode CLI - a coding agent for the terminal.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="ZenCode" Executable="zen.exe"
+                 uap10:RuntimeBehavior="packagedClassicApp"
+                 uap10:TrustLevel="mediumIL">
+      <!-- BackgroundColor stays a solid color until unplated logo
+           assets exist; switch to "transparent" only with them. -->
+      <uap:VisualElements DisplayName="ZenCode"
+                          Description="ZenCode CLI - a coding agent for the terminal."
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png"
+                          BackgroundColor="#1F1F1F" />
+      <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias"
+                       Executable="zen.exe">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="zen.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>
