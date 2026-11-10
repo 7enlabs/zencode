@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- Microsoft Store packaging: `msix/` holds the MSIX manifest template
+  (runFullTrust, `zen` execution alias), the asset checklist and the
+  makeappx build script. Identity values and logo assets are still
+  pending (Partner Center reservation, brand owner).
+- Windows builds of `zen.exe` now embed VERSIONINFO metadata
+  (FileVersion, ProductName, CompanyName) from `crates/zen-cli/build.rs`.
+
 ## [0.1.0] - 2026-11-10
 
 Note: release v0.1.0 was published on GitHub on 2026-11-10 (tag v0.1.0 on
