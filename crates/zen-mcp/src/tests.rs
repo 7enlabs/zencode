@@ -173,7 +173,9 @@ async fn c7_3_invalid_entries_are_skipped_with_reason() {
         "weird".to_string(),
         McpServerConfig {
             kind: Some("ws".into()),
-            url: Some("ws://x".into()),
+            // Test-only fixture: kind "ws" is unknown, so this entry is
+            // skipped before any connection is attempted; the URL is never opened.
+            url: Some("wss://x".into()),
             ..empty_cfg()
         },
     );
