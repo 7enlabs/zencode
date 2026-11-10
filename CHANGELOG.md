@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows builds of `zen.exe` now embed VERSIONINFO metadata
   (FileVersion, ProductName, CompanyName) from `crates/zen-cli/build.rs`.
 
+### Fixed
+- `/model` now saves the chosen model to `.zen/settings.local.json`, so
+  reopening `zen` keeps the model instead of reverting to the default.
+  `/model auto` saves `auto`; `/provider` also saves the provider base
+  URL, so the provider switch sticks too.
+
 ## [0.1.0] - 2026-11-10
 
 Note: release v0.1.0 was published on GitHub on 2026-11-10 (tag v0.1.0 on
