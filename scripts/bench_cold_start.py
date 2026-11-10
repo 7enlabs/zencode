@@ -39,6 +39,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -419,21 +421,64 @@ def markdown_table(results):
     return "\n".join(lines)
 
 
+LOCALHOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def require_localhost_url(url):
+    """Reject any URL whose host is not loopback.
+
+    The mock server in this script binds 127.0.0.1 only, so every URL we
+    open must stay on loopback. This is a defense-in-depth guard: even if
+    the URL were ever built from untrusted input, urlopen could not be
+    redirected at a non-local host (SSRF). Only plain http to loopback is
+    allowed; https and non-loopback hosts raise ValueError.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname not in LOCALHOST_NAMES:
+        raise ValueError(f"refusing non-localhost URL: {url!r}")
+    return url
+
+
+def localhost_urlopen(req, timeout=10):
+    """urlopen restricted to loopback URLs (see require_localhost_url)."""
+    require_localhost_url(req.full_url)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def self_test(zen):
     """Quick validation: stats math, mock server shape, one smoke timing each."""
     assert stats([10, 20, 30, 40])["median"] == 25
     assert abs(stats([1, 1, 1, 1])["cv"]) < 1e-9
+    # Localhost guard: the mock server binds 127.0.0.1 only, so urlopen
+    # must never leave loopback (security-scan fix).
+    for bad_url in (
+        "http://example.com/chat/completions",
+        "http://127.0.0.1.evil.com/chat/completions",
+        "http://192.168.1.1/chat/completions",
+        "https://127.0.0.1:9/chat/completions",
+    ):
+        try:
+            require_localhost_url(bad_url)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"localhost guard accepted {bad_url!r}")
+    for good_url in (
+        "http://127.0.0.1:9/chat/completions",
+        "http://localhost:9/chat/completions",
+        "http://LOCALHOST:9/chat/completions",
+        "http://[::1]:9/chat/completions",
+    ):
+        require_localhost_url(good_url)
     server, port = start_mock_server()
     try:
-        import urllib.request
-
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/chat/completions",
             data=b"{}",
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with localhost_urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read())
         assert body["choices"][0]["message"]["content"] == "hello"
         assert body["choices"][0]["finish_reason"] == "stop"
