@@ -2768,6 +2768,31 @@ mod model_picker_tests {
     }
 
     #[test]
+    fn report_model_switch_persists_choice() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("zen_report_switch_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old_model = std::env::var("ZEN_MODEL").ok();
+        let old_base = std::env::var("ZEN_BASE_URL").ok();
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        report_model_switch(&dir, false, "deepseek-v4.1-flash", "switched");
+        let path = dir.join(".zen").join("settings.local.json");
+        assert!(path.exists(), "report_model_switch must persist choice");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("deepseek-v4.1-flash"), "saved model id missing");
+        std::fs::remove_dir_all(&dir).ok();
+        match old_model {
+            Some(v) => std::env::set_var("ZEN_MODEL", v),
+            None => std::env::remove_var("ZEN_MODEL"),
+        }
+        match old_base {
+            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
+            None => std::env::remove_var("ZEN_BASE_URL"),
+        }
+    }
+
+    #[test]
     fn route_moves_openrouter_model_to_its_provider() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
