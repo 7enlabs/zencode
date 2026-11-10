@@ -1274,6 +1274,7 @@ async fn handle_slash(
                                     cwd,
                                     true,
                                     &cfg.model,
+                                    &cfg.base_url,
                                     &format!("{msg} (auto)"),
                                 );
                             }
@@ -1298,7 +1299,7 @@ async fn handle_slash(
                             Ok(msg) => {
                                 // A pinned model turns auto off.
                                 repl.auto_model = false;
-                                report_model_switch(cwd, false, &cfg.model, &msg);
+                                report_model_switch(cwd, false, &cfg.model, &cfg.base_url, &msg);
                             }
                             Err(e) => eprintln!("{e}"),
                         }
@@ -1333,17 +1334,13 @@ async fn handle_slash(
                                 // base URL; persist it alongside `auto`
                                 // so a restart lands on the same
                                 // provider and its best model.
-                                match save_local_setting(cwd, "baseUrl", &cfg.base_url) {
-                                    Ok(_) => report_model_switch(
-                                        cwd,
-                                        true,
-                                        &cfg.model,
-                                        &format!("{msg} (auto)"),
-                                    ),
-                                    Err(e) => {
-                                        eprintln!("{msg} (auto; could not save provider: {e})")
-                                    }
-                                }
+                                report_model_switch(
+                                    cwd,
+                                    true,
+                                    &cfg.model,
+                                    &cfg.base_url,
+                                    &format!("{msg} (auto)"),
+                                );
                             }
                             Err(e) => eprintln!("{e}"),
                         }
@@ -2085,8 +2082,17 @@ async fn handle_slash(
 }
 
 fn save_local_setting(cwd: &Path, key: &str, value: &str) -> Result<std::path::PathBuf> {
-    if key.is_empty() {
-        anyhow::bail!("empty key");
+    save_local_settings(cwd, &[(key, value)])
+}
+
+/// Write several keys to `.zen/settings.local.json` in a single
+/// read-modify-write, so a `/model` switch records the model and its
+/// base URL together (neither lands without the other).
+fn save_local_settings(cwd: &Path, entries: &[(&str, &str)]) -> Result<std::path::PathBuf> {
+    for (key, _) in entries {
+        if key.is_empty() {
+            anyhow::bail!("empty key");
+        }
     }
     let path = cwd.join(".zen").join("settings.local.json");
     let mut obj = match std::fs::read_to_string(&path) {
@@ -2097,25 +2103,40 @@ fn save_local_setting(cwd: &Path, key: &str, value: &str) -> Result<std::path::P
     let map = obj
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} is not a JSON object", path.display()))?;
-    let parsed =
-        serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.into()));
-    map.insert(key.to_string(), parsed);
+    for &(key, value) in entries {
+        let parsed =
+            serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.into()));
+        map.insert(key.to_string(), parsed);
+    }
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, serde_json::to_string_pretty(&obj)? + "\n")?;
     Ok(path)
 }
-
 /// Record a successful `/model` or `/provider` switch in
 /// `.zen/settings.local.json`, so the next `zen` run starts on it.
 /// `auto` saves the literal `auto` (auto mode stays on); otherwise the
-/// gateway id in `model` is saved. A write failure is reported but
-/// never refuses the in-memory switch.
-fn save_model_choice(cwd: &Path, auto: bool, model: &str) -> Result<std::path::PathBuf> {
-    save_local_setting(cwd, "model", if auto { "auto" } else { model })
+/// gateway id in `model` is saved. The base URL is saved alongside the
+/// model: without it a cross-provider switch breaks after restart (the
+/// saved model reaches the wrong gateway), and `auto` silently loses
+/// its provider. A write failure is reported but never refuses the
+/// in-memory switch.
+fn save_model_choice(
+    cwd: &Path,
+    auto: bool,
+    model: &str,
+    base_url: &str,
+) -> Result<std::path::PathBuf> {
+    save_local_settings(
+        cwd,
+        &[
+            ("model", if auto { "auto" } else { model }),
+            ("baseUrl", base_url),
+        ],
+    )
 }
 
-fn report_model_switch(cwd: &Path, auto: bool, model: &str, msg: &str) {
-    match save_model_choice(cwd, auto, model) {
+fn report_model_switch(cwd: &Path, auto: bool, model: &str, base_url: &str, msg: &str) {
+    match save_model_choice(cwd, auto, model, base_url) {
         Ok(path) => println!("{msg} (saved to {})", path.display()),
         Err(e) => eprintln!("{msg} (could not save model choice: {e})"),
     }
@@ -2745,18 +2766,91 @@ mod model_picker_tests {
         std::env::remove_var("ZEN_MODEL");
         std::env::remove_var("ZEN_BASE_URL");
         // Pin: the saved id is what the next run starts on.
-        let path = save_model_choice(&dir, false, "deepseek-v4.1-flash").unwrap();
+        let path = save_model_choice(
+            &dir,
+            false,
+            "deepseek-v4.1-flash",
+            crate::settings::DEFAULT_BASE_URL,
+        )
+        .unwrap();
         assert_eq!(path, dir.join(".zen").join("settings.local.json"));
         let cli = crate::cli::Cli::parse_from(["zen", "--trust-folder"]);
         let cfg = crate::settings::resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
         assert_eq!(cfg.model, "deepseek-v4.1-flash");
         assert!(!cfg.model_auto);
         // Auto: the literal `auto` is saved, so auto mode survives.
-        save_model_choice(&dir, true, "deepseek-v4.1-flash").unwrap();
+        save_model_choice(
+            &dir,
+            true,
+            "deepseek-v4.1-flash",
+            crate::settings::DEFAULT_BASE_URL,
+        )
+        .unwrap();
         let cfg = crate::settings::resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
         assert!(cfg.model_auto);
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&home).ok();
+        match old_model {
+            Some(v) => std::env::set_var("ZEN_MODEL", v),
+            None => std::env::remove_var("ZEN_MODEL"),
+        }
+        match old_base {
+            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
+            None => std::env::remove_var("ZEN_BASE_URL"),
+        }
+    }
+
+    #[test]
+    fn model_switch_persists_base_url_across_restart() {
+        // Bug hunt #2 (Scout A B1 + Scout C F2): /model persists the
+        // model id but not its base URL, so a cross-provider switch
+        // breaks after restart - and /model auto silently loses the
+        // provider. A restart must land on the same provider.
+        use clap::Parser;
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_key = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let old_model = std::env::var("ZEN_MODEL").ok();
+        let old_base = std::env::var("ZEN_BASE_URL").ok();
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        let dir = std::env::temp_dir().join(format!("zen_model_baseurl_{}", uuid::Uuid::new_v4()));
+        let home =
+            std::env::temp_dir().join(format!("zen_model_baseurl_home_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend);
+        let cli = crate::cli::Cli::parse_from(["zen", "--trust-folder"]);
+        let mut cfg = crate::settings::resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        let home_key = cfg.api_key.clone();
+        apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &home_key,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap();
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        report_model_switch(&dir, false, &cfg.model, &cfg.base_url, "switched");
+        let cfg2 = crate::settings::resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        assert_eq!(cfg2.model, "qwen/qwen3-coder:free");
+        assert_eq!(cfg2.base_url, "https://openrouter.ai/api/v1");
+        // /model auto after the pin must keep the provider too.
+        report_model_switch(&dir, true, &cfg.model, &cfg.base_url, "switched (auto)");
+        let cfg3 = crate::settings::resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        assert!(cfg3.model_auto);
+        assert_eq!(cfg3.base_url, "https://openrouter.ai/api/v1");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&home).ok();
+        match old_key {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
         match old_model {
             Some(v) => std::env::set_var("ZEN_MODEL", v),
             None => std::env::remove_var("ZEN_MODEL"),
@@ -2776,7 +2870,13 @@ mod model_picker_tests {
         let old_base = std::env::var("ZEN_BASE_URL").ok();
         std::env::remove_var("ZEN_MODEL");
         std::env::remove_var("ZEN_BASE_URL");
-        report_model_switch(&dir, false, "deepseek-v4.1-flash", "switched");
+        report_model_switch(
+            &dir,
+            false,
+            "deepseek-v4.1-flash",
+            crate::settings::DEFAULT_BASE_URL,
+            "switched",
+        );
         let path = dir.join(".zen").join("settings.local.json");
         assert!(path.exists(), "report_model_switch must persist choice");
         let text = std::fs::read_to_string(&path).unwrap();
