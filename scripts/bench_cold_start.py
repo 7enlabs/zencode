@@ -218,7 +218,9 @@ def measure_cold_startup(zen, runs):
             dest = os.path.join(d, "zen" + (".exe" if sys.platform == "win32" else ""))
             shutil.copy2(zen, dest)
             if os.name == "posix":
-                os.chmod(dest, 0o755)
+                # Least privilege: this copy is a private temp binary run only
+                # by this user; copy2 may have copied broader bits (e.g. 0o775).
+                os.chmod(dest, 0o700)
             env, _ = isolated_env()
             ms, rc, out, _, _ = run_timed([dest, "--version"], env, timeout=30)
             assert rc == 0, f"cold --version failed rc={rc}"
