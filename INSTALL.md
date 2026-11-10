@@ -44,8 +44,8 @@ Or install offline from a local copy of the release zip:
 .\install.ps1 -File .\zen-x86_64-pc-windows-msvc.zip
 ```
 
-Linux and macOS: one command installs the prebuilt binary for your
-platform from the same release:
+Linux and macOS still install from source for now — there is no
+prebuilt binary for those platforms in v0.1.0:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/7enlabs/zencode/main/install.sh | sh
