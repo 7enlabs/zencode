@@ -12,12 +12,13 @@ on:
   workflow_dispatch:
     inputs:
       dryRun:
-        description: 'Renovate dry-run mode (full = propose only, no branches/PRs)'
+        description: 'Renovate dry-run mode (full = propose only, no branches/PRs; false = run for real)'
         type: choice
         options:
           - full
           - extract
           - lookup
+          - 'false'
         default: full
 
 concurrency:
