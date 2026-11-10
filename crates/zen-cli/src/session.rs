@@ -40,6 +40,33 @@ pub fn session_path(proj_dir: &Path, session_id: &str) -> PathBuf {
     proj_dir.join(format!("{}.jsonl", session_id))
 }
 
+/// Open a session transcript for appending, creating it owner-only (0600)
+/// on Unix. `mode` applies only when the file is created, so an existing
+/// transcript keeps its permissions.
+fn open_transcript_append(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+}
+
+/// Create a project directory, restricting it to owner-only (0700) on Unix
+/// when it is newly created. Existing directories keep their permissions.
+fn create_project_dir(proj: &Path) -> std::io::Result<()> {
+    let existed = proj.exists();
+    std::fs::create_dir_all(proj)?;
+    #[cfg(unix)]
+    if !existed {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(proj, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(())
+}
+
 pub fn session_scratch_dir(transcript: &Path) -> PathBuf {
     transcript.with_extension("")
 }
@@ -224,10 +251,7 @@ pub fn append_record(path: &Path, record: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = open_transcript_append(path)?;
     use std::io::Write;
     writeln!(file, "{}", serde_json::to_string(record)?)?;
     Ok(())
@@ -365,10 +389,7 @@ impl TranscriptWriter {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)?;
+            let f = open_transcript_append(path)?;
             self.file = Some(std::io::BufWriter::new(f));
         }
         let line = serde_json::to_string(record)?;
@@ -438,14 +459,14 @@ impl TranscriptWriter {
 pub fn ensure_session_path(home: &Path, cwd: &Path, session_id: &str) -> Result<PathBuf> {
     let encoded = encode_cwd(cwd);
     let proj = project_dir(home, &encoded);
-    std::fs::create_dir_all(&proj)?;
+    create_project_dir(&proj)?;
     Ok(session_path(&proj, session_id))
 }
 
 pub fn ensure_session_dir(home: &Path, cwd: &Path, session_id: &str) -> Result<PathBuf> {
     let encoded = encode_cwd(cwd);
     let proj = project_dir(home, &encoded);
-    std::fs::create_dir_all(&proj)?;
+    create_project_dir(&proj)?;
     let _ = session_id;
     Ok(proj)
 }
@@ -633,6 +654,41 @@ mod tests {
             strip_verbatim_prefix(Path::new(r"C:\foo\bar")),
             PathBuf::from(r"C:\foo\bar")
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn new_session_file_and_project_dir_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("zen_sess_0600_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let cwd = std::env::temp_dir().join(format!("zen_sess_0600_cwd_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cwd);
+        fs::create_dir_all(&cwd).unwrap();
+
+        let path = ensure_session_path(&home, &cwd, "sess-0600-1").unwrap();
+        append_typed(
+            &path,
+            "user",
+            "sess-0600-1",
+            cwd.to_str().unwrap(),
+            "u1",
+            None,
+            Some(serde_json::json!({"role":"user","content":"hello"})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let proj = path.parent().unwrap();
+        assert_eq!(
+            fs::metadata(proj).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&cwd);
     }
 
     #[test]
