@@ -268,14 +268,20 @@ pub fn load_messages(path: &Path) -> Result<Vec<Value>> {
         if line.is_empty() {
             continue;
         }
-        let v: Value = serde_json::from_str(line).map_err(|e| {
-            anyhow::anyhow!(
-                "{}:{}: invalid transcript line: {}",
-                path.display(),
-                n + 1,
-                e
-            )
-        })?;
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                // A torn line (crash mid-append) must not brick the whole
+                // session: skip it with a warning, keep valid records.
+                eprintln!(
+                    "warning: {}:{}: skipping invalid transcript line: {}",
+                    path.display(),
+                    n + 1,
+                    e
+                );
+                continue;
+            }
+        };
         records.push(v);
     }
     let last_summary_idx = records
@@ -704,6 +710,65 @@ mod tests {
         )
         .unwrap();
         assert!(first.get("sessionId").is_some() && first.get("parentUuid").is_some());
+    }
+
+    #[test]
+    fn load_messages_skips_torn_lines_and_keeps_valid_messages() {
+        let home = std::env::temp_dir().join(format!("zen_sess_torn_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let cwd = std::env::temp_dir().join(format!("zen_sess_torn_cwd_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&cwd);
+        fs::create_dir_all(&cwd).unwrap();
+
+        let path = ensure_session_path(&home, &cwd, "sess-torn-1").unwrap();
+        let m1 = serde_json::json!({"role":"user","content":"hello"});
+        let m2 = serde_json::json!({"role":"assistant","content":"hi there"});
+        append_typed(
+            &path,
+            "user",
+            "sess-torn-1",
+            cwd.to_str().unwrap(),
+            "u1",
+            None,
+            Some(m1.clone()),
+            None,
+        )
+        .unwrap();
+        // Garbage line mid-file, as after a crash mid-append.
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(f, "not json").unwrap();
+        }
+        append_typed(
+            &path,
+            "assistant",
+            "sess-torn-1",
+            cwd.to_str().unwrap(),
+            "a1",
+            Some("u1"),
+            Some(m2.clone()),
+            None,
+        )
+        .unwrap();
+        // Torn trailing line: unterminated JSON, as after SIGKILL mid-append.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            std::io::Write::write_all(&mut f, b"{\"type\":\"user\",\"mes").unwrap();
+        }
+
+        let msgs = load_messages(&path).unwrap();
+        assert_eq!(msgs, vec![m1.clone(), m2.clone()]);
+        let history = load_history(&path).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].content.as_deref(), Some("hello"));
+        assert_eq!(history[1].content.as_deref(), Some("hi there"));
     }
 
     #[test]

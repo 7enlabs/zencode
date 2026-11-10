@@ -68,8 +68,20 @@ fn parse_transcript(path: &Path, session_id: &str) -> Result<ParsedSession> {
         if line.is_empty() {
             continue;
         }
-        let v: Value = serde_json::from_str(line)
-            .map_err(|e| anyhow!("{}:{}: invalid JSON: {}", path.display(), n + 1, e))?;
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                // Same torn-line tolerance as parse_event_stream: skip the
+                // bad line with a warning, keep the valid records.
+                eprintln!(
+                    "warning: {}:{}: skipping invalid JSON line: {}",
+                    path.display(),
+                    n + 1,
+                    e
+                );
+                continue;
+            }
+        };
         match v.get("type").and_then(|t| t.as_str()) {
             Some("tools") => {
                 let h = v["hash"].as_str().unwrap_or_default().to_string();
@@ -691,6 +703,25 @@ mod tests {
         assert_eq!(parsed.requests[1].messages.len(), 4);
         assert_eq!(parsed.requests[1].body_bytes, 20000);
         assert_eq!(parsed.usage_by_seq.get(&2), Some(&4500));
+        assert_eq!(parsed.summaries.len(), 1);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn parse_transcript_skips_torn_lines_and_keeps_valid_records() {
+        let d = std::env::temp_dir().join(format!("ctx_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("s.jsonl");
+        fixture(&p);
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            writeln!(f, "not json").unwrap();
+            std::io::Write::write_all(&mut f, b"{\"type\":\"request\",\"seq\":").unwrap();
+        }
+        let parsed = parse_transcript(&p, "s").unwrap();
+        assert_eq!(parsed.requests.len(), 2);
+        assert_eq!(parsed.requests[1].messages.len(), 4);
         assert_eq!(parsed.summaries.len(), 1);
         std::fs::remove_dir_all(&d).ok();
     }
