@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Self-test the checker
         run: python3 -m unittest scripts/test_check_instruction_drift.py
       - name: Check instruction files against the code
