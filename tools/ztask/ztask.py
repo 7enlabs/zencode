@@ -679,10 +679,13 @@ class Store:
         return out
 
     def outbox(self, pending_only: bool = True) -> List[dict]:
-        q = "SELECT * FROM outbox"
+        # Fixed literal queries only: no SQL is built by concatenation,
+        # so no value can ever flow into a query string (secscan item 4).
         if pending_only:
-            q += " WHERE delivered_at IS NULL"
-        return [dict(r) for r in self.conn.execute(q + " ORDER BY id")]
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM outbox WHERE delivered_at IS NULL ORDER BY id")]
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM outbox ORDER BY id")]
 
     def ack(self, outbox_id: int) -> None:
         self.conn.execute(

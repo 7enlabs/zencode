@@ -572,6 +572,17 @@ class SafetyAndOpsTests(Base):
         self.store.ack(pending[0]["id"])
         self.assertEqual(len(self.store.outbox()), len(pending) - 1)
 
+    def test_outbox_pending_only_false_lists_delivered(self):
+        tid = self.new_task()
+        tok = self.claim_start(tid)
+        self.store.submit(tid, DEV, tok, evidence="e")
+        pending = self.store.outbox()
+        self.assertTrue(pending)
+        self.store.ack(pending[0]["id"])
+        self.assertEqual(len(self.store.outbox()), len(pending) - 1)
+        self.assertEqual(len(self.store.outbox(pending_only=False)),
+                         len(pending))
+
     def test_deadline_and_aging_escalation(self):
         tid = self.new_task(deadline="2026-10-28T12:00:00Z")
         self.clock.advance(hours=4)
