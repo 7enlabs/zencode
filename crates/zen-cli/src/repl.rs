@@ -2648,6 +2648,72 @@ mod model_picker_tests {
     }
 
     #[test]
+    fn switch_rebuilds_backend_when_only_base_url_changes() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "shared-key");
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        // Same key on both sides: only the base URL moves.
+        cfg.api_key = Some("shared-key".to_string());
+        let old_llm = agent.llm.clone();
+
+        let msg = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "qwen/qwen3-coder:free",
+        )
+        .unwrap();
+        assert!(msg.contains("openrouter.ai"), "{msg}");
+        assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(cfg.api_key.as_deref(), Some("shared-key"));
+        // The live backend was built for the old base URL, so it
+        // must be rebuilt even though the key is identical.
+        assert!(!std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
+
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn switch_rebuilds_backend_when_only_key_changes() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend.clone());
+        let mut cfg = test_cfg();
+        // A stale key from an earlier switch (PR #71 review F1): the
+        // base URL is already the home gateway, only the key moves.
+        cfg.api_key = Some("stale-key".to_string());
+        let old_llm = agent.llm.clone();
+
+        let msg = apply_model_switch(
+            &mut cfg,
+            &mut agent,
+            None,
+            None,
+            &None,
+            "deepseek-v4.1-flash",
+        )
+        .unwrap();
+        assert!(msg.contains("deepseek-v4.1-flash"), "{msg}");
+        assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(cfg.api_key, None);
+        // The live backend was built with the stale key, so it must
+        // be rebuilt even though the base URL is identical.
+        assert!(!std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
+    }
+
+    #[test]
     fn switch_to_openrouter_model_without_key_is_refused() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();

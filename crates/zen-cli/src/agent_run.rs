@@ -595,6 +595,16 @@ pub async fn run_agent_headless(
     Ok(code)
 }
 
+/// The model a slash command pins for this run, if it names a real
+/// catalog id: an empty pin and "inherit" pin nothing, so the run
+/// keeps the startup model (and its explicit base URL).
+fn slash_pin_model(slash_cmd: &Option<zen_ext::SlashCommand>) -> Option<String> {
+    slash_cmd
+        .as_ref()
+        .and_then(|c| c.model.clone())
+        .filter(|m| !m.is_empty() && m != "inherit")
+}
+
 #[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
 pub(crate) async fn run_agent_with_result(
     cli: &Cli,
@@ -646,10 +656,7 @@ pub(crate) async fn run_agent_with_result(
         None => expand_slash_prompt_cmd(cli, cwd, home, prompt, cfg, session_id)?,
     };
 
-    let pinned_model = slash_cmd
-        .as_ref()
-        .and_then(|c| c.model.clone())
-        .filter(|m| !m.is_empty() && m != "inherit");
+    let pinned_model = slash_pin_model(&slash_cmd);
     let raw_model = pinned_model.clone().unwrap_or_else(|| cfg.model.clone());
     // A slash command can pin a catalog id the routed cfg never
     // carried; route the run to that model's provider (base URL +
@@ -1937,5 +1944,44 @@ mod tools_flag_tests {
             unknown.to_string().contains("unknown built-in tool 'Bsh'"),
             "{unknown}"
         );
+    }
+}
+
+#[cfg(test)]
+mod slash_pin_tests {
+    use super::*;
+
+    fn cmd(model: Option<&str>) -> Option<zen_ext::SlashCommand> {
+        Some(zen_ext::SlashCommand {
+            name: "test".to_string(),
+            description: None,
+            argument_hint: None,
+            allowed_tools: vec![],
+            model: model.map(str::to_string),
+            disable_model_invocation: false,
+            body: String::new(),
+            path: std::path::PathBuf::from("/tmp/test.md"),
+            source: zen_ext::SlashSource::Command,
+        })
+    }
+
+    #[test]
+    fn keeps_a_real_catalog_id() {
+        assert_eq!(
+            slash_pin_model(&cmd(Some("qwen/qwen3-coder:free"))),
+            Some("qwen/qwen3-coder:free".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_empty_and_inherit_pins() {
+        assert_eq!(slash_pin_model(&cmd(Some(""))), None);
+        assert_eq!(slash_pin_model(&cmd(Some("inherit"))), None);
+    }
+
+    #[test]
+    fn none_without_a_command_or_model() {
+        assert_eq!(slash_pin_model(&None), None);
+        assert_eq!(slash_pin_model(&cmd(None)), None);
     }
 }
