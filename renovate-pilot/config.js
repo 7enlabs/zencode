@@ -6,10 +6,15 @@
 module.exports = {
   platform: 'github',
   repositories: ['7enlabs/zencode'],
-  // Pilot phase: lookups and branch/PR proposals are computed, and the
-  // Dependency Dashboard issue shows what would be opened. Flip to
-  // 'full' only after the Leader approves the pilot report.
-  dryRun: 'full',
+  // dryRun follows the RENOVATE_DRY_RUN env var set by the workflow
+  // (workflow_dispatch input, default 'full'). The workflow's env var
+  // alone cannot override this file: Renovate nulls an env dryRun of
+  // 'false', so a hardcoded 'full' here would win and every run would
+  // stay a dry-run. Convert explicitly: 'false' means run for real.
+  dryRun:
+    process.env.RENOVATE_DRY_RUN === 'false'
+      ? false
+      : process.env.RENOVATE_DRY_RUN || 'full',
   onboarding: false,
   requireConfig: 'optional',
   gitAuthor: 'ZC Developer <zc-developer@zencode.local>',
