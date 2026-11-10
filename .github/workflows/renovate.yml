@@ -1,0 +1,43 @@
+name: Renovate (self-hosted pilot)
+
+# Self-hosted Renovate: the job runs in this repo's own Actions, using the
+# official renovatebot/github-action. No hosted Renovate GitHub App is
+# installed on the org. Intended home once approved: .github/workflows/renovate.yml
+# in 7enlabs/zencode (or a dedicated config repo), token in RENOVATE_TOKEN.
+
+on:
+  schedule:
+    # Monday 05:30 Asia/Ho_Chi_Minh = Sunday 22:30 UTC
+    - cron: '30 22 * * 0'
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: 'Renovate dry-run mode (full = propose only, no branches/PRs)'
+        type: choice
+        options:
+          - full
+          - extract
+          - lookup
+        default: full
+
+concurrency:
+  group: renovate-self-hosted
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    name: Renovate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout runner config
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run Renovate (self-hosted)
+        uses: renovatebot/github-action@8ac70de2fe55752c573155866e30735411e3b61c # v41.0.22
+        with:
+          configurationFile: renovate-pilot/config.js
+          token: ${{ secrets.RENOVATE_TOKEN }}
+        env:
+          RENOVATE_DRY_RUN: ${{ inputs.dryRun || 'full' }}
+          LOG_LEVEL: info
