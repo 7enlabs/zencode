@@ -64,5 +64,10 @@ jobs:
         with: { shared-key: fuzz }
       - uses: taiki-e/install-action@v2
         with: { tool: cargo-fuzz }
+      # cargo-fuzz defaults to the target triple of the binary it was built
+      # for: the musl binary cargo-binstall ships on the runner defaults to
+      # x86_64-unknown-linux-musl, whose std is not installed there (E0463)
+      # and whose static libc rejects AddressSanitizer. Pin the GNU target:
+      # ASan needs the dynamically linked glibc std that ships by default.
       - name: Fuzz the NDJSON parser (60s smoke run)
-        run: cargo +nightly fuzz run parse_event_stream -- -max_total_time=60
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_event_stream -- -max_total_time=60
