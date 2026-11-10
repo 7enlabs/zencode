@@ -738,4 +738,3 @@ Pull requests get one free-model review comment from PR Agent (Route A, config i
 fallbacks across providers, auto-approval off, fail-closed when no free model
 answers. Runs on PR opened, reopened, and ready for review only (no synchronize),
 see `.github/workflows/pr-agent-pilot.yml`.
-<!-- superagent P1 test 2026-11-06 -->
