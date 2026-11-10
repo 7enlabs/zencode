@@ -344,11 +344,22 @@ pub(crate) fn normalize_arguments(v: Option<Value>) -> String {
     }
 }
 
+/// Parse only the first JSON value in `body`, ignoring trailing content.
+/// Providers (observed OpenRouter 2026-11-10) may append a second JSON
+/// payload after the completion JSON; `serde_json::from_str` rejects that
+/// with "trailing characters". Same first-value approach as `parse_completion`.
+fn first_json_value(body: &str) -> Option<Value> {
+    serde_json::Deserializer::from_str(body)
+        .into_iter::<Value>()
+        .next()?
+        .ok()
+}
+
 fn server_retry_hint_ms(header: Option<&str>, body: &str) -> Option<u64> {
     if let Some(secs) = header.and_then(|h| h.trim().parse::<f64>().ok()) {
         return Some((secs.max(0.0) * 1000.0) as u64);
     }
-    let v: Value = serde_json::from_str(body).ok()?;
+    let v: Value = first_json_value(body)?;
     let secs = v
         .pointer("/error/retry_after_seconds")
         .or_else(|| v.get("retry_after_seconds"))
@@ -425,7 +436,7 @@ impl MidResponseError {
 }
 
 pub(crate) fn mid_response_error(body: &str) -> Option<MidResponseError> {
-    let v: Value = serde_json::from_str(body).ok()?;
+    let v: Value = first_json_value(body)?;
     let choice = v
         .get("choices")
         .and_then(Value::as_array)
@@ -731,7 +742,7 @@ impl LlmBackend for OpenAiClient {
 }
 
 pub(crate) fn transient_completion(body: &str) -> Option<String> {
-    let v: Value = serde_json::from_str(body).ok()?;
+    let v: Value = first_json_value(body)?;
     if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
         let msg = err
             .get("message")
@@ -832,9 +843,9 @@ pub(crate) fn parse_completion(body: &str) -> anyhow::Result<ChatResponse> {
 }
 
 pub(crate) fn openai_cached_tokens(body: &str) -> u64 {
-    let v: Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return 0,
+    let v: Value = match first_json_value(body) {
+        Some(v) => v,
+        None => return 0,
     };
     v.pointer("/usage/prompt_tokens_details/cached_tokens")
         .and_then(Value::as_u64)
@@ -987,6 +998,58 @@ mod tests {
         let body = format!("{completion}\n\ntrailing text\n");
         let r = parse_completion(&body).unwrap();
         assert_eq!(r.message.content.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn transient_completion_tolerates_trailing_content() {
+        // Regression (bug hunt P1-2): OpenRouter 2026-11-10 appended a trailing
+        // second JSON after the completion JSON; `serde_json::from_str` failed
+        // with "trailing characters", so the empty-message / gateway-error
+        // signals went blind. Same body shape as the PR #85 parse_completion test.
+        let trailing = json!({"id": "gen-N"}).to_string();
+        let empty = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[]},"finish_reason":"stop"}]}"#;
+        assert!(transient_completion(&format!("{empty} {trailing}"))
+            .unwrap()
+            .contains("empty message"));
+        let err200 = r#"{"error":{"message":"slow down","code":500}}"#;
+        assert!(transient_completion(&format!("{err200} {trailing}"))
+            .unwrap()
+            .contains("gateway error in 200 response: slow down"));
+    }
+
+    #[test]
+    fn mid_response_error_tolerates_trailing_content() {
+        let trailing = json!({"id": "gen-N"}).to_string();
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"error","error":{"message":"boom","code":500}}]}"#;
+        let e = mid_response_error(&format!("{body} {trailing}")).unwrap();
+        assert_eq!(e.code, Some(500));
+        assert_eq!(e.message, "boom");
+    }
+
+    #[test]
+    fn openai_cached_tokens_tolerates_trailing_content() {
+        let trailing = json!({"id": "gen-N"}).to_string();
+        let body = json!({
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 2000,
+                "completion_tokens": 2,
+                "total_tokens": 2002,
+                "prompt_tokens_details": {"cached_tokens": 1500, "audio_tokens": 0}
+            }
+        })
+        .to_string();
+        assert_eq!(openai_cached_tokens(&format!("{body} {trailing}")), 1500);
+    }
+
+    #[test]
+    fn server_retry_hint_tolerates_trailing_content() {
+        let trailing = json!({"id": "gen-N"}).to_string();
+        let body = r#"{"error":{"message":"slow down","retry_after_seconds":23}}"#;
+        assert_eq!(
+            server_retry_hint_ms(None, &format!("{body} {trailing}")),
+            Some(23_000)
+        );
     }
 
     #[tokio::test]
