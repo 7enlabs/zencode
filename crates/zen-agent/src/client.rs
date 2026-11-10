@@ -768,13 +768,27 @@ pub(crate) fn transient_completion(body: &str) -> Option<String> {
 }
 
 pub(crate) fn parse_completion(body: &str) -> anyhow::Result<ChatResponse> {
-    let parsed: WireResp = serde_json::from_str(body).map_err(|e| {
-        anyhow::anyhow!(
-            "invalid completion response: {} (body: {})",
-            e,
-            first_chars(body, ERROR_BODY_CHARS)
-        )
-    })?;
+    // OpenRouter may append trailing content after the completion JSON
+    // (observed 2026-11-10: leading blank lines + one completion JSON for
+    // gen-1794290377-QQ8NMlUaKXWUfJ + a trailing second JSON). Parse only the
+    // first JSON value and ignore whatever follows it.
+    let mut values = serde_json::Deserializer::from_str(body).into_iter::<WireResp>();
+    let parsed: WireResp = match values.next() {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => {
+            return Err(anyhow::anyhow!(
+                "invalid completion response: {} (body: {})",
+                e,
+                first_chars(body, ERROR_BODY_CHARS)
+            ));
+        }
+        None => {
+            return Err(anyhow::anyhow!(
+                "invalid completion response: empty body (body: {})",
+                first_chars(body, ERROR_BODY_CHARS)
+            ));
+        }
+    };
     let choice = parsed.choices.into_iter().next().ok_or_else(|| {
         anyhow::anyhow!(
             "model returned no choices (body: {})",
@@ -938,6 +952,41 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("no choices"));
+    }
+
+    #[test]
+    fn parse_completion_tolerates_trailing_content_after_first_json() {
+        // Regression: OpenRouter 2026-11-10 returned leading blank lines + one
+        // completion JSON + a trailing second JSON (gen-1794290377-QQ8NMlUaKXWUfJ);
+        // `serde_json::from_str` failed with "trailing characters".
+        let completion = json!({
+            "id": "gen-1794290377-QQ8NMlUaKXWUfJ",
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+        })
+        .to_string();
+        let trailing = json!({"id": "gen-1794290377-QQ8NMlUaKXWUfJ"}).to_string();
+        let body = format!(
+            "{}\n\n{}\n\n{}",
+            "\n         ".repeat(24),
+            completion,
+            trailing
+        );
+        let r = parse_completion(&body).unwrap();
+        assert_eq!(r.message.content.as_deref(), Some("hi"));
+        assert_eq!(r.usage.total_tokens, 12);
+    }
+
+    #[test]
+    fn parse_completion_tolerates_trailing_blank_lines_and_text() {
+        let completion = json!({
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })
+        .to_string();
+        let body = format!("{completion}\n\ntrailing text\n");
+        let r = parse_completion(&body).unwrap();
+        assert_eq!(r.message.content.as_deref(), Some("hi"));
     }
 
     #[tokio::test]
