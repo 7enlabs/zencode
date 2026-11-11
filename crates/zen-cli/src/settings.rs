@@ -326,6 +326,12 @@ fn resolve_base_url(cli: &Cli, settings_url: Option<&str>) -> String {
 /// the model was routed. Shared by the REPL and headless entry
 /// points so every path sends an id its gateway accepts.
 pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
+    let routed = route_catalog_model_inner(cfg)?;
+    normalize_fallback_models(cfg);
+    Ok(routed)
+}
+
+fn route_catalog_model_inner(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
     // Auto has no catalog meaning for the Ollama provider (PR #72
     // review follow-up): refuse here with the real reason instead of
     // letting the literal "auto" reach the Ollama readiness check,
@@ -382,6 +388,33 @@ pub fn route_catalog_model(cfg: &mut ResolvedConfig) -> anyhow::Result<bool> {
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Bring `cfg.fallback_models` in line with the routed primary: the
+/// fallback chain sends every candidate through the one client bound
+/// to `cfg.base_url`, so a catalog fallback must be translated to
+/// the gateway id its provider accepts (as the primary is), and a
+/// catalog entry served by a different provider can only fail with
+/// a 400 - drop it with a warning instead of letting it pose as a
+/// working fallback (bug hunt B P2-4). A custom base URL has no
+/// known provider, so nothing is dropped there.
+fn normalize_fallback_models(cfg: &mut ResolvedConfig) {
+    let provider = crate::models::provider_for_base_url(&cfg.base_url);
+    cfg.fallback_models.retain(|id| {
+        match (provider, crate::models::catalog_entry(id)) {
+            (Some(p), Some(entry)) if entry.provider != p => {
+                eprintln!(
+                    "warning: fallback model '{id}' is served by provider '{}', not '{p}'; ignoring it",
+                    entry.provider
+                );
+                false
+            }
+            _ => true,
+        }
+    });
+    for id in &mut cfg.fallback_models {
+        *id = crate::models::gateway_model_id(id).to_string();
+    }
 }
 
 /// Route `cfg` to a catalog entry's provider: the model string that
@@ -1354,6 +1387,50 @@ mod tests {
         }
         if let Some(o) = old_u {
             std::env::set_var("ZEN_BASE_URL", o);
+        }
+    }
+
+    #[test]
+    fn route_catalog_model_drops_cross_provider_fallbacks() {
+        let _env = env_lock();
+        let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
+        cfg.model = DEFAULT_MODEL.to_string();
+        cfg.base_url = DEFAULT_BASE_URL.to_string();
+        cfg.fallback_models = vec![
+            "deepseek-v4.1-flash".to_string(),
+            "qwen/qwen3-coder:free".to_string(),
+            "my-custom-model".to_string(),
+        ];
+        route_catalog_model(&mut cfg).unwrap();
+        // The OpenRouter catalog id is dropped (it would only 400 on
+        // the Experiential gateway); the same-provider entry and the
+        // non-catalog id stay.
+        assert_eq!(
+            cfg.fallback_models,
+            ["deepseek-v4.1-flash", "my-custom-model"]
+        );
+    }
+
+    #[test]
+    fn route_catalog_model_filters_fallbacks_by_the_routed_provider() {
+        let _env = env_lock();
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
+        cfg.model = "deepseek/deepseek-r1:free".to_string();
+        cfg.base_url = DEFAULT_BASE_URL.to_string();
+        cfg.fallback_models = vec![
+            "deepseek-v4.1-flash".to_string(),
+            "qwen/qwen3-coder:free".to_string(),
+        ];
+        route_catalog_model(&mut cfg).unwrap();
+        assert_eq!(cfg.base_url, crate::models::OPENROUTER_BASE_URL);
+        // Filtering uses the FINAL base URL: once the primary routes
+        // to OpenRouter, the Experiential entry is the foreign one.
+        assert_eq!(cfg.fallback_models, ["qwen/qwen3-coder:free"]);
+        match old {
+            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
         }
     }
 
