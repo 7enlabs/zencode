@@ -1,4 +1,4 @@
-use crate::skills::{discover_skill_entries, split_frontmatter, Frontmatter};
+use crate::skills::{Frontmatter, discover_skill_entries, split_frontmatter};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,15 +201,14 @@ fn substitute_args(body: &str, args: &str) -> (String, bool) {
         out.push_str(&rest[..pos]);
         let after = &rest[pos + 1..];
         if let Some(tail) = after.strip_prefix("ARGUMENTS") {
-            if let Some(idx_part) = tail.strip_prefix('[') {
-                if let Some(close) = idx_part.find(']') {
-                    if let Ok(i) = idx_part[..close].trim().parse::<usize>() {
-                        out.push_str(&nth(i));
-                        used = true;
-                        rest = &idx_part[close + 1..];
-                        continue;
-                    }
-                }
+            if let Some(idx_part) = tail.strip_prefix('[')
+                && let Some(close) = idx_part.find(']')
+                && let Ok(i) = idx_part[..close].trim().parse::<usize>()
+            {
+                out.push_str(&nth(i));
+                used = true;
+                rest = &idx_part[close + 1..];
+                continue;
             }
             out.push_str(args);
             used = true;
@@ -217,13 +216,13 @@ fn substitute_args(body: &str, args: &str) -> (String, bool) {
             continue;
         }
         let mut digits = after.chars();
-        if let Some(d) = digits.next().filter(char::is_ascii_digit) {
-            if !after[1..].starts_with(|c: char| c.is_ascii_digit()) {
-                out.push_str(&nth(d as usize - '0' as usize));
-                used = true;
-                rest = &after[1..];
-                continue;
-            }
+        if let Some(d) = digits.next().filter(char::is_ascii_digit)
+            && !after[1..].starts_with(|c: char| c.is_ascii_digit())
+        {
+            out.push_str(&nth(d as usize - '0' as usize));
+            used = true;
+            rest = &after[1..];
+            continue;
         }
         out.push('$');
         rest = after;
@@ -237,11 +236,7 @@ fn resolve_ref(raw: &str, base: &Path) -> Option<PathBuf> {
         dirs::home_dir()?.join(rest)
     } else {
         let p = PathBuf::from(raw);
-        if p.is_absolute() {
-            p
-        } else {
-            base.join(p)
-        }
+        if p.is_absolute() { p } else { base.join(p) }
     };
     p.is_file().then_some(p)
 }
@@ -260,16 +255,15 @@ fn inline_files(text: &str, base: &Path) -> String {
             let token = &text[i + 1..end];
 
             let trimmed = token.trim_end_matches([',', '.', ';', ':', ')', '!', '?']);
-            if !trimmed.is_empty() {
-                if let Some(content) =
+            if !trimmed.is_empty()
+                && let Some(content) =
                     resolve_ref(trimmed, base).and_then(|p| std::fs::read_to_string(p).ok())
-                {
-                    out.push_str(content.trim_end_matches('\n'));
-                    out.push_str(&token[trimmed.len()..]);
-                    i = end;
-                    prev_ws = false;
-                    continue;
-                }
+            {
+                out.push_str(content.trim_end_matches('\n'));
+                out.push_str(&token[trimmed.len()..]);
+                i = end;
+                prev_ws = false;
+                continue;
             }
         }
         out.push(c);
@@ -450,7 +444,13 @@ mod tests {
         let t = TempDir::new();
         write(&t.path().join("notes/a.txt"), "ALPHA\n");
         let c = ctx(t.path());
-        let out = expand_command(&cmd("dir=${ZEN_PROJECT_DIR} id=${ZEN_SESSION_ID} see @notes/a.txt, mail a@notes/a.txt @missing.txt"), "", &c);
+        let out = expand_command(
+            &cmd(
+                "dir=${ZEN_PROJECT_DIR} id=${ZEN_SESSION_ID} see @notes/a.txt, mail a@notes/a.txt @missing.txt",
+            ),
+            "",
+            &c,
+        );
         assert_eq!(
             out,
             format!(

@@ -85,10 +85,12 @@ async fn p0_1_edit_keeps_mode_and_symlink() {
         )
         .await;
     assert!(!e.is_error, "{}", e.content);
-    assert!(std::fs::symlink_metadata(dir.join("link.sh"))
-        .unwrap()
-        .file_type()
-        .is_symlink());
+    assert!(
+        std::fs::symlink_metadata(dir.join("link.sh"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     assert_eq!(
         std::fs::read_to_string(&real).unwrap(),
         "#!/bin/sh\necho new\n"

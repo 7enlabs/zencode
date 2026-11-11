@@ -222,9 +222,11 @@ mod tests {
 
     #[test]
     fn loop_args_zero_rejected() {
-        assert!(parse_loop_args("0 do x")
-            .unwrap_err()
-            .contains("at least 1"));
+        assert!(
+            parse_loop_args("0 do x")
+                .unwrap_err()
+                .contains("at least 1")
+        );
     }
 
     #[test]

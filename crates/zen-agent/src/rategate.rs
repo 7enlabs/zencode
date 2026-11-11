@@ -195,15 +195,15 @@ impl RateGate {
                 }
             })
             .collect();
-        if let Some(provider) = Self::provider_key(&self.base_url) {
-            if !out.iter().any(|q| q.provider == provider) {
-                out.push(QuotaStatus {
-                    used: 0,
-                    limit: self.limit_for(&provider),
-                    provider,
-                    date: state.date.clone(),
-                });
-            }
+        if let Some(provider) = Self::provider_key(&self.base_url)
+            && !out.iter().any(|q| q.provider == provider)
+        {
+            out.push(QuotaStatus {
+                used: 0,
+                limit: self.limit_for(&provider),
+                provider,
+                date: state.date.clone(),
+            });
         }
         out.sort_by(|a, b| a.provider.cmp(&b.provider));
         out

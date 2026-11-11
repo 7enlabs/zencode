@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -354,7 +354,7 @@ async fn run_one(
                 spec.command,
                 e,
                 hook_diag(spec, &cmd_display, cwd)
-            ))
+            ));
         }
     };
 
@@ -462,10 +462,10 @@ fn redirect_targets(command: &str) -> Vec<String> {
             i += 2;
             continue;
         }
-        if let Some(rest) = bare.strip_prefix(">>").or_else(|| bare.strip_prefix('>')) {
-            if !rest.is_empty() {
-                push_target(&mut out, rest);
-            }
+        if let Some(rest) = bare.strip_prefix(">>").or_else(|| bare.strip_prefix('>'))
+            && !rest.is_empty()
+        {
+            push_target(&mut out, rest);
         }
         i += 1;
     }
@@ -516,11 +516,7 @@ fn probe_path(cwd: &Path, raw: &str) -> PathBuf {
     } else {
         PathBuf::from(raw)
     };
-    if p.is_absolute() {
-        p
-    } else {
-        cwd.join(p)
-    }
+    if p.is_absolute() { p } else { cwd.join(p) }
 }
 
 fn interpret_output(output: &std::process::Output, event: HookEvent) -> SingleOutcome {
@@ -603,10 +599,10 @@ fn interpret_json_stdout(obj: &serde_json::Map<String, Value>, event: HookEvent)
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string);
     }
-    if let Some(sm) = obj.get("systemMessage").and_then(|v| v.as_str()) {
-        if !sm.trim().is_empty() {
-            out.system_message = Some(sm.to_string());
-        }
+    if let Some(sm) = obj.get("systemMessage").and_then(|v| v.as_str())
+        && !sm.trim().is_empty()
+    {
+        out.system_message = Some(sm.to_string());
     }
 
     if let Some(decision) = obj.get("decision").and_then(|v| v.as_str()) {
@@ -649,22 +645,22 @@ fn interpret_json_stdout(obj: &serde_json::Map<String, Value>, event: HookEvent)
             }
         }
 
-        if event == HookEvent::PostToolUse {
-            if let Some(ut) = hso.get("updatedToolOutput") {
-                out.updated_output = Some(match ut.as_str() {
-                    Some(s) => s.to_string(),
-                    None => ut.to_string(),
-                });
-            }
+        if event == HookEvent::PostToolUse
+            && let Some(ut) = hso.get("updatedToolOutput")
+        {
+            out.updated_output = Some(match ut.as_str() {
+                Some(s) => s.to_string(),
+                None => ut.to_string(),
+            });
         }
 
-        if let Some(ctx) = hso.get("additionalContext").and_then(|v| v.as_str()) {
-            if !ctx.trim().is_empty() {
-                if is_stop {
-                    out.blocked = true;
-                }
-                push_feedback(&mut out, ctx);
+        if let Some(ctx) = hso.get("additionalContext").and_then(|v| v.as_str())
+            && !ctx.trim().is_empty()
+        {
+            if is_stop {
+                out.blocked = true;
             }
+            push_feedback(&mut out, ctx);
         }
     }
 
@@ -966,9 +962,11 @@ mod tests {
         .await
         .unwrap();
         let written = fs::read_to_string(&outfile).unwrap();
-        assert!(written
-            .trim()
-            .contains(tmp.path().to_string_lossy().as_ref()));
+        assert!(
+            written
+                .trim()
+                .contains(tmp.path().to_string_lossy().as_ref())
+        );
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use zen_agent::tool_bundles::{
-    definitions_for_bundle, estimate_schema_tokens, per_tool_costs, total_schema_tokens,
-    ToolBundle, SCHEMA_TOKEN_BUDGETS,
+    SCHEMA_TOKEN_BUDGETS, ToolBundle, definitions_for_bundle, estimate_schema_tokens,
+    per_tool_costs, total_schema_tokens,
 };
 use zen_core::{Tool, ToolRegistry};
 

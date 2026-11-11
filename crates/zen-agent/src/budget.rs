@@ -45,10 +45,10 @@ pub fn price_per_1m(model: &str) -> Option<(f64, f64)> {
         return Some(p);
     }
 
-    if let Some((_, bare)) = m.rsplit_once('/') {
-        if let Some(p) = price_table(bare) {
-            return Some(p);
-        }
+    if let Some((_, bare)) = m.rsplit_once('/')
+        && let Some(p) = price_table(bare)
+    {
+        return Some(p);
     }
     None
 }

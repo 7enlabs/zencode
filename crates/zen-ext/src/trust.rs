@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub const TRUST_ENV: &str = "ZEN_TRUST_FOLDER";
@@ -54,10 +54,10 @@ fn read_store(path: &Path) -> Vec<String> {
 
 pub fn is_folder_trusted(cwd: &Path, home: Option<&Path>) -> bool {
     let cwd = canon(cwd);
-    if let Some(h) = home_dir(home) {
-        if canon(&h) == cwd {
-            return true;
-        }
+    if let Some(h) = home_dir(home)
+        && canon(&h) == cwd
+    {
+        return true;
     }
     let Some(store) = trust_store_path(home) else {
         return false;

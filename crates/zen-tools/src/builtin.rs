@@ -2,7 +2,7 @@ use crate::edit_match::apply_edit;
 use crate::gitignore::{is_ignored, load_ignore_rules};
 use async_trait::async_trait;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -51,10 +51,10 @@ pub fn expand_tilde(input: &str) -> PathBuf {
     if input == "~" {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
-    if let Some(rest) = input.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = input.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
     PathBuf::from(input)
 }
@@ -237,11 +237,7 @@ fn safe_file_stem(id: &str) -> String {
         })
         .take(80)
         .collect();
-    if s.is_empty() {
-        "output".into()
-    } else {
-        s
-    }
+    if s.is_empty() { "output".into() } else { s }
 }
 
 fn fresh_stem() -> String {
@@ -459,14 +455,14 @@ impl Tool for WriteTool {
         {
             return ToolOutput::err(msg);
         }
-        if let Some(parent) = path.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return ToolOutput::err(format!(
-                    "Error creating directory {}: {}",
-                    parent.display(),
-                    e
-                ));
-            }
+        if let Some(parent) = path.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return ToolOutput::err(format!(
+                "Error creating directory {}: {}",
+                parent.display(),
+                e
+            ));
         }
         let ck_warning = checkpoint_before(ctx, &path);
         match crate::atomic::write_atomic_async(path.clone(), content.as_bytes().to_vec()).await {
@@ -598,7 +594,7 @@ async fn load_for_edit(ctx: &ToolContext, fp: &str) -> Result<(PathBuf, String),
                 "Error reading {}: {}",
                 path.display(),
                 e
-            )))
+            )));
         }
     };
     check_fresh(ctx, &path, text.as_bytes())?;
@@ -624,7 +620,7 @@ async fn save_edit(
                     "Error writing {}: {}",
                     path.display(),
                     e
-                )))
+                )));
             }
         };
     checkpoint_after(ctx, path, text.as_bytes());
@@ -733,7 +729,7 @@ impl Tool for MultiEditTool {
                         i + 1,
                         edits.len(),
                         msg
-                    ))
+                    ));
                 }
             }
         }
@@ -819,7 +815,13 @@ impl Tool for BashTool {
 
         let shell = zen_core::resolve_shell("bash");
         if background {
-            return match crate::jobs::start_job(cmd_str, &cwd, &ctx.env, &ctx.scratch_dir(), ctx.api_key_env.as_deref()) {
+            return match crate::jobs::start_job(
+                cmd_str,
+                &cwd,
+                &ctx.env,
+                &ctx.scratch_dir(),
+                ctx.api_key_env.as_deref(),
+            ) {
                 Ok(j) => ToolOutput::ok(format!(
                     "Started background job {} (pid {}). Output is logged to {}. Read new output with \
                      JobOutput {{\"job_id\":\"{}\"}} (add wait_ms to wait for it to finish); stop it with JobKill.",
@@ -838,7 +840,9 @@ impl Tool for BashTool {
             zen_core::ShellKind::Posix => format!(
                 "{{ {cmd_str}\n}} 2>&1\n__zen_exit=$?\nprintf '\\n{marker}%s\\n' \"$PWD\"\nexit $__zen_exit"
             ),
-            zen_core::ShellKind::PowerShell => format!("& {{ {cmd_str} }} 2>&1; exit $LASTEXITCODE"),
+            zen_core::ShellKind::PowerShell => {
+                format!("& {{ {cmd_str} }} 2>&1; exit $LASTEXITCODE")
+            }
             zen_core::ShellKind::Cmd => format!("({cmd_str}) 2>&1"),
         };
         let mut command = tokio::process::Command::new(&shell.program);
@@ -1582,15 +1586,15 @@ fn url_host_port(url: &str) -> (String, u16) {
     let after_scheme = url.split("://").nth(1).unwrap_or(url);
     let host_port = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
     let host_port = host_port.split('@').next_back().unwrap_or(host_port);
-    if let Some(rest) = host_port.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            let host = &rest[..end];
-            let port = rest[end + 1..]
-                .strip_prefix(':')
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(default_port);
-            return (host.to_string(), port);
-        }
+    if let Some(rest) = host_port.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        let host = &rest[..end];
+        let port = rest[end + 1..]
+            .strip_prefix(':')
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(default_port);
+        return (host.to_string(), port);
     }
     match host_port.rsplit_once(':') {
         Some((h, p)) if p.parse::<u16>().is_ok() => {
@@ -1673,11 +1677,11 @@ async fn read_capped(resp: reqwest::Response, cap: usize) -> anyhow::Result<Vec<
 }
 
 fn with_extra_roots(mut b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    if let Some(pem) = zen_core::extra_root_pem() {
-        if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem) {
-            for c in certs {
-                b = b.add_root_certificate(c);
-            }
+    if let Some(pem) = zen_core::extra_root_pem()
+        && let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem)
+    {
+        for c in certs {
+            b = b.add_root_certificate(c);
         }
     }
     b

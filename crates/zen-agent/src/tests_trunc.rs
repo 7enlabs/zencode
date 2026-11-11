@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use zen_core::*;
 
 use crate::agent::{TRUNCATED_CALL_NUDGE, TRUNCATION_CONTINUE_NUDGE};
@@ -145,9 +145,10 @@ async fn trunc_half_tool_call_is_not_executed_and_is_reemitted() {
     assert!(!reqs.iter().flat_map(|r| r.messages.iter()).any(has_w1));
     assert!(!agent.messages().iter().any(has_w1));
     let evs = sink.events.lock().unwrap();
-    assert!(!evs
-        .iter()
-        .any(|e| matches!(e, AgentEvent::Assistant { message, .. } if has_w1(message))));
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, AgentEvent::Assistant { message, .. } if has_w1(message)))
+    );
 }
 
 #[tokio::test]

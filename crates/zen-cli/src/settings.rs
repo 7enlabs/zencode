@@ -302,7 +302,7 @@ fn resolve_model(cli: &Cli, settings_model: Option<&str>) -> String {
     if let Ok(v) = std::env::var("ZEN_MODEL") {
         let v = v.trim();
         if !v.is_empty() {
-            return v.to_string();
+            return v;
         }
     }
     settings_model
@@ -323,10 +323,10 @@ fn resolve_base_url(cli: &Cli, settings_url: Option<&str>) -> String {
     if let Some(u) = &cli.base_url {
         return normalize_base_url(u);
     }
-    if let Ok(v) = std::env::var("ZEN_BASE_URL") {
-        if !v.trim().is_empty() {
-            return normalize_base_url(&v);
-        }
+    if let Ok(v) = std::env::var("ZEN_BASE_URL")
+        && !v.trim().is_empty()
+    {
+        return normalize_base_url(&v);
     }
     settings_url
         .filter(|s| !s.trim().is_empty())
@@ -470,24 +470,22 @@ pub fn route_to_catalog_entry(
 }
 
 fn resolve_api_key(api_key_env: Option<&str>) -> Option<String> {
-    if let Ok(v) = std::env::var("ZEN_API_KEY") {
-        if !v.is_empty() {
-            return Some(v);
-        }
+    if let Ok(v) = std::env::var("ZEN_API_KEY")
+        && !v.is_empty()
+    {
+        return Some(v);
     }
-    if let Ok(v) = std::env::var("OPENAI_API_KEY") {
-        if !v.is_empty() {
-            return Some(v);
-        }
+    if let Ok(v) = std::env::var("OPENAI_API_KEY")
+        && !v.is_empty()
+    {
+        return Some(v);
     }
-    if let Some(env_name) = api_key_env {
-        if !env_name.is_empty() {
-            if let Ok(v) = std::env::var(env_name) {
-                if !v.is_empty() {
-                    return Some(v);
-                }
-            }
-        }
+    if let Some(env_name) = api_key_env
+        && !env_name.is_empty()
+        && let Ok(v) = std::env::var(env_name)
+        && !v.is_empty()
+    {
+        return Some(v);
     }
     None
 }
@@ -505,15 +503,15 @@ fn resolve_permission_mode(
         }
         return Ok(*m);
     }
-    if let Some(m) = default_mode {
-        if let Some(parsed) = PermissionMode::parse(m) {
-            if bypass_forbidden && parsed == PermissionMode::BypassPermissions {
-                anyhow::bail!(
-                    "bypassPermissions mode is disabled by settings (disableBypassPermissionsMode)"
-                );
-            }
-            return Ok(parsed);
+    if let Some(m) = default_mode
+        && let Some(parsed) = PermissionMode::parse(m)
+    {
+        if bypass_forbidden && parsed == PermissionMode::BypassPermissions {
+            anyhow::bail!(
+                "bypassPermissions mode is disabled by settings (disableBypassPermissionsMode)"
+            );
         }
+        return Ok(parsed);
     }
     Ok(PermissionMode::Default)
 }
@@ -671,10 +669,10 @@ pub fn resolve_config_with_home(
         .provider
         .clone()
         .or_else(|| std::env::var("ZEN_PROVIDER").ok().filter(|s| !s.is_empty()));
-    if let Some(p) = provider.as_deref() {
-        if p != "ollama" {
-            anyhow::bail!("unknown --provider '{p}' (supported providers: ollama)");
-        }
+    if let Some(p) = provider.as_deref()
+        && p != "ollama"
+    {
+        anyhow::bail!("unknown --provider '{p}' (supported providers: ollama)");
     }
     let base_url_explicit = cli.base_url.is_some()
         || std::env::var("ZEN_BASE_URL")
@@ -836,11 +834,11 @@ mod tests {
         cli.model = Some("cli-model".into());
 
         let old = std::env::var("ZEN_MODEL").ok();
-        std::env::set_var("ZEN_MODEL", "env-model");
+        unsafe { std::env::set_var("ZEN_MODEL", "env-model") };
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
-        std::env::remove_var("ZEN_MODEL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
         if let Some(o) = old {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
         assert_eq!(cfg.model, "cli-model");
     }
@@ -850,11 +848,11 @@ mod tests {
         let _env = env_lock();
         let cli = base_cli();
         let old = std::env::var("ZEN_MODEL").ok();
-        std::env::set_var("ZEN_MODEL", "env-model");
+        unsafe { std::env::set_var("ZEN_MODEL", "env-model") };
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
-        std::env::remove_var("ZEN_MODEL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
         if let Some(o) = old {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
         assert_eq!(cfg.model, "env-model");
     }
@@ -865,8 +863,8 @@ mod tests {
         let cli = base_cli();
         let old_m = std::env::var("ZEN_MODEL").ok();
         let old_b = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         // Isolate from the real user settings file as well as the ambient
         // env: defaults must hold with no user/project/local layer at all.
         let dir = std::env::temp_dir().join(format!("zen_cfg_def_{}", std::process::id()));
@@ -877,10 +875,10 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
         if let Some(o) = old_m {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
         if let Some(o) = old_b {
-            std::env::set_var("ZEN_BASE_URL", o);
+            unsafe { std::env::set_var("ZEN_BASE_URL", o) };
         }
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&home);
@@ -905,14 +903,14 @@ mod tests {
             crate::models::OPENROUTER_BASE_URL
         );
         let old = std::env::var("ZEN_BASE_URL").ok();
-        std::env::set_var("ZEN_BASE_URL", "https://openrouter.ai/api/v1/");
+        unsafe { std::env::set_var("ZEN_BASE_URL", "https://openrouter.ai/api/v1/") };
         assert_eq!(
             resolve_base_url(&cli, None),
             crate::models::OPENROUTER_BASE_URL
         );
         match old {
-            Some(o) => std::env::set_var("ZEN_BASE_URL", o),
-            None => std::env::remove_var("ZEN_BASE_URL"),
+            Some(o) => unsafe { std::env::set_var("ZEN_BASE_URL", o) },
+            None => unsafe { std::env::remove_var("ZEN_BASE_URL") },
         }
         // Provider recognition tolerates the same sloppiness, so
         // callers holding an unnormalized URL still work.
@@ -1076,18 +1074,18 @@ mod tests {
         // an empty user home so the real user settings file cannot leak in.
         let old_m = std::env::var("ZEN_MODEL").ok();
         let old_b = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         let home = std::env::temp_dir().join(format!("zen_cfg_test_home_{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
         let cli = Cli::parse_from(["zen", "--setting-sources", "project", "--trust-folder"]);
         let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
         if let Some(o) = old_m {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
         if let Some(o) = old_b {
-            std::env::set_var("ZEN_BASE_URL", o);
+            unsafe { std::env::set_var("ZEN_BASE_URL", o) };
         }
         let _ = fs::remove_dir_all(&home);
         assert_eq!(cfg.model, "from-file");
@@ -1124,7 +1122,7 @@ mod tests {
         fs::create_dir_all(dir.join(".zen")).unwrap();
         fs::write(dir.join(".zen/settings.json"), r#"{"model":"from-file"}"#).unwrap();
         let old = std::env::var("ZEN_MODEL").ok();
-        std::env::set_var("ZEN_MODEL", "env-model");
+        unsafe { std::env::set_var("ZEN_MODEL", "env-model") };
         let cli = Cli::parse_from(["zen", "--setting-sources", "project"]);
         let from_env = resolve_config(&cli, &dir).unwrap().model;
         let cli = Cli::parse_from([
@@ -1135,11 +1133,11 @@ mod tests {
             "project",
         ]);
         let from_flag = resolve_config(&cli, &dir).unwrap().model;
-        std::env::remove_var("ZEN_MODEL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
         let cli = Cli::parse_from(["zen", "--setting-sources", "project"]);
         let from_file = resolve_config(&cli, &dir).unwrap().model;
         if let Some(o) = old {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(from_env, "env-model");
@@ -1268,7 +1266,7 @@ mod tests {
         )
         .unwrap();
         let old = std::env::var(zen_ext::TRUST_ENV).ok();
-        std::env::remove_var(zen_ext::TRUST_ENV);
+        unsafe { std::env::remove_var(zen_ext::TRUST_ENV) };
 
         let cfg = resolve_config_with_home(&base_cli(), &proj, Some(&home)).unwrap();
         assert!(!cfg.folder_trusted);
@@ -1285,9 +1283,9 @@ mod tests {
         assert!(cfg.folder_trusted && cfg.hooks.get("Stop").is_some());
         assert!(!zen_ext::is_folder_trusted(&proj, Some(&home)));
 
-        std::env::set_var(zen_ext::TRUST_ENV, "1");
+        unsafe { std::env::set_var(zen_ext::TRUST_ENV, "1") };
         let cfg = resolve_config_with_home(&base_cli(), &proj, Some(&home)).unwrap();
-        std::env::remove_var(zen_ext::TRUST_ENV);
+        unsafe { std::env::remove_var(zen_ext::TRUST_ENV) };
         assert!(cfg.folder_trusted && cfg.permissions.allow == vec!["Bash"]);
 
         zen_ext::trust_folder(&proj, Some(&home)).unwrap();
@@ -1298,7 +1296,7 @@ mod tests {
         );
 
         if let Some(o) = old {
-            std::env::set_var(zen_ext::TRUST_ENV, o);
+            unsafe { std::env::set_var(zen_ext::TRUST_ENV, o) };
         }
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1444,22 +1442,23 @@ mod tests {
     fn provider_routing_default_model_untouched_without_key() {
         let _env = env_lock();
         let old = std::env::var("GOOGLE_API_KEY").ok();
-        std::env::remove_var("GOOGLE_API_KEY");
+        unsafe { std::env::remove_var("GOOGLE_API_KEY") };
         let old_m = std::env::var("ZEN_MODEL").ok();
-        std::env::remove_var("ZEN_MODEL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
         let cli = base_cli();
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
         assert_eq!(cfg.model, DEFAULT_MODEL);
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
-        assert!(cfg
-            .warnings
-            .iter()
-            .all(|w| !w.contains("provider 'google'")));
+        assert!(
+            cfg.warnings
+                .iter()
+                .all(|w| !w.contains("provider 'google'"))
+        );
         if let Some(o) = old {
-            std::env::set_var("GOOGLE_API_KEY", o);
+            unsafe { std::env::set_var("GOOGLE_API_KEY", o) };
         }
         if let Some(o) = old_m {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
     }
 
@@ -1467,16 +1466,16 @@ mod tests {
     fn provider_routing_direct_when_key_set() {
         let _env = env_lock();
         let old = std::env::var("ZAI_API_KEY").ok();
-        std::env::set_var("ZAI_API_KEY", "test-key-zai");
+        unsafe { std::env::set_var("ZAI_API_KEY", "test-key-zai") };
         let cli = Cli::parse_from(["zen", "--model", "zai/glm-5.2"]);
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
         assert_eq!(cfg.model, "glm-5.2", "prefix stripped on the wire");
         assert_eq!(cfg.base_url, "https://api.z.ai/api/paas/v4");
         assert_eq!(cfg.api_key.as_deref(), Some("test-key-zai"));
         if let Some(o) = old {
-            std::env::set_var("ZAI_API_KEY", o);
+            unsafe { std::env::set_var("ZAI_API_KEY", o) };
         } else {
-            std::env::remove_var("ZAI_API_KEY");
+            unsafe { std::env::remove_var("ZAI_API_KEY") };
         }
     }
 
@@ -1484,7 +1483,7 @@ mod tests {
     fn provider_routing_warns_without_key() {
         let _env = env_lock();
         let old = std::env::var("MOONSHOT_API_KEY").ok();
-        std::env::remove_var("MOONSHOT_API_KEY");
+        unsafe { std::env::remove_var("MOONSHOT_API_KEY") };
         let cli = Cli::parse_from(["zen", "--model", "moonshot/kimi-k2.7"]);
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
         assert_eq!(
@@ -1498,7 +1497,7 @@ mod tests {
             cfg.warnings
         );
         if let Some(o) = old {
-            std::env::set_var("MOONSHOT_API_KEY", o);
+            unsafe { std::env::set_var("MOONSHOT_API_KEY", o) };
         }
     }
 
@@ -1506,7 +1505,7 @@ mod tests {
     fn provider_routing_explicit_base_url_wins() {
         let _env = env_lock();
         let old = std::env::var("DEEPSEEK_API_KEY").ok();
-        std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds");
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds") };
         let cli = Cli::parse_from([
             "zen",
             "--model",
@@ -1519,9 +1518,9 @@ mod tests {
         assert_eq!(cfg.base_url, "https://proxy.example.com/v1");
         assert_eq!(cfg.api_key.as_deref(), Some("test-key-ds"));
         if let Some(o) = old {
-            std::env::set_var("DEEPSEEK_API_KEY", o);
+            unsafe { std::env::set_var("DEEPSEEK_API_KEY", o) };
         } else {
-            std::env::remove_var("DEEPSEEK_API_KEY");
+            unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
         }
     }
 
@@ -1536,40 +1535,41 @@ mod tests {
         let old_or = std::env::var("OPENROUTER_API_KEY").ok();
         let old_m = std::env::var("ZEN_MODEL").ok();
         let old_u = std::env::var("ZEN_BASE_URL").ok();
-        std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds");
-        std::env::set_var("OPENROUTER_API_KEY", "test-key-or");
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds") };
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "test-key-or") };
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         let cli = Cli::parse_from(["zen", "--model", "deepseek/deepseek-r1:free"]);
         let mut cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
         // resolve_config alone must keep the full catalog id on the
         // default base URL (no strip, no DeepSeek re-point).
         assert_eq!(cfg.model, "deepseek/deepseek-r1:free");
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
-        assert!(cfg
-            .warnings
-            .iter()
-            .all(|w| !w.contains("provider 'deepseek'")));
+        assert!(
+            cfg.warnings
+                .iter()
+                .all(|w| !w.contains("provider 'deepseek'"))
+        );
         // The catalog router then sends it to OpenRouter with its key.
         assert!(route_catalog_model(&mut cfg).unwrap());
         assert_eq!(cfg.base_url, crate::models::OPENROUTER_BASE_URL);
         assert_eq!(cfg.model, "deepseek/deepseek-r1:free");
         assert_eq!(cfg.api_key.as_deref(), Some("test-key-or"));
         if let Some(o) = old_ds {
-            std::env::set_var("DEEPSEEK_API_KEY", o);
+            unsafe { std::env::set_var("DEEPSEEK_API_KEY", o) };
         } else {
-            std::env::remove_var("DEEPSEEK_API_KEY");
+            unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
         }
         if let Some(o) = old_or {
-            std::env::set_var("OPENROUTER_API_KEY", o);
+            unsafe { std::env::set_var("OPENROUTER_API_KEY", o) };
         } else {
-            std::env::remove_var("OPENROUTER_API_KEY");
+            unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
         }
         if let Some(o) = old_m {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
         if let Some(o) = old_u {
-            std::env::set_var("ZEN_BASE_URL", o);
+            unsafe { std::env::set_var("ZEN_BASE_URL", o) };
         }
     }
 
@@ -1598,7 +1598,7 @@ mod tests {
     fn route_catalog_model_filters_fallbacks_by_the_routed_provider() {
         let _env = env_lock();
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-key") };
         let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
         cfg.model = "deepseek/deepseek-r1:free".to_string();
         cfg.base_url = DEFAULT_BASE_URL.to_string();
@@ -1612,8 +1612,8 @@ mod tests {
         // to OpenRouter, the Experiential entry is the foreign one.
         assert_eq!(cfg.fallback_models, ["qwen/qwen3-coder:free"]);
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -1621,7 +1621,7 @@ mod tests {
     fn route_to_catalog_entry_routes_cross_provider_pin() {
         let _env = env_lock();
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-key") };
         let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
         cfg.model = DEFAULT_MODEL.to_string();
         cfg.base_url = DEFAULT_BASE_URL.to_string();
@@ -1632,8 +1632,8 @@ mod tests {
         assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
         assert_eq!(cfg.model, "qwen/qwen3-coder:free");
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -1648,10 +1648,10 @@ mod tests {
         let old_or = std::env::var("OPENROUTER_API_KEY").ok();
         let old_m = std::env::var("ZEN_MODEL").ok();
         let old_u = std::env::var("ZEN_BASE_URL").ok();
-        std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds");
-        std::env::remove_var("OPENROUTER_API_KEY");
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "test-key-ds") };
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         let cli = Cli::parse_from(["zen", "--model", "deepseek/deepseek-r1:free"]);
         let mut cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
         assert_eq!(cfg.model, "deepseek/deepseek-r1:free");
@@ -1659,20 +1659,20 @@ mod tests {
         let err = route_catalog_model(&mut cfg).unwrap_err();
         assert!(err.to_string().contains("OPENROUTER_API_KEY"), "{err}");
         if let Some(o) = old_ds {
-            std::env::set_var("DEEPSEEK_API_KEY", o);
+            unsafe { std::env::set_var("DEEPSEEK_API_KEY", o) };
         } else {
-            std::env::remove_var("DEEPSEEK_API_KEY");
+            unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
         }
         if let Some(o) = old_or {
-            std::env::set_var("OPENROUTER_API_KEY", o);
+            unsafe { std::env::set_var("OPENROUTER_API_KEY", o) };
         } else {
-            std::env::remove_var("OPENROUTER_API_KEY");
+            unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
         }
         if let Some(o) = old_m {
-            std::env::set_var("ZEN_MODEL", o);
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
         }
         if let Some(o) = old_u {
-            std::env::set_var("ZEN_BASE_URL", o);
+            unsafe { std::env::set_var("ZEN_BASE_URL", o) };
         }
     }
 
@@ -1680,7 +1680,7 @@ mod tests {
     fn route_to_catalog_entry_pin_wins_over_explicit_base_url() {
         let _env = env_lock();
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-key") };
         let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
         cfg.model = DEFAULT_MODEL.to_string();
         cfg.base_url = "http://127.0.0.1:9".to_string();
@@ -1690,8 +1690,8 @@ mod tests {
         assert_eq!(cfg.base_url, crate::models::OPENROUTER_BASE_URL);
         assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -1699,7 +1699,7 @@ mod tests {
     fn route_to_catalog_entry_missing_key_errors_without_mutating() {
         let _env = env_lock();
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::remove_var("OPENROUTER_API_KEY");
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
         let mut cfg = resolve_config(&base_cli(), std::env::temp_dir().as_path()).unwrap();
         cfg.model = DEFAULT_MODEL.to_string();
         cfg.base_url = DEFAULT_BASE_URL.to_string();
@@ -1710,8 +1710,8 @@ mod tests {
         assert!(err.to_string().contains("OPENROUTER_API_KEY"), "{err}");
         assert_eq!((cfg.model, cfg.base_url, cfg.api_key), before);
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -1731,7 +1731,7 @@ mod tests {
 
     fn clear_ollama_env() {
         for v in ["ZEN_MODEL", "ZEN_BASE_URL", "ZEN_PROVIDER", "OLLAMA_HOST"] {
-            std::env::remove_var(v);
+            unsafe { std::env::remove_var(v) };
         }
     }
 
@@ -1792,11 +1792,11 @@ mod tests {
     fn ollama_provider_env_routes() {
         let _env = env_lock();
         clear_ollama_env();
-        std::env::set_var("ZEN_PROVIDER", "ollama");
+        unsafe { std::env::set_var("ZEN_PROVIDER", "ollama") };
         let mut cli = base_cli();
         cli.model = Some("ollama/mistral:7b".into());
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
-        std::env::remove_var("ZEN_PROVIDER");
+        unsafe { std::env::remove_var("ZEN_PROVIDER") };
         assert!(cfg.ollama);
         assert_eq!(cfg.model, "mistral:7b");
     }
@@ -1805,11 +1805,11 @@ mod tests {
     fn ollama_host_env_overrides_default() {
         let _env = env_lock();
         clear_ollama_env();
-        std::env::set_var("OLLAMA_HOST", "192.168.1.5:11434");
+        unsafe { std::env::set_var("OLLAMA_HOST", "192.168.1.5:11434") };
         let mut cli = base_cli();
         cli.model = Some("ollama/qwen3-coder:30b".into());
         let cfg = resolve_config(&cli, std::env::temp_dir().as_path()).unwrap();
-        std::env::remove_var("OLLAMA_HOST");
+        unsafe { std::env::remove_var("OLLAMA_HOST") };
         assert!(cfg.ollama);
         assert_eq!(cfg.base_url, "http://192.168.1.5:11434/v1");
     }

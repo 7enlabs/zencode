@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use zen_core::{glob_match, TodoItem, ToolOutput};
+use zen_core::{TodoItem, ToolOutput, glob_match};
 
 pub const EDIT_REPEAT_LIMIT: usize = 4;
 
@@ -108,7 +108,9 @@ pub fn todo_reminder(todos: &[TodoItem]) -> Option<String> {
     if todos.is_empty() {
         return None;
     }
-    let mut s = String::from("[zen: current todo list. Keep working through it and update it with TodoWrite as items finish.]\n");
+    let mut s = String::from(
+        "[zen: current todo list. Keep working through it and update it with TodoWrite as items finish.]\n",
+    );
     for t in todos {
         let mark = match t.status.as_str() {
             "completed" => "[x]",
@@ -141,9 +143,10 @@ mod tests {
             "only one nudge per file"
         );
 
-        assert!(g
-            .observe("MultiEdit", &json!({"file_path": "b.rs"}), &ok())
-            .is_none());
+        assert!(
+            g.observe("MultiEdit", &json!({"file_path": "b.rs"}), &ok())
+                .is_none()
+        );
         for _ in 0..5 {
             assert!(g.observe("Read", &a, &ok()).is_none());
         }
@@ -155,14 +158,16 @@ mod tests {
         let cmd = json!({"command": "cargo test"});
         let fail = ToolOutput::err("exit 101");
         assert!(g.observe("Bash", &cmd, &fail).is_none());
-        assert!(g
-            .observe("Bash", &cmd, &ToolOutput::err("exit 1"))
-            .is_none());
+        assert!(
+            g.observe("Bash", &cmd, &ToolOutput::err("exit 1"))
+                .is_none()
+        );
         assert!(g.observe("Bash", &cmd, &fail).is_none());
-        assert!(g
-            .observe("Bash", &cmd, &fail)
-            .unwrap()
-            .contains("failed 3 times"));
+        assert!(
+            g.observe("Bash", &cmd, &fail)
+                .unwrap()
+                .contains("failed 3 times")
+        );
         assert!(g.observe("Bash", &cmd, &fail).is_none());
     }
 
@@ -190,10 +195,11 @@ mod tests {
         );
 
         let abs_out = json!({"file_path": "/repo/other/y.rs"});
-        assert!(g
-            .observe("Edit", &abs_out, &ok())
-            .unwrap()
-            .contains("other/y.rs"));
+        assert!(
+            g.observe("Edit", &abs_out, &ok())
+                .unwrap()
+                .contains("other/y.rs")
+        );
         let abs_in = json!({"file_path": "/repo/src/z.rs"});
         assert!(
             g.observe("Edit", &abs_in, &ok()).is_none(),
@@ -204,12 +210,14 @@ mod tests {
     #[test]
     fn no_scope_means_no_scope_nudge() {
         let mut g = TurnGuard::default();
-        assert!(g
-            .observe("Edit", &json!({"file_path": "anywhere.rs"}), &ok())
-            .is_none());
-        assert!(g
-            .observe("Write", &json!({"file_path": "elsewhere.rs"}), &ok())
-            .is_none());
+        assert!(
+            g.observe("Edit", &json!({"file_path": "anywhere.rs"}), &ok())
+                .is_none()
+        );
+        assert!(
+            g.observe("Write", &json!({"file_path": "elsewhere.rs"}), &ok())
+                .is_none()
+        );
     }
 
     #[test]

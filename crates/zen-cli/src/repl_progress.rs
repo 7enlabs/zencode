@@ -121,11 +121,11 @@ impl ReplProgressSink {
                     ""
                 };
                 let mut out = Vec::new();
-                if let Some(text) = message.content.as_deref() {
-                    if !text.trim().is_empty() {
-                        // Same ● marker as the final answer (print_turn).
-                        out.push(format!("{indent}● {}", clip(text, 160)));
-                    }
+                if let Some(text) = message.content.as_deref()
+                    && !text.trim().is_empty()
+                {
+                    // Same ● marker as the final answer (print_turn).
+                    out.push(format!("{indent}● {}", clip(text, 160)));
                 }
                 for tc in calls {
                     let arg = tool_arg_summary(&tc.function.arguments);
@@ -276,10 +276,10 @@ pub fn render(ev: &AgentEvent) -> Vec<String> {
                 ""
             };
             let mut out = Vec::new();
-            if let Some(text) = message.content.as_deref() {
-                if !text.trim().is_empty() {
-                    out.push(format!("{indent}● {}", clip(text, 160)));
-                }
+            if let Some(text) = message.content.as_deref()
+                && !text.trim().is_empty()
+            {
+                out.push(format!("{indent}● {}", clip(text, 160)));
             }
             for tc in calls {
                 out.push(format!(

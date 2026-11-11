@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Instant;
 use zen_core::*;
@@ -427,13 +427,13 @@ impl Agent {
     }
 
     fn emit_system_message(&self, event: HookEvent, outcome: &HookOutcome) {
-        if let Some(text) = &outcome.system_message {
-            if !text.is_empty() {
-                self.sink.emit(AgentEvent::SystemMessage {
-                    event: event.as_str().to_string(),
-                    text: text.clone(),
-                });
-            }
+        if let Some(text) = &outcome.system_message
+            && !text.is_empty()
+        {
+            self.sink.emit(AgentEvent::SystemMessage {
+                event: event.as_str().to_string(),
+                text: text.clone(),
+            });
         }
     }
 
@@ -465,16 +465,16 @@ impl Agent {
                 }
                 break;
             }
-            if m.role == "assistant" {
-                if let Some(c) = &m.content {
-                    if glue && !parts.is_empty() {
-                        let last = parts.last_mut().unwrap();
-                        last.insert_str(0, c);
-                    } else if !c.trim().is_empty() {
-                        parts.push(c.clone());
-                    }
-                    glue = false;
+            if m.role == "assistant"
+                && let Some(c) = &m.content
+            {
+                if glue && !parts.is_empty() {
+                    let last = parts.last_mut().unwrap();
+                    last.insert_str(0, c);
+                } else if !c.trim().is_empty() {
+                    parts.push(c.clone());
                 }
+                glue = false;
             }
         }
         parts.reverse();
@@ -518,11 +518,11 @@ impl Agent {
             );
         }
         let mut user_content = prompt.to_string();
-        if let Some(extra) = ups.feedback {
-            if !extra.is_empty() {
-                user_content.push_str("\n\n");
-                user_content.push_str(&extra);
-            }
+        if let Some(extra) = ups.feedback
+            && !extra.is_empty()
+        {
+            user_content.push_str("\n\n");
+            user_content.push_str(&extra);
         }
         self.messages.push(ChatMessage::user(user_content));
 
@@ -993,18 +993,18 @@ impl Agent {
                 .push("the call was written as message text; it was run as a tool call".into());
         }
         let mut tool_name = tc.function.name.clone();
-        if self.tools.get(&tool_name).is_none() {
-            if let Some(mapped) = repair::resolve_tool_name(&tool_name, &self.tools.names()) {
-                if repair::has_template_tokens(&tool_name) {
-                    repair_notes.push(format!(
-                        "tool name had chat-template tokens; mapped to '{}'",
-                        mapped
-                    ));
-                } else {
-                    repair_notes.push(format!("tool name '{}' mapped to '{}'", tool_name, mapped));
-                }
-                tool_name = mapped;
+        if self.tools.get(&tool_name).is_none()
+            && let Some(mapped) = repair::resolve_tool_name(&tool_name, &self.tools.names())
+        {
+            if repair::has_template_tokens(&tool_name) {
+                repair_notes.push(format!(
+                    "tool name had chat-template tokens; mapped to '{}'",
+                    mapped
+                ));
+            } else {
+                repair_notes.push(format!("tool name '{}' mapped to '{}'", tool_name, mapped));
             }
+            tool_name = mapped;
         }
         let schema = self.tools.get(&tool_name).map(|t| t.parameters_schema());
         let args: Value = match repair::repair_args(&tc.function.arguments, schema.as_ref()) {
@@ -1315,11 +1315,11 @@ impl Agent {
         if let Some(replaced) = post.updated_output.clone() {
             out.content = replaced;
         }
-        if let Some(fb) = post.feedback.clone() {
-            if !fb.is_empty() {
-                out.content.push('\n');
-                out.content.push_str(&fb);
-            }
+        if let Some(fb) = post.feedback.clone()
+            && !fb.is_empty()
+        {
+            out.content.push('\n');
+            out.content.push_str(&fb);
         }
         let verify = self.verify_after_edit(&tool_name, out.is_error).await;
         if let Some(Some(note)) = &verify {
@@ -1402,13 +1402,13 @@ impl Agent {
         let Some(note) = guard::todo_reminder(&todos) else {
             return;
         };
-        if let Some(last) = self.messages.last_mut() {
-            if last.role == "tool" || last.role == "user" {
-                let content = last.content.get_or_insert_with(String::new);
-                content.push_str("\n\n");
-                content.push_str(&note);
-                self.model_calls_since_todo = 0;
-            }
+        if let Some(last) = self.messages.last_mut()
+            && (last.role == "tool" || last.role == "user")
+        {
+            let content = last.content.get_or_insert_with(String::new);
+            content.push_str("\n\n");
+            content.push_str(&note);
+            self.model_calls_since_todo = 0;
         }
     }
 

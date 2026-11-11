@@ -71,7 +71,7 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> io::Result<Option<String>> {
             return Err(io::Error::new(
                 io::ErrorKind::IsADirectory,
                 format!("{} is a directory", target.display()),
-            ))
+            ));
         }
         Ok(m) => Some(m.permissions()),
         Err(_) => None,
@@ -212,10 +212,12 @@ mod tests {
         fs::write(&real, "old").unwrap();
         std::os::unix::fs::symlink("real.txt", &link).unwrap();
         write_atomic(&link, b"new").unwrap();
-        assert!(fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("real.txt"));
         assert_eq!(fs::read_to_string(&real).unwrap(), "new");
 
@@ -226,10 +228,12 @@ mod tests {
         let dangling = d.join("dangling.txt");
         std::os::unix::fs::symlink("born.txt", &dangling).unwrap();
         write_atomic(&dangling, b"born").unwrap();
-        assert!(fs::symlink_metadata(&dangling)
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read_to_string(d.join("born.txt")).unwrap(), "born");
         assert!(leftovers(&d).is_empty());
         let _ = fs::remove_dir_all(&d);

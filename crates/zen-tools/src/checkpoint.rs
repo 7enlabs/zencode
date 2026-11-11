@@ -141,10 +141,10 @@ impl Checkpoints {
     }
 
     fn close_current(st: &mut State) {
-        if let Some(t) = st.current.take() {
-            if t.entries.iter().any(|e| e.after.is_some()) {
-                st.done.push(t);
-            }
+        if let Some(t) = st.current.take()
+            && t.entries.iter().any(|e| e.after.is_some())
+        {
+            st.done.push(t);
         }
     }
 
@@ -616,7 +616,9 @@ mod tests {
         assert!(file_diff("f", Some(b"x"), Some(b"x")).contains("(unchanged)"));
         assert!(file_diff("f", Some(b"a"), Some(b"b")).contains("\\ No newline at end of file"));
         assert!(file_diff("f", Some(&[0xff, 0]), Some(b"t")).contains("Binary files differ"));
-        assert!(file_diff("f", Some(b"gone\n"), None)
-            .contains("+++ /dev/null\n@@ -1,1 +0,0 @@\n-gone\n"));
+        assert!(
+            file_diff("f", Some(b"gone\n"), None)
+                .contains("+++ /dev/null\n@@ -1,1 +0,0 @@\n-gone\n")
+        );
     }
 }

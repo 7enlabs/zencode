@@ -139,11 +139,7 @@ pub fn definitions_for_bundle(registry: &ToolRegistry, bundle: ToolBundle) -> Ve
                     Some(p) => phases.contains(&p),
                 },
             };
-            if full {
-                d
-            } else {
-                deferred_stub(name)
-            }
+            if full { d } else { deferred_stub(name) }
         })
         .collect();
     defs.sort_by(|a, b| a.function.name.cmp(&b.function.name));
@@ -166,7 +162,7 @@ pub fn is_deferred(registry: &ToolRegistry, bundle: ToolBundle, name: &str) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::sync::Arc;
     use zen_core::{Tool, ToolContext, ToolOutput};
 
@@ -229,7 +225,10 @@ mod tests {
                 "External MCP tool with a longer description for realism, plus extra detail.",
             ),
         ] {
-            r.register(Arc::new(FakeTool { name, description: desc }));
+            r.register(Arc::new(FakeTool {
+                name,
+                description: desc,
+            }));
         }
         r
     }

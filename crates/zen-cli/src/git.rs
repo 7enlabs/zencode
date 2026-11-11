@@ -334,11 +334,7 @@ pub fn suggest_commit_message(files: &[(String, String)]) -> String {
         let added = files
             .iter()
             .any(|(s, _)| s.trim_start().starts_with('A') || s == "??");
-        if added {
-            "feat"
-        } else {
-            "fix"
-        }
+        if added { "feat" } else { "fix" }
     } else {
         "chore"
     };

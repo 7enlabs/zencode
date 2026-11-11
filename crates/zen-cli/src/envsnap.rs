@@ -48,10 +48,10 @@ pub fn project_snapshot(cwd: &Path) -> Option<String> {
     let mut versions: Vec<String> = Vec::new();
     for k in &kinds {
         for probe in k.probes {
-            if let Some(v) = tool_version(probe) {
-                if !versions.contains(&v) {
-                    versions.push(v);
-                }
+            if let Some(v) = tool_version(probe)
+                && !versions.contains(&v)
+            {
+                versions.push(v);
             }
         }
     }

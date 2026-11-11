@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -368,8 +368,7 @@ fn rebuild(path: &Path) -> Result<Vec<(u64, Vec<ChatMessage>, String)>> {
     Ok(out)
 }
 
-pub const INTERRUPTED_TOOL_RESULT: &str =
-    "[Tool call interrupted: the session ended before this tool finished; it may or may not have taken effect.]";
+pub const INTERRUPTED_TOOL_RESULT: &str = "[Tool call interrupted: the session ended before this tool finished; it may or may not have taken effect.]";
 
 pub fn resume_history(path: &Path) -> Result<(Vec<ChatMessage>, Vec<ChatMessage>)> {
     let committed = crate::session::load_history(path)?;
@@ -848,10 +847,12 @@ mod tests {
             .unwrap()
             .replace("\"model\":\"m\"", "\"model\":\"n\"");
         std::fs::write(&path, text).unwrap();
-        assert!(rebuild_requests(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("body_hash"));
+        assert!(
+            rebuild_requests(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("body_hash")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

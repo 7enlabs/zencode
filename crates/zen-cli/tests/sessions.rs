@@ -552,10 +552,10 @@ async fn dtr_killed_mid_turn_resume_keeps_finished_tool_result() {
         .spawn();
     let start = std::time::Instant::now();
     let sleep_pid = loop {
-        if let Ok(s) = fs::read_to_string(&pid_file) {
-            if !s.trim().is_empty() {
-                break s.trim().to_string();
-            }
+        if let Ok(s) = fs::read_to_string(&pid_file)
+            && !s.trim().is_empty()
+        {
+            break s.trim().to_string();
         }
         assert!(
             start.elapsed() < std::time::Duration::from_secs(20),

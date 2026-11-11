@@ -83,8 +83,10 @@ async fn trunc_stream_json_continues_and_never_runs_a_half_call() {
     assert!(!stdout.contains("\"w1\""), "{stdout}");
     let reqs = server.finish().await;
     assert_eq!(reqs.len(), 3);
-    assert!(request_messages_text(&reqs[1])
-        .contains("cut off by the output token limit. Continue exactly"));
+    assert!(
+        request_messages_text(&reqs[1])
+            .contains("cut off by the output token limit. Continue exactly")
+    );
     assert!(request_messages_text(&reqs[2]).contains("no tool was run"));
 }
 

@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use zen_core::*;
 
-use crate::client::{request_id_from_error, AnthropicClient, HttpTimeouts, OpenAiClient};
+use crate::client::{AnthropicClient, HttpTimeouts, OpenAiClient, request_id_from_error};
 use crate::testutil::*;
 
 #[derive(Clone)]

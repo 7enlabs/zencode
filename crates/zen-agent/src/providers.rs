@@ -41,10 +41,8 @@ pub struct ProviderInfo {
 
 impl ProviderInfo {
     pub fn endpoint(&self, anthropic_available: bool) -> Option<(ApiStandard, &'static str)> {
-        if anthropic_available {
-            if let Some(url) = self.anthropic_base_url {
-                return Some((ApiStandard::Anthropic, url));
-            }
+        if anthropic_available && let Some(url) = self.anthropic_base_url {
+            return Some((ApiStandard::Anthropic, url));
         }
         self.openai_base_url.map(|url| (ApiStandard::OpenAi, url))
     }
@@ -84,8 +82,7 @@ pub fn provider_registry() -> Vec<ProviderInfo> {
             model_ids: &[],
             pricing: &[],
             featured: &["qwen/qwen3-coder:free"],
-            rate_limit_notes:
-                "Rate limits vary by model and tier; free models are heavily throttled.",
+            rate_limit_notes: "Rate limits vary by model and tier; free models are heavily throttled.",
         },
         ProviderInfo {
             key: "groq",
@@ -109,8 +106,7 @@ pub fn provider_registry() -> Vec<ProviderInfo> {
             model_ids: &["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
             pricing: &[],
             featured: &[],
-            rate_limit_notes:
-                "Tiered RPM/TPM; 429 = backoff, 529 = overloaded (retry with backoff).",
+            rate_limit_notes: "Tiered RPM/TPM; 429 = backoff, 529 = overloaded (retry with backoff).",
         },
         ProviderInfo {
             key: "openai",
@@ -160,8 +156,7 @@ pub fn provider_registry() -> Vec<ProviderInfo> {
 
             pricing: &[("kimi-k2.7", 0.95, 4.00), ("kimi-k3", 3.00, 15.00)],
             featured: &["kimi-k2.7"],
-            rate_limit_notes:
-                "Tiered limits; Kimi For Coding plan users route via the same endpoint.",
+            rate_limit_notes: "Tiered limits; Kimi For Coding plan users route via the same endpoint.",
         },
         ProviderInfo {
             key: "deepseek",
@@ -301,16 +296,16 @@ impl ModelSpec {
         match spec.split_once('/') {
             Some((provider, model)) => {
                 let key = provider.to_ascii_lowercase();
-                if let Some(info) = find_provider(&key) {
-                    if let Some((standard, url)) = info.endpoint_resolved(anthropic_available) {
-                        return Self {
-                            provider: key,
-                            model: model.to_string(),
-                            api_standard: standard,
-                            base_url: url,
-                            api_key_env: info.api_key_env.map(str::to_string),
-                        };
-                    }
+                if let Some(info) = find_provider(&key)
+                    && let Some((standard, url)) = info.endpoint_resolved(anthropic_available)
+                {
+                    return Self {
+                        provider: key,
+                        model: model.to_string(),
+                        api_standard: standard,
+                        base_url: url,
+                        api_key_env: info.api_key_env.map(str::to_string),
+                    };
                 }
 
                 Self {
@@ -332,12 +327,11 @@ impl ModelSpec {
     }
 
     pub fn api_key(&self, ambient: Option<&str>) -> Option<String> {
-        if let Some(env) = &self.api_key_env {
-            if let Ok(v) = std::env::var(env) {
-                if !v.is_empty() {
-                    return Some(v);
-                }
-            }
+        if let Some(env) = &self.api_key_env
+            && let Ok(v) = std::env::var(env)
+            && !v.is_empty()
+        {
+            return Some(v);
         }
         ambient.map(str::to_string)
     }
@@ -618,13 +612,13 @@ mod tests {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let saved = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
         match value {
-            Some(v) => std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v),
-            None => std::env::remove_var("CLOUDFLARE_ACCOUNT_ID"),
+            Some(v) => unsafe { std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v) },
+            None => unsafe { std::env::remove_var("CLOUDFLARE_ACCOUNT_ID") },
         }
         f();
         match saved {
-            Some(v) => std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v),
-            None => std::env::remove_var("CLOUDFLARE_ACCOUNT_ID"),
+            Some(v) => unsafe { std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v) },
+            None => unsafe { std::env::remove_var("CLOUDFLARE_ACCOUNT_ID") },
         }
     }
 

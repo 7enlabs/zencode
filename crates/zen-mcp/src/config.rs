@@ -48,11 +48,7 @@ impl McpServerConfig {
                     any_missing = true;
                 }
             }
-            if any_missing {
-                None
-            } else {
-                Some(result)
-            }
+            if any_missing { None } else { Some(result) }
         };
 
         let mut cfg = self.clone();
@@ -301,10 +297,10 @@ fn config_files(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
 pub fn parse_env_kv(entries: &[String]) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for entry in entries {
-        if let Some((k, v)) = entry.split_once('=') {
-            if !k.is_empty() {
-                map.insert(k.to_string(), v.to_string());
-            }
+        if let Some((k, v)) = entry.split_once('=')
+            && !k.is_empty()
+        {
+            map.insert(k.to_string(), v.to_string());
         }
     }
     map

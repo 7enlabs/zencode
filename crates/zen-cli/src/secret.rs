@@ -16,10 +16,10 @@ use chrono::Utc;
 use crate::cli::{OutputFormat, SecretArgs, SecretSubcommand};
 use crate::{coded_error, exit_code};
 use zen_core::secret::{
-    approve_secret, check_use, deny_secret, deregister_secret, issue_secret, list_requests,
-    record_use, register_secret, request_secret, revoke_secret, rotate_secret, secret_status,
-    withdraw_secret, CheckOutcome, RegisterInput, RegistryEntry, RequestInput, RequestState,
-    SecretClass, SecretRequest, SecretStatus, SecretStore, UseOutcome,
+    CheckOutcome, RegisterInput, RegistryEntry, RequestInput, RequestState, SecretClass,
+    SecretRequest, SecretStatus, SecretStore, UseOutcome, approve_secret, check_use, deny_secret,
+    deregister_secret, issue_secret, list_requests, record_use, register_secret, request_secret,
+    revoke_secret, rotate_secret, secret_status, withdraw_secret,
 };
 
 fn print_json(value: &serde_json::Value, raw: bool) -> Result<()> {
@@ -97,10 +97,10 @@ fn request_seat(flag: Option<&str>) -> Result<String> {
     if let Some(seat) = flag.filter(|s| !s.trim().is_empty()) {
         return Ok(seat.to_string());
     }
-    if let Ok(seat) = std::env::var("ZEN_SEAT") {
-        if !seat.trim().is_empty() {
-            return Ok(seat);
-        }
+    if let Ok(seat) = std::env::var("ZEN_SEAT")
+        && !seat.trim().is_empty()
+    {
+        return Ok(seat);
     }
     Err(coded_error(
         exit_code::VALIDATION,
@@ -385,7 +385,7 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use zen_core::secret::{
-        load_requests, register_secret, RegisterInput, SecretClass, SecretStore as Store,
+        RegisterInput, SecretClass, SecretStore as Store, load_requests, register_secret,
     };
 
     fn temp_home(name: &str) -> std::path::PathBuf {
@@ -491,7 +491,7 @@ mod tests {
     fn secret_request_needs_a_seat() {
         let home = temp_home("noseat");
         seed_registry(&home);
-        std::env::remove_var("ZEN_SEAT");
+        unsafe { std::env::remove_var("ZEN_SEAT") };
         let args = SecretArgs {
             command: SecretSubcommand::Request {
                 name: "OPENROUTER_KEY".to_string(),

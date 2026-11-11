@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::skills::{SkillPermissions, TrustTier};
@@ -68,13 +68,13 @@ impl RegistrySkill {
                 self.name, self.permissions.file_scope
             ));
         }
-        if let RegistrySource::Git { url } = &self.source {
-            if !(url.starts_with("https://") || url.starts_with("git@")) {
-                problems.push(format!(
-                    "skill {:?}: git url {:?} must start with https:// or git@",
-                    self.name, url
-                ));
-            }
+        if let RegistrySource::Git { url } = &self.source
+            && !(url.starts_with("https://") || url.starts_with("git@"))
+        {
+            problems.push(format!(
+                "skill {:?}: git url {:?} must start with https:// or git@",
+                self.name, url
+            ));
         }
         problems
     }
@@ -333,9 +333,11 @@ mod tests {
         let v = search_json("testing", None).unwrap();
         assert_eq!(v["query"], "testing");
         let results = v["results"].as_array().unwrap();
-        assert!(results
-            .iter()
-            .any(|r| r["name"] == "tdd" && r["score"] == 40));
+        assert!(
+            results
+                .iter()
+                .any(|r| r["name"] == "tdd" && r["score"] == 40)
+        );
     }
 
     #[test]

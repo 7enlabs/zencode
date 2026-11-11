@@ -1,6 +1,6 @@
 use crate::cli::{Cli, OutputFormat};
 use crate::commands;
-use crate::output::{print_result, Buffered, StreamJsonSink};
+use crate::output::{Buffered, StreamJsonSink, print_result};
 use crate::settings::ResolvedConfig;
 use anyhow::Result;
 use std::path::Path;
@@ -247,17 +247,17 @@ pub async fn assemble(
     } else {
         zen_mcp::load_agents(cwd, home, cli.agents.as_deref())
     };
-    if let Some(name) = &cli.agent {
-        if let Some(def) = agents.iter().find(|d| d.name == *name) {
-            agent_system_prompt = Some(def.system_prompt.clone());
-            if let Some(tools) = &def.tools {
-                let kept: Vec<String> = registry
-                    .names()
-                    .into_iter()
-                    .filter(|n| tools.iter().any(|t| t.eq_ignore_ascii_case(n)))
-                    .collect();
-                registry = registry.filtered(&kept);
-            }
+    if let Some(name) = &cli.agent
+        && let Some(def) = agents.iter().find(|d| d.name == *name)
+    {
+        agent_system_prompt = Some(def.system_prompt.clone());
+        if let Some(tools) = &def.tools {
+            let kept: Vec<String> = registry
+                .names()
+                .into_iter()
+                .filter(|n| tools.iter().any(|t| t.eq_ignore_ascii_case(n)))
+                .collect();
+            registry = registry.filtered(&kept);
         }
     }
 
@@ -422,10 +422,10 @@ pub fn resolve_tool_bundle(cli: &Cli, cfg: &ResolvedConfig) -> zen_agent::ToolBu
     if let Some(b) = cli.tool_bundle {
         return b;
     }
-    if let Ok(s) = std::env::var("ZEN_TOOL_BUNDLE") {
-        if let Ok(b) = s.parse() {
-            return b;
-        }
+    if let Ok(s) = std::env::var("ZEN_TOOL_BUNDLE")
+        && let Ok(b) = s.parse()
+    {
+        return b;
     }
     cfg.tool_bundle
 }
@@ -622,23 +622,23 @@ pub(crate) async fn run_agent_with_result(
     let mut signals = SignalWatch::install();
 
     let builtin = commands::parse_builtin(prompt);
-    if let Some((name, _)) = &builtin {
-        if !commands::HEADLESS_BUILTINS.contains(&name.as_str()) {
-            let buf = Buffered::new();
-            let text = format!(
-                "/{} isn't available in -p mode (interactive sessions only).",
-                name
-            );
-            let result = local_result(session_id, &cfg.model, Default::default(), text, true, 0);
-            print_result(&result, &cli.effective_output_format(), &buf, false);
-            if !cli.quiet {
-                print!("{}", buf.text());
-            }
-            if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text {
-                println!();
-            }
-            return Ok((1, result));
+    if let Some((name, _)) = &builtin
+        && !commands::HEADLESS_BUILTINS.contains(&name.as_str())
+    {
+        let buf = Buffered::new();
+        let text = format!(
+            "/{} isn't available in -p mode (interactive sessions only).",
+            name
+        );
+        let result = local_result(session_id, &cfg.model, Default::default(), text, true, 0);
+        print_result(&result, &cli.effective_output_format(), &buf, false);
+        if !cli.quiet {
+            print!("{}", buf.text());
         }
+        if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text {
+            println!();
+        }
+        return Ok((1, result));
     }
 
     let (prompt, slash_cmd) = match &builtin {
@@ -664,10 +664,10 @@ pub(crate) async fn run_agent_with_result(
     // gateway (HTTP 400, PR #71 class). Only a real pin routes:
     // the startup model keeps its explicit base URL.
     let mut routed_cfg = cfg.clone();
-    if let Some(pin) = &pinned_model {
-        if let Some(entry) = crate::models::catalog_entry(pin) {
-            crate::settings::route_to_catalog_entry(&mut routed_cfg, entry, &cfg.api_key)?;
-        }
+    if let Some(pin) = &pinned_model
+        && let Some(entry) = crate::models::catalog_entry(pin)
+    {
+        crate::settings::route_to_catalog_entry(&mut routed_cfg, entry, &cfg.api_key)?;
     }
     let effective_model = crate::models::gateway_model_id(&raw_model).to_string();
     // The routed config governs the rest of the run: the client is
@@ -766,12 +766,11 @@ pub(crate) async fn run_agent_with_result(
         }
 
         agent.usage = crate::session::load_usage(src);
-        if transcript_path != Some(src) {
-            if let Some(p) = transcript_path {
-                if agent.usage != zen_core::UsageStats::default() {
-                    crate::session::append_usage(p, session_id, &agent.usage)?;
-                }
-            }
+        if transcript_path != Some(src)
+            && let Some(p) = transcript_path
+            && agent.usage != zen_core::UsageStats::default()
+        {
+            crate::session::append_usage(p, session_id, &agent.usage)?;
         }
     }
     let usage_before = agent.usage.clone();
@@ -887,10 +886,10 @@ pub(crate) async fn run_agent_with_result(
         let started = std::time::Instant::now();
         let before = agent.messages().to_vec();
         let outcome = agent.compact(focus, "manual").await;
-        if let Some(w) = writer.as_mut() {
-            if let Err(e) = w.persist_turn(&before, agent.messages()) {
-                eprintln!("warning: could not write transcript: {}", e);
-            }
+        if let Some(w) = writer.as_mut()
+            && let Err(e) = w.persist_turn(&before, agent.messages())
+        {
+            eprintln!("warning: could not write transcript: {}", e);
         }
         persist_usage(
             transcript_path,
@@ -1015,10 +1014,10 @@ pub(crate) async fn run_agent_with_result(
             }
         };
 
-        if let Some(w) = writer.as_mut() {
-            if let Err(e) = w.persist_turn(&before, agent.messages()) {
-                eprintln!("warning: could not write transcript: {}", e);
-            }
+        if let Some(w) = writer.as_mut()
+            && let Err(e) = w.persist_turn(&before, agent.messages())
+        {
+            eprintln!("warning: could not write transcript: {}", e);
         }
         persist_usage(
             transcript_path,
@@ -1067,7 +1066,7 @@ pub(crate) async fn run_agent_with_result(
                     &v.command,
                     v.max_retries,
                     session_id,
-                )
+                );
             }
         }
     };
@@ -1197,10 +1196,10 @@ fn persist_usage(
     if delta == zen_core::UsageStats::default() {
         return;
     }
-    if let Some(p) = path {
-        if let Err(e) = crate::session::append_usage(p, session_id, &delta) {
-            eprintln!("warning: could not write transcript: {}", e);
-        }
+    if let Some(p) = path
+        && let Err(e) = crate::session::append_usage(p, session_id, &delta)
+    {
+        eprintln!("warning: could not write transcript: {}", e);
     }
     crate::cost::record(
         home,
@@ -1262,7 +1261,7 @@ impl SignalWatch {
     pub fn install() -> Option<Self> {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             Some(Self {
                 term: signal(SignalKind::terminate()).ok()?,
                 int: signal(SignalKind::interrupt()).ok()?,
@@ -1328,10 +1327,10 @@ pub fn descendants_of(root: u32) -> Vec<u32> {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             let mut it = line.split_whitespace();
-            if let (Some(pid), Some(ppid)) = (it.next(), it.next()) {
-                if let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) {
-                    parent_of.push((pid, ppid));
-                }
+            if let (Some(pid), Some(ppid)) = (it.next(), it.next())
+                && let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>())
+            {
+                parent_of.push((pid, ppid));
             }
         }
     }
@@ -1615,7 +1614,7 @@ pub async fn run_verify_command(
                 stdout: String::new(),
                 stderr: format!("failed to spawn verify command: {e}"),
                 timed_out: false,
-            }
+            };
         }
     };
     match tokio::time::timeout(
@@ -1839,9 +1838,9 @@ mod verify_tests {
     async fn run_verify_command_timeout() {
         let env = std::collections::HashMap::new();
 
-        std::env::set_var("VERIFY_TIMEOUT_SECS", "1");
+        unsafe { std::env::set_var("VERIFY_TIMEOUT_SECS", "1") };
         let o = run_verify_command("sleep 30", &std::env::temp_dir(), &env).await;
-        std::env::remove_var("VERIFY_TIMEOUT_SECS");
+        unsafe { std::env::remove_var("VERIFY_TIMEOUT_SECS") };
         assert!(o.timed_out);
         assert!(!o.success());
     }
@@ -1956,9 +1955,11 @@ mod tools_flag_tests {
             names(&select_builtin_tools(Some("default"), zen_tools::builtin_tools()).unwrap()),
             all
         );
-        assert!(select_builtin_tools(Some(""), zen_tools::builtin_tools())
-            .unwrap()
-            .is_empty());
+        assert!(
+            select_builtin_tools(Some(""), zen_tools::builtin_tools())
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             names(&select_builtin_tools(Some("read, Bash"), zen_tools::builtin_tools()).unwrap()),
             vec!["Read", "Bash"]

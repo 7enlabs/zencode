@@ -65,15 +65,15 @@ fn apply_ladder(
             return Ok(Some(a));
         }
     }
-    if let Some((o, n)) = strip_line_numbers(old, new) {
-        if let Some(mut a) = apply_ladder(text, &o, &n, replace_all, label)? {
-            let base = "line-number prefixes copied from Read were removed from old_string";
-            a.note = Some(match a.note {
-                Some(more) => format!("{}; {}", base, more),
-                None => base.to_string(),
-            });
-            return Ok(Some(a));
-        }
+    if let Some((o, n)) = strip_line_numbers(old, new)
+        && let Some(mut a) = apply_ladder(text, &o, &n, replace_all, label)?
+    {
+        let base = "line-number prefixes copied from Read were removed from old_string";
+        a.note = Some(match a.note {
+            Some(more) => format!("{}; {}", base, more),
+            None => base.to_string(),
+        });
+        return Ok(Some(a));
     }
     Ok(None)
 }
@@ -154,7 +154,7 @@ fn fuzzy_replace(
                 strategy.describe(),
                 many,
                 label
-            ))
+            ));
         }
     }
     let start = hits[0];
@@ -238,10 +238,10 @@ fn strip_line_numbers(old: &str, new: &str) -> Option<(String, String)> {
             }
             let (num, rest) = numbered(l)?;
 
-            if let Some(p) = prev {
-                if num <= p {
-                    return None;
-                }
+            if let Some(p) = prev
+                && num <= p
+            {
+                return None;
             }
             prev = Some(num);
             out.push(rest.to_string());

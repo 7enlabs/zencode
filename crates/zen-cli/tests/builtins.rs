@@ -345,10 +345,10 @@ async fn c8_9_repl_sigint_cancels_turn_and_continues() {
 
     let start = Instant::now();
     let sleep_pid = loop {
-        if let Ok(s) = std::fs::read_to_string(&pid_file) {
-            if !s.trim().is_empty() {
-                break s.trim().to_string();
-            }
+        if let Ok(s) = std::fs::read_to_string(&pid_file)
+            && !s.trim().is_empty()
+        {
+            break s.trim().to_string();
         }
         assert!(
             start.elapsed() < Duration::from_secs(20),
@@ -357,11 +357,13 @@ async fn c8_9_repl_sigint_cancels_turn_and_continues() {
         std::thread::sleep(Duration::from_millis(50));
     };
     assert!(alive(&sleep_pid));
-    assert!(std::process::Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
     let start = Instant::now();
     while alive(&sleep_pid) && start.elapsed() < Duration::from_secs(5) {
         std::thread::sleep(Duration::from_millis(50));

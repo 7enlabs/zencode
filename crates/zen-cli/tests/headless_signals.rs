@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 fn wait_for_file(p: &Path, limit: Duration) -> String {
     let start = Instant::now();
     loop {
-        if let Ok(s) = std::fs::read_to_string(p) {
-            if !s.trim().is_empty() {
-                return s;
-            }
+        if let Ok(s) = std::fs::read_to_string(p)
+            && !s.trim().is_empty()
+        {
+            return s;
         }
         assert!(
             start.elapsed() < limit,

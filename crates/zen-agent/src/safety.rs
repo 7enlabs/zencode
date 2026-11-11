@@ -88,10 +88,10 @@ pub fn backoff_with_jitter(attempt: u32, base_ms: u64, cap_ms: u64, jitter_seed:
 }
 
 pub fn jitter_now_nanos() -> u64 {
-    if let Ok(seed) = std::env::var("ZEN_JITTER_SEED") {
-        if let Ok(n) = seed.parse::<u64>() {
-            return n;
-        }
+    if let Ok(seed) = std::env::var("ZEN_JITTER_SEED")
+        && let Ok(n) = seed.parse::<u64>()
+    {
+        return n;
     }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -218,10 +218,10 @@ impl SessionRegistry {
     }
 
     pub fn unregister(&mut self, provider: &str, key_fingerprint: &str, session_id: &str) {
-        if let Some(key_map) = self.entries.get_mut(provider) {
-            if let Some(sessions) = key_map.get_mut(key_fingerprint) {
-                sessions.retain(|(id, _)| id != session_id);
-            }
+        if let Some(key_map) = self.entries.get_mut(provider)
+            && let Some(sessions) = key_map.get_mut(key_fingerprint)
+        {
+            sessions.retain(|(id, _)| id != session_id);
         }
         self.save();
     }

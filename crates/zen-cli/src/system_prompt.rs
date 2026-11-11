@@ -71,10 +71,10 @@ pub fn build_system_prompt(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result
         parts.push(EVIDENCE_LABELING.to_string());
     }
 
-    if let Some(extra) = &cli.append_system_prompt {
-        if !extra.trim().is_empty() {
-            parts.push(extra.clone());
-        }
+    if let Some(extra) = &cli.append_system_prompt
+        && !extra.trim().is_empty()
+    {
+        parts.push(extra.clone());
     }
 
     if let Some(style) = &cli.style {
@@ -93,13 +93,13 @@ pub fn build_system_prompt(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result
         }
     }
 
-    if let Some(schema_path) = &cli.json_schema {
-        if let Ok(schema_text) = std::fs::read_to_string(schema_path) {
-            parts.push(format!(
-                "# Output format\nRespond with JSON only, matching this JSON Schema:\n```json\n{}\n```",
-                schema_text.trim()
-            ));
-        }
+    if let Some(schema_path) = &cli.json_schema
+        && let Ok(schema_text) = std::fs::read_to_string(schema_path)
+    {
+        parts.push(format!(
+            "# Output format\nRespond with JSON only, matching this JSON Schema:\n```json\n{}\n```",
+            schema_text.trim()
+        ));
     }
 
     let prompt = format!(

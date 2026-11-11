@@ -102,11 +102,7 @@ fn python_cmd() -> &'static str {
         .status()
         .map(|st| st.success())
         .unwrap_or(false);
-    if ok {
-        "python3"
-    } else {
-        "python"
-    }
+    if ok { "python3" } else { "python" }
 }
 
 // Build the CLI MCP config with real JSON serialization: interpolating a
@@ -441,10 +437,10 @@ async fn c7_5_mcp_subcommands_round_trip() {
         .as_array_mut()
         .expect("fake args");
     for a in args.iter_mut() {
-        if let Some(v) = a.as_str() {
-            if v.contains("SCRIPT") {
-                *a = serde_json::Value::String(v.replace("SCRIPT", &script.display().to_string()));
-            }
+        if let Some(v) = a.as_str()
+            && v.contains("SCRIPT")
+        {
+            *a = serde_json::Value::String(v.replace("SCRIPT", &script.display().to_string()));
         }
     }
     std::fs::write(&mcp_path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
@@ -510,11 +506,13 @@ async fn c7_5_mcp_subcommands_round_trip() {
         st
     );
     assert!(st.contains(&("web".into(), "failed".into())), "{:?}", st);
-    assert!(init["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|t| t == "mcp__fake__echo"));
+    assert!(
+        init["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "mcp__fake__echo")
+    );
 
     let (_, err, code) = run(s(&["mcp", "remove", "fake"]));
     assert_eq!(code, 0, "{}", err);

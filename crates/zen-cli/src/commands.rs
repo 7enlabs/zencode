@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -552,13 +552,12 @@ fn expand_file_refs(body: &str, base: &Path) -> Result<String> {
             }
         }
         for token in line.split_whitespace() {
-            if let Some(path) = token.strip_prefix('@') {
-                if !path.is_empty() {
-                    if let Some(content) = read_ref(path, base) {
-                        rebuilt.push(content);
-                        continue;
-                    }
-                }
+            if let Some(path) = token.strip_prefix('@')
+                && !path.is_empty()
+                && let Some(content) = read_ref(path, base)
+            {
+                rebuilt.push(content);
+                continue;
             }
             rebuilt.push(token.to_string());
         }
@@ -600,14 +599,14 @@ pub fn load_custom_commands(cwd: &Path, home: Option<&Path>) -> Vec<CustomComman
         }
         for e in walkdir::WalkDir::new(dir).into_iter().flatten() {
             let path = e.path();
-            if path.is_file() {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let name = stem.replace('_', ":");
-                    if let Ok(content) = std::fs::read_to_string(path) {
-                        if let Ok(cmd) = CustomCommand::parse(&name, &content) {
-                            cmds.push(cmd);
-                        }
-                    }
+            if path.is_file()
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                let name = stem.replace('_', ":");
+                if let Ok(content) = std::fs::read_to_string(path)
+                    && let Ok(cmd) = CustomCommand::parse(&name, &content)
+                {
+                    cmds.push(cmd);
                 }
             }
         }
@@ -713,12 +712,14 @@ pub async fn mcp_command(
                 return Ok(());
             }
             if cli.json_output || cli.raw {
-                let v = serde_json::json!(scopes
-                    .iter()
-                    .map(|(scope, names, path)| {
-                        serde_json::json!({"scope": scope, "servers": names, "path": path})
-                    })
-                    .collect::<Vec<_>>());
+                let v = serde_json::json!(
+                    scopes
+                        .iter()
+                        .map(|(scope, names, path)| {
+                            serde_json::json!({"scope": scope, "servers": names, "path": path})
+                        })
+                        .collect::<Vec<_>>()
+                );
                 if cli.raw {
                     println!("{}", serde_json::to_string(&v)?);
                 } else {
@@ -877,21 +878,23 @@ pub async fn sessions_command(
             let sessions = sm::list_all_sessions(home, *all);
             if cli.json_output || cli.raw {
                 if !cli.quiet {
-                    let v = serde_json::json!(sessions
-                        .iter()
-                        .map(|x| {
-                            serde_json::json!({
-                                "id": x.id,
-                                "path": x.path.display().to_string(),
-                                "archived": x.archived,
-                                "modified": sm::fmt_mtime(x.modified),
-                                "messages": x.message_count,
-                                "input_tokens": x.input_tokens,
-                                "output_tokens": x.output_tokens,
-                                "title": x.title,
+                    let v = serde_json::json!(
+                        sessions
+                            .iter()
+                            .map(|x| {
+                                serde_json::json!({
+                                    "id": x.id,
+                                    "path": x.path.display().to_string(),
+                                    "archived": x.archived,
+                                    "modified": sm::fmt_mtime(x.modified),
+                                    "messages": x.message_count,
+                                    "input_tokens": x.input_tokens,
+                                    "output_tokens": x.output_tokens,
+                                    "title": x.title,
+                                })
                             })
-                        })
-                        .collect::<Vec<_>>());
+                            .collect::<Vec<_>>()
+                    );
                     if cli.raw {
                         println!("{}", serde_json::to_string(&v)?);
                     } else {

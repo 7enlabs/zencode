@@ -3,7 +3,7 @@
 mod common;
 
 use common::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 
 const SESSION: &str = "00000000-0000-4000-8000-0000000000aa";
@@ -198,7 +198,7 @@ async fn fixture_subagent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fixture_api_retry() {
-    std::env::set_var("ZEN_JITTER_SEED", "42");
+    unsafe { std::env::set_var("ZEN_JITTER_SEED", "42") };
     check(
         "api_retry",
         vec![
@@ -323,7 +323,7 @@ async fn fixture_content_filter() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fixture_mid_response_retry() {
-    std::env::set_var("ZEN_JITTER_SEED", "42");
+    unsafe { std::env::set_var("ZEN_JITTER_SEED", "42") };
     check(
         "mid_response_retry",
         vec![
@@ -338,7 +338,7 @@ async fn fixture_mid_response_retry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fixture_mid_response_error() {
-    std::env::set_var("ZEN_JITTER_SEED", "42");
+    unsafe { std::env::set_var("ZEN_JITTER_SEED", "42") };
     check(
         "mid_response_error",
         vec![mid_response_error(

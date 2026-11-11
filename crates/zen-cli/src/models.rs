@@ -204,8 +204,7 @@ const PROBE_TASKS: &[ProbeTask] = &[
         check: check_arithmetic,
     },
     ProbeTask {
-        prompt:
-            "Complete this Rust function, reply with code only:\nfn add(a: i32, b: i32) -> i32 {",
+        prompt: "Complete this Rust function, reply with code only:\nfn add(a: i32, b: i32) -> i32 {",
         check: check_code_completion,
     },
 ];
@@ -891,7 +890,9 @@ pub async fn models_command(
         let discovered = fetch_models_list(&cfg.base_url, cfg.api_key.as_deref()).await;
         let candidates = merge_candidates(FREE_MODEL_CATALOG, &discovered);
         if candidates.is_empty() {
-            anyhow::bail!("no candidate free models found (static catalog is empty and /models discovery failed)");
+            anyhow::bail!(
+                "no candidate free models found (static catalog is empty and /models discovery failed)"
+            );
         }
         let backend = ProbeClient::new(&cfg.base_url, cfg.api_key.clone());
         let mut results = Vec::with_capacity(candidates.len());
