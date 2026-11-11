@@ -866,6 +866,21 @@ pub(crate) fn openai_cached_tokens(body: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// True for failures that come from the provider account: a rejected
+/// key (401), an exhausted quota (402) or a forbidden account (403).
+/// Candidates in a fallback chain share one provider key and endpoint,
+/// so these fail identically for every model in the chain. The client
+/// formats provider failures as `HTTP <status>: <body>`; the quota
+/// path uses its own wording ("Out of quota / billing issue").
+fn is_account_level_error(text: &str) -> bool {
+    text.contains("HTTP 401")
+        || text.contains("HTTP 402")
+        || text.contains("HTTP 403")
+        || text.contains("Out of quota")
+        || text.contains("unauthorized")
+        || text.contains("authentication failed")
+}
+
 pub(crate) async fn chat_with_fallback(
     llm: &Arc<dyn LlmBackend>,
     primary: &str,
@@ -878,6 +893,7 @@ pub(crate) async fn chat_with_fallback(
     candidates.push(primary.to_string());
     candidates.extend(fallbacks.iter().cloned());
 
+    let mut first_err: Option<String> = None;
     let mut last_err: Option<String> = None;
     let mut api_ms_total = 0u64;
     for model in candidates {
@@ -892,12 +908,29 @@ pub(crate) async fn chat_with_fallback(
         api_ms_total += started.elapsed().as_millis() as u64;
         match res {
             Ok(resp) => return Ok((resp, api_ms_total, model)),
-            Err(e) => last_err = Some(e.to_string()),
+            Err(e) => {
+                let text = e.to_string();
+                // An account-level failure hits every candidate the
+                // same way; stop at once and surface the primary's
+                // error instead of burying it under the last
+                // fallback's identical copy (bug hunt B P2-3).
+                if is_account_level_error(&text) {
+                    return Err(e);
+                }
+                if first_err.is_none() {
+                    first_err = Some(text.clone());
+                }
+                last_err = Some(text);
+            }
         }
     }
-    Err(anyhow::anyhow!(
-        last_err.unwrap_or_else(|| "model request failed".into())
-    ))
+    let last = last_err.unwrap_or_else(|| "model request failed".into());
+    match first_err {
+        Some(first) if first != last => Err(anyhow::anyhow!(
+            "{first} (fallback models also failed; last error: {last})"
+        )),
+        _ => Err(anyhow::anyhow!(last)),
+    }
 }
 
 #[cfg(test)]
@@ -1088,6 +1121,84 @@ mod tests {
             server_retry_hint_ms(None, &format!("{body} {trailing}")),
             Some(23_000)
         );
+    }
+
+    #[tokio::test]
+    async fn fallback_stops_on_account_level_errors() {
+        use std::sync::Mutex;
+        struct FailAll {
+            status: u16,
+            seen: Mutex<Vec<String>>,
+        }
+        #[async_trait]
+        impl LlmBackend for FailAll {
+            async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+                self.seen.lock().unwrap().push(req.model.clone());
+                anyhow::bail!("HTTP {} for {}", self.status, req.model)
+            }
+        }
+        // 401 from the primary: the fallbacks share the same key, so
+        // they are never tried and the primary's error comes back.
+        let backend = Arc::new(FailAll {
+            status: 401,
+            seen: Mutex::new(vec![]),
+        });
+        let llm: Arc<dyn LlmBackend> = backend.clone();
+        let err = chat_with_fallback(
+            &llm,
+            "primary",
+            &["fb1".to_string(), "fb2".to_string()],
+            vec![ChatMessage::user("hi")],
+            vec![],
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "HTTP 401 for primary");
+        assert_eq!(*backend.seen.lock().unwrap(), ["primary"]);
+    }
+
+    #[tokio::test]
+    async fn fallback_reports_the_primary_error() {
+        use std::sync::Mutex;
+        struct FailAll {
+            status: u16,
+            seen: Mutex<Vec<String>>,
+        }
+        #[async_trait]
+        impl LlmBackend for FailAll {
+            async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+                self.seen.lock().unwrap().push(req.model.clone());
+                anyhow::bail!("HTTP {} for {}", self.status, req.model)
+            }
+        }
+        // A retryable failure still walks the whole chain, but the
+        // reported error leads with the primary model's failure.
+        let backend = Arc::new(FailAll {
+            status: 500,
+            seen: Mutex::new(vec![]),
+        });
+        let llm: Arc<dyn LlmBackend> = backend.clone();
+        let err = chat_with_fallback(
+            &llm,
+            "primary",
+            &["fb1".to_string(), "fb2".to_string()],
+            vec![ChatMessage::user("hi")],
+            vec![],
+            None,
+        )
+        .await
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.starts_with("HTTP 500 for primary"),
+            "primary error must lead: {text}"
+        );
+        assert!(
+            text.contains("last error: HTTP 500 for fb2"),
+            "last error kept for detail: {text}"
+        );
+        assert_eq!(*backend.seen.lock().unwrap(), ["primary", "fb1", "fb2"]);
     }
 
     #[tokio::test]
