@@ -1202,6 +1202,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fallback_stops_on_each_account_level_signal() {
+        use std::sync::Mutex;
+        struct FailWith {
+            text: String,
+            seen: Mutex<Vec<String>>,
+        }
+        #[async_trait]
+        impl LlmBackend for FailWith {
+            async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+                self.seen.lock().unwrap().push(req.model.clone());
+                anyhow::bail!("{}", self.text)
+            }
+        }
+        // Each `||` arm of is_account_level_error must fire on its own
+        // signal: one signal alone stops the chain at the primary.
+        for signal in [
+            "HTTP 402: out of quota",
+            "HTTP 403: forbidden",
+            "Out of quota / billing issue",
+            "unauthorized: bad key",
+            "authentication failed",
+        ] {
+            let backend = Arc::new(FailWith {
+                text: signal.to_string(),
+                seen: Mutex::new(vec![]),
+            });
+            let llm: Arc<dyn LlmBackend> = backend.clone();
+            let err = chat_with_fallback(
+                &llm,
+                "primary",
+                &["fb1".to_string(), "fb2".to_string()],
+                vec![ChatMessage::user("hi")],
+                vec![],
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.to_string(), signal, "for {signal:?}");
+            assert_eq!(*backend.seen.lock().unwrap(), ["primary"], "for {signal:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_reports_the_plain_error_when_all_failures_match() {
+        use std::sync::Mutex;
+        struct FailAll {
+            seen: Mutex<Vec<String>>,
+        }
+        #[async_trait]
+        impl LlmBackend for FailAll {
+            async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+                self.seen.lock().unwrap().push(req.model.clone());
+                anyhow::bail!("boom")
+            }
+        }
+        // Every candidate fails with the same text, so first == last and
+        // the plain error comes back without the "(fallback models also
+        // failed; ...)" suffix.
+        let backend = Arc::new(FailAll {
+            seen: Mutex::new(vec![]),
+        });
+        let llm: Arc<dyn LlmBackend> = backend.clone();
+        let err = chat_with_fallback(
+            &llm,
+            "primary",
+            &["fb1".to_string(), "fb2".to_string()],
+            vec![ChatMessage::user("hi")],
+            vec![],
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "boom");
+        assert_eq!(*backend.seen.lock().unwrap(), ["primary", "fb1", "fb2"]);
+    }
+
+    #[tokio::test]
     async fn fallback_chain_reports_answering_model() {
         use std::sync::Mutex;
         struct Backend(Mutex<Vec<&'static str>>);
