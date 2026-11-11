@@ -2175,9 +2175,16 @@ fn build_repl_config(
         max_parallel_tool_calls: cfg.max_parallel_tool_calls,
         ..Default::default()
     };
-    if let Some(w) = cfg.context_window {
-        config.context_window = w;
-    }
+    // Bug hunt B2, direction (a): the window tracks the catalog model
+    // and the threshold tracks the window (80%), instead of the
+    // `AgentConfig::default` 128k / 100k pair.
+    let context_window = crate::models::effective_context_window(cfg.context_window, &cfg.model);
+    config.context_window = context_window;
+    config.auto_compact_threshold = crate::agent_run::resolve_auto_compact_threshold(
+        cli.autocompact.as_deref(),
+        cfg.auto_compact.as_ref(),
+        context_window,
+    );
     crate::agent_run::apply_verify_settings(&mut config, cfg, true);
     config.budget = crate::budget::resolve_budget(
         cli.max_budget_usd,
@@ -2913,6 +2920,35 @@ mod model_picker_tests {
         assert!(routed);
         assert_eq!(cfg.model, "deepseek-v4.1-flash");
         assert_eq!(cfg.base_url, crate::settings::DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn build_repl_config_uses_catalog_context_window() {
+        // Bug hunt B2, direction (a): the default model is a 1M
+        // catalog entry, so a fresh session must compact at 800k,
+        // not at the 128k / 100k default pair.
+        use clap::Parser;
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cli = crate::cli::Cli::parse_from(["zen"]);
+        let mut cfg = test_cfg();
+        assert_eq!(cfg.model, "deepseek-v4.1-flash");
+        assert_eq!(cfg.context_window, None);
+        let config = build_repl_config(&cli, &cfg, &std::env::temp_dir());
+        assert_eq!(config.context_window, 1_000_000);
+        assert_eq!(config.auto_compact_threshold, Some(800_000));
+
+        // An explicit setting wins over the catalog.
+        cfg.context_window = Some(50_000);
+        let config = build_repl_config(&cli, &cfg, &std::env::temp_dir());
+        assert_eq!(config.context_window, 50_000);
+        assert_eq!(config.auto_compact_threshold, Some(40_000));
+
+        // An unknown model falls back to the 128k default.
+        cfg.context_window = None;
+        cfg.model = "some/unknown-model".to_string();
+        let config = build_repl_config(&cli, &cfg, &std::env::temp_dir());
+        assert_eq!(config.context_window, 128_000);
+        assert_eq!(config.auto_compact_threshold, Some(102_400));
     }
 
     #[test]
