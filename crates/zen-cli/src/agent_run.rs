@@ -781,10 +781,49 @@ pub(crate) async fn run_agent_with_result(
         let local = match name.as_str() {
             "model" if args.is_empty() => Some(format!("Current model: {}", agent.config.model)),
             "model" => {
-                // Translate a catalog id to the id the gateway
-                // accepts, as /model does in the REPL (review F2).
-                agent.config.model = crate::models::gateway_model_id(args).to_string();
-                Some(format!("Set model to {}", agent.config.model))
+                // Route, switch and persist like the REPL's /model.
+                // Before this fix the handler only renamed
+                // agent.config.model and printed success: the id was
+                // never routed, nothing was saved, and the next run
+                // started on the old model (bug hunt B P2-6).
+                let save = |model: &str, base_url: &str| -> String {
+                    match crate::repl::save_model_choice(cwd, false, model, base_url) {
+                        Ok(path) => {
+                            format!("Set model to {model} (saved to {})", path.display())
+                        }
+                        Err(e) => {
+                            format!("Set model to {model} (could not save model choice: {e})")
+                        }
+                    }
+                };
+                if crate::models::is_auto_model(args) {
+                    agent.config.model = "auto".to_string();
+                    match crate::repl::save_model_choice(cwd, true, "auto", &cfg.base_url) {
+                        Ok(path) => {
+                            Some(format!("Set model to auto (saved to {})", path.display()))
+                        }
+                        Err(e) => Some(format!(
+                            "Set model to auto (could not save model choice: {e})"
+                        )),
+                    }
+                } else {
+                    let mut routed = cfg.clone();
+                    routed.model = args.to_string();
+                    match crate::settings::route_catalog_model(&mut routed) {
+                        Ok(true) => {
+                            agent.config.model = routed.model.clone();
+                            let model = routed.model.clone();
+                            let base_url = routed.base_url.clone();
+                            Some(save(&model, &base_url))
+                        }
+                        Ok(false) => {
+                            agent.config.model = crate::models::gateway_model_id(args).to_string();
+                            let model = agent.config.model.clone();
+                            Some(save(&model, &cfg.base_url))
+                        }
+                        Err(e) => Some(format!("Could not set model to {args}: {e}")),
+                    }
+                }
             }
             "cost" => Some(commands::cost_report(
                 &agent.usage,

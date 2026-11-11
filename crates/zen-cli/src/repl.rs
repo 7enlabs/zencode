@@ -2136,7 +2136,7 @@ fn save_local_settings(cwd: &Path, entries: &[(&str, &str)]) -> Result<std::path
 /// saved model reaches the wrong gateway), and `auto` silently loses
 /// its provider. A write failure is reported but never refuses the
 /// in-memory switch.
-fn save_model_choice(
+pub(crate) fn save_model_choice(
     cwd: &Path,
     auto: bool,
     model: &str,
