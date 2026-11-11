@@ -1001,7 +1001,7 @@ fn humanise_context(ctx: Option<u32>) -> String {
 /// when it matches the current provider, otherwise the static free catalog.
 /// The probe data (context window, latency) is threaded through instead of
 /// being discarded — the picker shows it.
-fn available_model_rows(home: Option<&Path>, base_url: &str) -> Vec<ModelRow> {
+fn available_model_rows(home: Option<&Path>, base_url: &str) -> (Vec<ModelRow>, Option<String>) {
     if let Some(cache) = crate::models::load_cache(home) {
         if cache.base_url == base_url {
             let rows: Vec<ModelRow> = cache
@@ -1011,7 +1011,18 @@ fn available_model_rows(home: Option<&Path>, base_url: &str) -> Vec<ModelRow> {
                 .map(ModelRow::from_probe)
                 .collect();
             if !rows.is_empty() {
-                return rows;
+                // `zen models` warns when the probe cache is stale;
+                // the picker - the path users actually switch with -
+                // used it silently, offering models that may have
+                // left the free tier or been renamed (bug hunt A B5).
+                let stale = crate::models::cache_is_stale(&cache).then(|| {
+                    let age = crate::models::cache_age_secs(&cache).unwrap_or(-1);
+                    format!(
+                        "warning: models cache is {} old (>24h); run `zen models --refresh` to re-probe",
+                        crate::models::human_age(age)
+                    )
+                });
+                return (rows, stale);
             }
         }
     }
@@ -1020,7 +1031,7 @@ fn available_model_rows(home: Option<&Path>, base_url: &str) -> Vec<ModelRow> {
     // base the OpenRouter entries must not appear as pickable
     // models. A custom base has no known provider, so the whole
     // catalog stays rather than excluding models that might serve it.
-    match crate::models::provider_for_base_url(base_url) {
+    let rows = match crate::models::provider_for_base_url(base_url) {
         Some(provider) => crate::models::models_for_provider(provider)
             .into_iter()
             .map(ModelRow::from_catalog)
@@ -1029,7 +1040,8 @@ fn available_model_rows(home: Option<&Path>, base_url: &str) -> Vec<ModelRow> {
             .iter()
             .map(ModelRow::from_catalog)
             .collect(),
-    }
+    };
+    (rows, None)
 }
 
 /// Numbered model table for `/model`: short name, provider, context
@@ -1264,7 +1276,10 @@ async fn handle_slash(
             }
         }
         "/model" => {
-            let rows = available_model_rows(home, &cfg.base_url);
+            let (rows, stale_warning) = available_model_rows(home, &cfg.base_url);
+            if let Some(w) = &stale_warning {
+                eprintln!("{w}");
+            }
             if arg.is_empty() {
                 print!(
                     "{}",
@@ -2521,18 +2536,63 @@ mod model_picker_tests {
     #[test]
     fn catalog_rows_are_scoped_to_the_current_provider() {
         // No probe cache at home None, so the catalog fallback runs.
-        let experiential = available_model_rows(None, crate::settings::DEFAULT_BASE_URL);
+        let (experiential, _) = available_model_rows(None, crate::settings::DEFAULT_BASE_URL);
         assert_eq!(experiential.len(), 1);
         assert_eq!(experiential[0].id, "deepseek-v4.1-flash");
-        let openrouter = available_model_rows(None, crate::models::OPENROUTER_BASE_URL);
+        let (openrouter, _) = available_model_rows(None, crate::models::OPENROUTER_BASE_URL);
         assert_eq!(openrouter.len(), 4);
         assert!(openrouter.iter().all(|r| r.id != "deepseek-v4.1-flash"));
         // A custom base has no known provider: nothing is excluded.
-        let custom = available_model_rows(None, "https://example.invalid/v1");
+        let (custom, _) = available_model_rows(None, "https://example.invalid/v1");
         assert_eq!(custom.len(), 5);
         // Numbered picks follow the filtered list, so an id outside
         // the current provider is not pickable at all.
         assert!(pick_model("qwen/qwen3-coder:free", &experiential).is_err());
+    }
+
+    #[test]
+    fn stale_probe_cache_rows_carry_a_warning() {
+        let home = std::env::temp_dir().join(format!("zen_picker_home_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let probe = crate::models::ModelProbe {
+            model: "probe/model-x".to_string(),
+            provider: "probe".to_string(),
+            context_window: Some(1000),
+            free: true,
+            latency_ms: 42,
+            success: true,
+            score: 1.0,
+            last_error: None,
+        };
+        let mut cache = crate::models::ModelsCache {
+            verified_at: (chrono::Utc::now() - chrono::Duration::days(2)).to_rfc3339(),
+            base_url: crate::settings::DEFAULT_BASE_URL.to_string(),
+            results: vec![probe.clone()],
+        };
+        crate::models::save_cache(Some(&home), &cache).unwrap();
+        let (rows, warning) = available_model_rows(Some(&home), crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "probe/model-x");
+        let warning = warning.expect("stale cache must warn");
+        assert!(warning.contains("zen models --refresh"), "{warning}");
+
+        cache.verified_at = chrono::Utc::now().to_rfc3339();
+        cache.results = vec![probe];
+        crate::models::save_cache(Some(&home), &cache).unwrap();
+        let (rows, warning) = available_model_rows(Some(&home), crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(rows.len(), 1);
+        assert!(warning.is_none());
+
+        // Unparseable timestamp: still stale (cache_is_stale defaults
+        // to true), but the age is unknown, not "1s".
+        cache.verified_at = "not-a-date".to_string();
+        crate::models::save_cache(Some(&home), &cache).unwrap();
+        let (rows, warning) = available_model_rows(Some(&home), crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(rows.len(), 1);
+        let warning = warning.expect("unparseable timestamp must still warn");
+        assert!(warning.contains("unknown age"), "{warning}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

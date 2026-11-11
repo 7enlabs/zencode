@@ -995,7 +995,7 @@ pub async fn models_command(
     }
 }
 
-fn human_age(secs: i64) -> String {
+pub(crate) fn human_age(secs: i64) -> String {
     if secs < 0 {
         return "unknown age".to_string();
     }
