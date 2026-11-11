@@ -33,12 +33,17 @@ impl McpServerConfig {
 
     pub fn expand_with_missing(&self, missing: &mut Vec<String>) -> Option<McpServerConfig> {
         let expand_value = |value: &str, missing: &mut Vec<String>| -> Option<String> {
-            let re = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\:-(.*?))?\}").unwrap();
+            let re =
+                Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\:-(.*?))?\}").expect("env-var regex");
             let mut result = value.to_string();
             let mut any_missing = false;
             for cap in re.captures_iter(value) {
-                let full = cap.get(0).unwrap().as_str();
-                let var = cap.get(1).unwrap().as_str();
+                // Group 0 is the whole match and group 1 is mandatory in the pattern.
+                let full = cap
+                    .get(0)
+                    .expect("capture group 0 is the whole match")
+                    .as_str();
+                let var = cap.get(1).expect("capture group 1 is mandatory").as_str();
                 let default = cap.get(2).map(|m| m.as_str());
                 let replacement = std::env::var(var).ok().or(default.map(|s| s.to_string()));
                 if let Some(repl) = replacement {

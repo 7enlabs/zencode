@@ -273,8 +273,11 @@ fn redact_assignments_second_pass(s: &str) -> String {
         while let Some(rel) = lower[from..].find(word) {
             let abs = from + rel;
             let left_ok = abs == 0 || {
-                let c = s[..abs].chars().next_back().unwrap();
-                !c.is_ascii_alphanumeric() && c != '_'
+                // The closure only runs when `abs > 0`, so the prefix is non-empty.
+                s[..abs]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !c.is_ascii_alphanumeric() && c != '_')
             };
             if !left_ok {
                 from = abs + word.len();

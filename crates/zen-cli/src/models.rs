@@ -954,7 +954,7 @@ pub async fn models_command(
             SwitchOutcome::UseOld(old_results) => old_results,
         }
     } else {
-        let cache = cached.unwrap();
+        let cache = cached.expect("cache entry is present: cache_usable is true in this branch");
         if cache_is_stale(&cache) {
             let age = cache_age_secs(&cache).unwrap_or(-1);
             eprintln!(
