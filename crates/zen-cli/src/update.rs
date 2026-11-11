@@ -116,7 +116,7 @@ pub fn run_update(
     };
     let git = "git";
     if Command::new(git).arg("--version").output().is_err() {
-        anyhow::bail!("git not found; install Git first, then rerun zen update");
+        anyhow::bail!("git not found; zen update works on a source checkout and needs Git - install Git first, then rerun. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead");
     }
 
     if !src_dir.join(".git").is_dir() {
@@ -228,7 +228,7 @@ pub fn run_update(
     }
 
     let Some(cargo) = find_cargo(home) else {
-        anyhow::bail!("cargo not found; install Rust first, for example from https://rustup.rs");
+        anyhow::bail!("cargo not found; zen update rebuilds from source and needs a Rust toolchain - install Rust first, for example from https://rustup.rs. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead");
     };
     if !quiet && !json {
         println!("Building zen-cli in release mode (this can take a few minutes)");
@@ -317,6 +317,55 @@ mod tests {
         );
         assert_eq!(parse_ls_remote_head(""), None);
         assert_eq!(parse_ls_remote_head("not-a-sha\tHEAD\n"), None);
+    }
+
+    #[test]
+    fn run_update_check_without_checkout_returns_zero() {
+        // No ZENCODE_SRC_DIR override and no checkout under home:
+        // --check reports nothing to do and exits 0.
+        let old = std::env::var("ZENCODE_SRC_DIR").ok();
+        std::env::remove_var("ZENCODE_SRC_DIR");
+        let home =
+            std::env::temp_dir().join(format!("zen_update_nocheckout_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let code = run_update(true, Some(&home), true, false, false).unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&home);
+        match old {
+            Some(v) => std::env::set_var("ZENCODE_SRC_DIR", v),
+            None => std::env::remove_var("ZENCODE_SRC_DIR"),
+        }
+    }
+
+    #[test]
+    fn run_update_bails_on_uncommitted_changes() {
+        // A checkout with an untracked file must refuse to update
+        // (and never reach the network) - an error, not Ok(0).
+        let old = std::env::var("ZENCODE_SRC_DIR").ok();
+        std::env::remove_var("ZENCODE_SRC_DIR");
+        let home = std::env::temp_dir().join(format!("zen_update_dirty_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let src = home.join(".local").join("share").join("zencode");
+        std::fs::create_dir_all(&src).unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&src)
+            .status()
+            .expect("git init for the dirty-checkout fixture");
+        assert!(status.success(), "git init must succeed, got {status}");
+        std::fs::write(src.join("dirty.txt"), "uncommitted").unwrap();
+        let err = run_update(false, Some(&home), true, false, false)
+            .expect_err("dirty checkout must bail");
+        assert!(
+            err.to_string().contains("uncommitted changes"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+        match old {
+            Some(v) => std::env::set_var("ZENCODE_SRC_DIR", v),
+            None => std::env::remove_var("ZENCODE_SRC_DIR"),
+        }
     }
 
     #[test]

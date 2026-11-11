@@ -62,7 +62,14 @@ Open a new terminal after installing.
 
 ## Update
 
-Run:
+How you update depends on how you installed.
+
+**Prebuilt install (the one-command install above):** re-run the
+same one-command install. It downloads the newest release build
+and replaces the binary in place. `zen update` does not apply to
+prebuilt installs - it rebuilds from source (see below).
+
+**Source install:** run:
 
 ```sh
 zen update
@@ -70,11 +77,11 @@ zen update
 
 This fast-forwards the source checkout, rebuilds `zen-cli` in
 release mode, and replaces the binary you are running. If no
-checkout exists yet, it clones one first. Use `zen update --check`
-to see whether an update is available without building anything.
-If the checkout has uncommitted changes, update stops instead of
-overwriting them. The one-command install above still works as a
-fallback for a first install.
+checkout exists yet, it clones one first. It needs Git and a Rust
+toolchain (`cargo`) - the prebuilt install deliberately has
+neither. Use `zen update --check` to see whether an update is
+available without building anything. If the checkout has
+uncommitted changes, update stops instead of overwriting them.
 
 ## Build from source
 
