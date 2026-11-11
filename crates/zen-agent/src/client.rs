@@ -308,11 +308,15 @@ struct WireResp {
 }
 #[derive(Debug, Deserialize)]
 struct WireChoice {
+    // A gateway that omits `message` (or a tool call's `id` / function
+    // `name`) must degrade to an empty message / unnamed call, not
+    // fail the whole completion as "invalid" (bug hunt B P2-2).
+    #[serde(default)]
     message: WireMsg,
     #[serde(default)]
     finish_reason: Option<String>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct WireMsg {
     #[serde(default)]
     content: Option<String>,
@@ -324,11 +328,13 @@ struct WireMsg {
 }
 #[derive(Debug, Deserialize)]
 struct WireCall {
+    #[serde(default)]
     id: String,
     function: WireFunc,
 }
 #[derive(Debug, Deserialize)]
 struct WireFunc {
+    #[serde(default)]
     name: String,
 
     #[serde(default)]
@@ -899,6 +905,30 @@ mod tests {
         assert_eq!(normalize_arguments(Some(json!("  "))), "{}");
         assert_eq!(normalize_arguments(Some(json!(r#"{"a":1}"#))), r#"{"a":1}"#);
         assert_eq!(normalize_arguments(Some(json!({"a": 1}))), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn parse_completion_tolerates_missing_message_and_call_fields() {
+        // Bug hunt B P2-2: strict required fields turned a usable
+        // completion into "invalid completion response" when a
+        // gateway omitted message, a tool call's id, or its name.
+        let r = parse_completion(r#"{"choices":[{"finish_reason":"stop"}]}"#).unwrap();
+        assert_eq!(r.message.content, None);
+        assert!(r.message.tool_calls.is_none());
+
+        let body = r#"{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let r = parse_completion(body).unwrap();
+        let calls = r.message.tool_calls.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "");
+        assert_eq!(calls[0].function.name, "get_weather");
+
+        let body = r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let r = parse_completion(body).unwrap();
+        let calls = r.message.tool_calls.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "");
     }
 
     #[test]
