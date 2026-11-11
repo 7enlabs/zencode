@@ -2502,6 +2502,15 @@ mod model_picker_tests {
         let (rows, warning) = available_model_rows(Some(&home), crate::settings::DEFAULT_BASE_URL);
         assert_eq!(rows.len(), 1);
         assert!(warning.is_none());
+
+        // Unparseable timestamp: still stale (cache_is_stale defaults
+        // to true), but the age is unknown, not "1s".
+        cache.verified_at = "not-a-date".to_string();
+        crate::models::save_cache(Some(&home), &cache).unwrap();
+        let (rows, warning) = available_model_rows(Some(&home), crate::settings::DEFAULT_BASE_URL);
+        assert_eq!(rows.len(), 1);
+        let warning = warning.expect("unparseable timestamp must still warn");
+        assert!(warning.contains("unknown age"), "{warning}");
         let _ = std::fs::remove_dir_all(&home);
     }
 
