@@ -652,7 +652,15 @@ impl LlmBackend for OpenAiClient {
                 }
                 Err(e) => Outcome::Classified(ErrorClass::Transient, None, timeout_text(&e)),
             };
-            waited_ms = waited_ms.saturating_add(timed_out_ms);
+            // The retry budget bounds the whole effort, not just the
+            // sleeps between attempts: the wall time an attempt spent
+            // waiting for a (possibly slow) error response counts
+            // too. Before this fix only reqwest timeouts accrued, so
+            // HTTP error response time was invisible to the budget
+            // and retry.maxWaitSecs was not a real bound (bug hunt
+            // B P2-7; the same loop shape exists in both clients).
+            waited_ms =
+                waited_ms.saturating_add(timed_out_ms.max(started.elapsed().as_millis() as u64));
 
             let (class, status, err_text) = match outcome {
                 Outcome::Parsed(r) => return r,
@@ -1255,6 +1263,78 @@ mod tests {
             .count();
         assert_eq!(retries, 2);
     }
+
+    #[tokio::test]
+    async fn retry_wait_budget_counts_slow_error_responses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Every response is a 429 that takes ~250 ms to arrive. The
+        // wait budget is 100 ms, so one slow attempt must exhaust
+        // it: before the fix, HTTP error response time never accrued
+        // to the budget and the client retried up to the attempt cap.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits2 = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                hits2.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let mut got = Vec::new();
+                    loop {
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        let txt = String::from_utf8_lossy(&got);
+                        if let Some(h) = txt.find("\r\n\r\n") {
+                            let len = txt[..h]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if got.len() >= h + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    let body = r#"{"error":{"message":"slow down"}}"#;
+                    let resp = format!("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        let sink = Arc::new(crate::testutil::CollectSink::default());
+        let mut c = OpenAiClient::new(format!("http://{addr}/v1"), None, sink);
+        c.base_retry_delay_ms = 1;
+        c.max_retry_delay_ms = 1;
+        c.max_total_wait_ms = 100;
+        let req = ChatRequest {
+            model: "m".into(),
+            messages: vec![ChatMessage::user("hi")],
+            tools: vec![],
+            max_tokens: None,
+        };
+        let err = c.chat(req).await.unwrap_err();
+        assert!(
+            err.to_string().contains("retry wait budget"),
+            "budget error expected: {err}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "one slow attempt spends the whole budget"
+        );
+    }
 }
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -1586,7 +1666,15 @@ impl LlmBackend for AnthropicClient {
                 }
                 Err(e) => (true, false, None, timeout_text(&e)),
             };
-            waited_ms = waited_ms.saturating_add(timed_out_ms);
+            // The retry budget bounds the whole effort, not just the
+            // sleeps between attempts: the wall time an attempt spent
+            // waiting for a (possibly slow) error response counts
+            // too. Before this fix only reqwest timeouts accrued, so
+            // HTTP error response time was invisible to the budget
+            // and retry.maxWaitSecs was not a real bound (bug hunt
+            // B P2-7; the same loop shape exists in both clients).
+            waited_ms =
+                waited_ms.saturating_add(timed_out_ms.max(started.elapsed().as_millis() as u64));
 
             if !retryable {
                 return Err(anyhow::anyhow!(err_text));
