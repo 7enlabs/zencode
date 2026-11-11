@@ -378,6 +378,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
                 let keep_id = repl.session_id.clone();
                 match crate::eventlog::resume_history(&path) {
                     Ok((_, history)) => {
+                        let history = with_hook_context(agent.messages(), history);
                         agent.set_messages(history);
                         println!("forked from {} as {}", path.display(), keep_id);
                     }
@@ -618,6 +619,30 @@ async fn run_turn_interruptible(
     out
 }
 
+/// The session-start hook context lives in the message list, and
+/// resume replaces that list wholesale with the stored history -
+/// silently dropping the context the hook just contributed (bug
+/// hunt A B4). Carry any hook-context messages the agent already
+/// holds into the resumed list, skipping ones the stored history
+/// already contains (the previous session persisted its own).
+fn with_hook_context(
+    current: &[zen_core::ChatMessage],
+    history: Vec<zen_core::ChatMessage>,
+) -> Vec<zen_core::ChatMessage> {
+    let mut out: Vec<zen_core::ChatMessage> = current
+        .iter()
+        .filter(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|c| c.starts_with("[SessionStart hook context]"))
+        })
+        .filter(|m| !history.contains(m))
+        .cloned()
+        .collect();
+    out.extend(history);
+    out
+}
+
 /// Load a saved transcript into the running REPL (shared by /resume and -c/-r).
 fn resume_into(
     path: std::path::PathBuf,
@@ -641,7 +666,7 @@ fn resume_into(
             eprintln!("warning: could not write transcript: {}", e);
         }
     }
-    agent.set_messages(history);
+    agent.set_messages(with_hook_context(agent.messages(), history));
     *repl.session_id = id.clone();
     agent.ctx.session_id = id.clone();
     println!(
@@ -2316,6 +2341,46 @@ fn record_turn_cost(
         delta_in,
         delta_out,
     );
+}
+
+#[cfg(test)]
+mod hook_context_tests {
+    use super::with_hook_context;
+    use zen_core::ChatMessage;
+
+    fn hook(text: &str) -> ChatMessage {
+        ChatMessage::user(format!("[SessionStart hook context]\n{text}"))
+    }
+
+    #[test]
+    fn hook_context_survives_resume() {
+        let current = vec![hook("fresh context")];
+        let history = vec![ChatMessage::user("old question")];
+        let out = with_hook_context(&current, history);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out[0].content.as_deref(),
+            Some("[SessionStart hook context]\nfresh context")
+        );
+        assert_eq!(out[1].content.as_deref(), Some("old question"));
+    }
+
+    #[test]
+    fn hook_context_already_in_history_is_not_duplicated() {
+        let current = vec![hook("same context")];
+        let history = vec![hook("same context"), ChatMessage::user("q")];
+        let out = with_hook_context(&current, history);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn no_hook_context_leaves_history_untouched() {
+        let current = vec![ChatMessage::user("unrelated")];
+        let history = vec![ChatMessage::user("q")];
+        let out = with_hook_context(&current, history);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].content.as_deref(), Some("q"));
+    }
 }
 
 #[cfg(test)]
