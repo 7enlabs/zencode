@@ -124,7 +124,11 @@ pub fn coded_error(code: i32, message: impl Into<String>) -> anyhow::Error {
 /// a [`CodedError`] keeps the code it picked at the source; an
 /// auth-shaped failure maps to AUTH (queue Q2: provider 401s and
 /// missing credentials surface as anyhow errors from the agent layer);
-/// everything else stays at the blanket GENERAL fallback.
+/// provider status shapes map to their table codes (429 rate limit,
+/// 403 forbidden, 404 not found - the agent client formats provider
+/// failures as `HTTP <status>: <body>`, and the review path already
+/// splits 429 out the same way); everything else stays at the blanket
+/// GENERAL fallback.
 pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
     if let Some(coded) = err.downcast_ref::<CodedError>() {
         return coded.code();
@@ -137,6 +141,19 @@ pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
         || text.contains("authentication failed")
     {
         return exit_code::AUTH;
+    }
+    if text.contains("429")
+        || text.contains("rate limit")
+        || text.contains("rate_limit")
+        || text.contains("too many requests")
+    {
+        return exit_code::RATE_LIMIT;
+    }
+    if text.contains("403") || text.contains("forbidden") {
+        return exit_code::FORBIDDEN;
+    }
+    if text.contains("404") || text.contains("not found") {
+        return exit_code::NOT_FOUND;
     }
     exit_code::GENERAL
 }
@@ -765,6 +782,49 @@ fn read_stdin() -> Result<String> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn exit_code_maps_provider_status_shapes() {
+        // Provider failures surface from the agent layer as anyhow errors
+        // whose text is "HTTP <status>: <body>" (zen-agent client).
+        let err = anyhow::anyhow!("HTTP 429: rate_limit_exceeded");
+        assert_eq!(exit_code_for_error(&err), exit_code::RATE_LIMIT);
+        let err = anyhow::anyhow!("HTTP 403: insufficient permissions");
+        assert_eq!(exit_code_for_error(&err), exit_code::FORBIDDEN);
+        let err = anyhow::anyhow!("HTTP 404: model not found");
+        assert_eq!(exit_code_for_error(&err), exit_code::NOT_FOUND);
+        let err = anyhow::anyhow!("HTTP 401: bad key");
+        assert_eq!(exit_code_for_error(&err), exit_code::AUTH);
+        let err = anyhow::anyhow!("something else broke");
+        assert_eq!(exit_code_for_error(&err), exit_code::GENERAL);
+    }
+
+    #[test]
+    fn exit_code_maps_each_rate_limit_and_not_found_signal_alone() {
+        // Each `||` arm must fire on its own signal: a 429-shaped error
+        // that only says "429", only "rate limit", only "rate_limit" or
+        // only "too many requests" is still a rate limit, and a 404-shaped
+        // error that only says "404" or only "not found" is still not-found.
+        for (text, want) in [
+            ("HTTP 429: slow down", exit_code::RATE_LIMIT),
+            ("Rate limit exceeded, retry later", exit_code::RATE_LIMIT),
+            ("rate_limit_exceeded", exit_code::RATE_LIMIT),
+            ("too many requests, slow down", exit_code::RATE_LIMIT),
+            ("HTTP 404: gone", exit_code::NOT_FOUND),
+            ("model not found", exit_code::NOT_FOUND),
+        ] {
+            let err = anyhow::anyhow!(text);
+            assert_eq!(exit_code_for_error(&err), want, "for {text:?}");
+        }
+    }
+
+    #[test]
+    fn exit_code_coded_error_wins_over_text_shapes() {
+        // A CodedError keeps its source-picked code even when its message
+        // happens to contain a status-shaped substring.
+        let err = coded_error(exit_code::VALIDATION, "HTTP 429 shaped but coded");
+        assert_eq!(exit_code_for_error(&err), exit_code::VALIDATION);
+    }
 
     #[test]
     fn resolve_session_generates_id_and_path() {

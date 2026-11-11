@@ -24,10 +24,10 @@ here instead of being changed silently in unrelated patches.
 | 0 | success | all subcommands |
 | 1 | blanket fallback error from main (anyhow), eval below pass rate, ci-fix failing checks, models --best with no working model, review provider failures, review verdict at/above --fail-on | crates/zen-cli/src/main.rs, lib.rs, models.rs, review.rs |
 | 2 | auth: review with no API key configured; auth-shaped failures from the agent layer (401, unauthorized) mapped in main | review.rs, lib.rs `exit_code_for_error` |
-| 3 | not found: import of a missing file; unknown tool in tool-help; unknown session id in sessions archive/restore/delete; review against a missing ref | lib.rs, session_mgmt.rs, review.rs |
+| 3 | not found: import of a missing file; unknown tool in tool-help; unknown session id in sessions archive/restore/delete; review against a missing ref; agent-layer provider failures reporting 404, mapped in main | lib.rs, session_mgmt.rs, review.rs |
 | 4 | validation: clap usage errors; unrecognized top-level command; --min-pass-rate out of range; review outside a git repository; unparseable model output in review; invalid review scope arguments (--base together with --commit, empty ref or sha); invalid skill name | main.rs, lib.rs, review.rs, skills.rs |
-| 5 | forbidden: deleting a session without --yes on non-interactive stdin; installing a skill without --yes; evaluating a non-free model | session_mgmt.rs, skills.rs, eval.rs |
-| 6 | rate limit: review provider failures where the provider reports a rate limit (429) | review.rs |
+| 5 | forbidden: deleting a session without --yes on non-interactive stdin; installing a skill without --yes; evaluating a non-free model; agent-layer provider failures reporting 403, mapped in main | session_mgmt.rs, skills.rs, eval.rs, lib.rs |
+| 6 | rate limit: review provider failures where the provider reports a rate limit (429); agent-layer provider failures reporting 429, mapped in main | review.rs, lib.rs |
 | 7 | conflict: archiving a session that is already archived; restoring a session that is not archived or whose active copy already exists; creating a skill that already exists | session_mgmt.rs, skills.rs |
 | 130 | interrupted by SIGINT in the REPL | repl.rs |
 
@@ -56,6 +56,14 @@ Landed 2026-11-05 (all five items, each with tests):
   paths pick their table code at the source via `CodedError`
   (`zen_cli::coded_error`); `exit_code_for_error` in lib.rs is the
   single place main consults.
+
+Landed 2026-11-11 (bug hunt B P2-5, with tests):
+
+- The agent/headless path now maps provider status shapes in
+  `exit_code_for_error`: 429 to rate limit (6), 403 to forbidden (5),
+  404 to not found (3), instead of the blanket 1. Previously only the
+  review path split 429 out; scripts driving `zen -p` could not tell a
+  rate limit from a general failure.
 
 Do not renumber in a patch that is not about exit codes; land each
 queue item with its own tests.
