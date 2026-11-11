@@ -96,10 +96,26 @@ async fn check_with_prompt(
     })
     .await
     .expect("timed out");
+    // On macOS the temp dir lives under /var, a symlink to /private/var,
+    // and the child reports its cwd canonicalised, so the plain temp path
+    // never matches and "/private" leaks into the output. Replace the
+    // canonicalised paths first (they are longer and must win).
+    let cwd_canon = cwd
+        .path()
+        .canonicalize()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let home_canon = home
+        .path()
+        .canonicalize()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     let got = normalise(
         &stdout,
         &[
+            (cwd_canon, "<cwd>"),
             (cwd.path().display().to_string(), "<cwd>"),
+            (home_canon, "<home>"),
             (home.path().display().to_string(), "<home>"),
             (addr, "<mock>"),
         ],
