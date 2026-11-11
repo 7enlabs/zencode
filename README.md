@@ -55,12 +55,15 @@ the binary to `~/.local/bin/zen` on Linux and macOS, or
 `%USERPROFILE%\.local\bin\zen.exe` on Windows. No sudo or administrator
 rights are needed. Inspect the script before running it if you want to.
 
-Update an installed binary with:
+Update a source install with:
 
 ```sh
 zen update          # fetch, rebuild, and replace the binary you are running
 zen update --check  # only report whether an update is available
 ```
+
+Installed the prebuilt binary instead? Re-run the one-command
+install above to get the newest release build.
 
 Full install, update, uninstall, and troubleshooting details:
 [`INSTALL.md`](INSTALL.md).

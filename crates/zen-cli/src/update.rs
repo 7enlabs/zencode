@@ -116,7 +116,7 @@ pub fn run_update(
     };
     let git = "git";
     if Command::new(git).arg("--version").output().is_err() {
-        anyhow::bail!("git not found; install Git first, then rerun zen update");
+        anyhow::bail!("git not found; zen update works on a source checkout and needs Git - install Git first, then rerun. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead");
     }
 
     if !src_dir.join(".git").is_dir() {
@@ -228,7 +228,7 @@ pub fn run_update(
     }
 
     let Some(cargo) = find_cargo(home) else {
-        anyhow::bail!("cargo not found; install Rust first, for example from https://rustup.rs");
+        anyhow::bail!("cargo not found; zen update rebuilds from source and needs a Rust toolchain - install Rust first, for example from https://rustup.rs. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead");
     };
     if !quiet && !json {
         println!("Building zen-cli in release mode (this can take a few minutes)");
