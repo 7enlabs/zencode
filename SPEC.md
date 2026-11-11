@@ -1,5 +1,7 @@
 # ZenCode - Behavioral Specification (clean-room)
 
+By 7EN Labs. Last updated: 2026-11-11.
+
 Status: v1 (2026-10-14). Sources: public docs at code.claude.com/docs (headless, settings, hooks, cli-reference pages),
 `claude --help` output (saved in `claude-help.txt`), and black-box observation via REA on Railway (see Appendix A).
 No vendor source, system prompt, or tool description text was read or copied. All wording is original.
