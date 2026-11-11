@@ -24,6 +24,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      installer: ${{ steps.filter.outputs.installer }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
@@ -36,6 +37,9 @@ jobs:
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
               - '.github/workflows/windows-test.yml'
+            installer:
+              - 'install.ps1'
+              - 'scripts/check_install_hash.py'
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -50,7 +54,25 @@ jobs:
         run: python3 scripts/arch_lint.py
       - name: Self-test the architectural lint
         run: python3 -m unittest scripts/test_arch_lint.py
+      - name: Self-test the install hash checker
+        run: python3 -m unittest scripts/test_check_install_hash.py
       - run: cargo test --workspace
+  install-hash:
+    # Provenance gate for install.ps1 (bug hunt P1-2): the SHA-256 pinned
+    # in install.ps1 must match the zen.exe inside the live release asset.
+    # Runs only when the installer or this checker changes.
+    if: ${{ needs.changes.outputs.installer == 'true' }}
+    needs: [changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify install.ps1 pinned SHA-256 against the live release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_install_hash.py
   eval:
     # Deterministic eval gate (B7.1): the scripted mock solver needs no API key
     # and no network, so it runs on every PR including forks. Fails when any

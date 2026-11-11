@@ -18,6 +18,8 @@
   SHA-256 of the zen.exe inside it. Pass -Url and -Sha256 together to
   install a different build, or -File to install from a local copy
   (a zen.exe, or the release .zip that contains one).
+  Provenance: CI re-checks the pinned hash against the live release
+  asset whenever install.ps1 changes (scripts/check_install_hash.py).
 
   Install location: %LOCALAPPDATA%\Programs\ZenCode (override with
   -InstallDir). The folder is added to the user PATH when missing.
