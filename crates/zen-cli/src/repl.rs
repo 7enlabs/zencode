@@ -2207,9 +2207,31 @@ fn save_model_choice(
     )
 }
 
+/// Env vars outrank the settings file on the next run, so a saved
+/// /model choice is shadowed while one of them is set - the
+/// confirmation must say so instead of promising persistence the
+/// next run will not honor (bug hunt A B6).
+pub(crate) fn env_shadow_note() -> Option<String> {
+    let shadowed: Vec<&str> = ["ZEN_MODEL", "ZEN_BASE_URL"]
+        .into_iter()
+        .filter(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
+        .collect();
+    if shadowed.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "; note: {} will override this on the next run",
+            shadowed.join(" and ")
+        ))
+    }
+}
+
 fn report_model_switch(cwd: &Path, auto: bool, model: &str, base_url: &str, msg: &str) {
     match save_model_choice(cwd, auto, model, base_url) {
-        Ok(path) => println!("{msg} (saved to {})", path.display()),
+        Ok(path) => {
+            let note = env_shadow_note().unwrap_or_default();
+            println!("{msg} (saved to {}{note})", path.display())
+        }
         Err(e) => eprintln!("{msg} (could not save model choice: {e})"),
     }
 }
@@ -3190,6 +3212,34 @@ mod model_picker_tests {
             Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
             None => std::env::remove_var("OPENROUTER_API_KEY"),
         }
+        match old_model {
+            Some(v) => std::env::set_var("ZEN_MODEL", v),
+            None => std::env::remove_var("ZEN_MODEL"),
+        }
+        match old_base {
+            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
+            None => std::env::remove_var("ZEN_BASE_URL"),
+        }
+    }
+
+    #[test]
+    fn env_shadow_note_names_the_shadowing_vars() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_model = std::env::var("ZEN_MODEL").ok();
+        let old_base = std::env::var("ZEN_BASE_URL").ok();
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        assert!(env_shadow_note().is_none());
+        std::env::set_var("ZEN_MODEL", "env-pinned");
+        let note = env_shadow_note().expect("ZEN_MODEL shadows the saved model");
+        assert!(note.contains("ZEN_MODEL"), "{note}");
+        assert!(!note.contains("ZEN_BASE_URL"), "{note}");
+        std::env::set_var("ZEN_BASE_URL", "https://env.example/v1");
+        let note = env_shadow_note().expect("both vars shadow");
+        assert!(
+            note.contains("ZEN_MODEL") && note.contains("ZEN_BASE_URL"),
+            "{note}"
+        );
         match old_model {
             Some(v) => std::env::set_var("ZEN_MODEL", v),
             None => std::env::remove_var("ZEN_MODEL"),
