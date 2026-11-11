@@ -177,7 +177,11 @@ fn p0_4_key_body_parsing_and_exhausted_marker() {
 #[tokio::test]
 async fn p0_4_chat_never_calls_the_key_endpoint() {
     let (base, served, seen) = fake_server(vec![answer(200, "", OK_BODY)]).await;
-    let c = OpenAiClient::new(base, None, Arc::new(CollectSink::default()));
+    let mut c = OpenAiClient::new(base, None, Arc::new(CollectSink::default()));
+    // Retry timing is irrelevant here; keep the delay tiny so a mutant
+    // that turns a good 200 into a transient failure fails fast instead
+    // of burning the whole retry backoff.
+    c.base_retry_delay_ms = 1;
     c.chat(req()).await.unwrap();
     assert_eq!(served.load(Ordering::SeqCst), 1);
     assert!(seen.lock().unwrap().iter().all(|r| !r.contains("/key")));

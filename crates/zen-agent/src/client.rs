@@ -1118,6 +1118,17 @@ mod tests {
     }
 
     #[test]
+    fn first_json_value_returns_the_parsed_value() {
+        // Replacing this function with Some(Default::default()) must fail
+        // here, fast, instead of surfacing as slow retry loops in the
+        // client tests (mutants job timed out on this mutant).
+        assert_eq!(first_json_value(r#"{"a":1}"#), Some(json!({"a": 1})));
+        assert_eq!(first_json_value("not json"), None);
+        assert_eq!(first_json_value(""), None);
+        assert_eq!(first_json_value("\u{feff}{\"a\":1}"), Some(json!({"a": 1})));
+    }
+
+    #[test]
     fn server_retry_hint_tolerates_trailing_content() {
         let trailing = json!({"id": "gen-N"}).to_string();
         let body = r#"{"error":{"message":"slow down","retry_after_seconds":23}}"#;
