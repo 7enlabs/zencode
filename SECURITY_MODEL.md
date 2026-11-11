@@ -52,7 +52,7 @@ or enforced; a control with no such pointer is listed under open questions, not 
 | Atomic file writes | writes go through a temp file and rename | `crates/zen-tools/src/atomic.rs` |
 | Account-safety pacing | backoff, no retry on billing errors, versioned User-Agent | `docs/account-safety.md` |
 | CI: dependency scans | `cargo audit` (RustSec), OSV-Scanner, `cargo deny` | `.github/workflows/ci.yml`, `deny.toml` |
-| CI: secret scan | gitleaks full history, redacted report, reviewed baseline in `.gitleaksignore`; the gitleaks binary itself is downloaded without a sha256 check (open question 8) | `.github/workflows/ci.yml`, `.gitleaks.toml` |
+| CI: secret scan | gitleaks full history, redacted report, reviewed baseline in `.gitleaksignore`; the gitleaks binary is pinned by sha256 in the workflow and verified on download | `.github/workflows/ci.yml`, `.gitleaks.toml` |
 | Locked builds (partial) | `--locked` is used only on the eval run (`cargo run --locked`) and on `cargo install cargo-zigbuild --locked`; fmt, clippy, test and the release build steps do not pass it, so they do not enforce `Cargo.lock` | `.github/workflows/ci.yml` |
 | Human gate for sensitive files | workflows, installer and release scripts, permissions, secrets, auto-update, new network hosts need a person | REVIEW.md |
 
@@ -75,9 +75,9 @@ Checked against `main` at 647fcc0.
    roadmap item.
 2. Install source is unpinned. `install.sh` builds the tip of `main` by default (`ZENCODE_BRANCH`),
    and `zen update` rebuilds from source. There is no tag, commit or checksum check.
-3. No binary releases yet, so no SHA256SUMS and no signature to verify. The release checklist
-   requirement (SHA256SUMS per artifact) is in PR #46, not merged yet; it does not exist on `main`
-   647fcc0. Link to CONTRIBUTING.md once #46 lands.
+3. Binary release v0.1.0 exists (published 2026-11-10) and the Windows installer verifies
+   the downloaded binary by SHA-256 (the default hash is pinned in `install.ps1`). There is
+   still no SHA256SUMS file per artifact and no code signature to verify.
 4. No OS-level sandbox for the Bash tool. Verified: `crates/zen-tools` and `crates/zen-agent` contain no
    bubblewrap, bwrap, unshare, namespace, seatbelt, pledge, landlock or seccomp. Bash runs with the user's
    privileges, gated only by the permission layer. Known limit; follow-up is a separate work item, owner to be named by Leader.
