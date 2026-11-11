@@ -57,6 +57,7 @@ fn open_transcript_append(path: &Path) -> std::io::Result<std::fs::File> {
 /// Create a project directory, restricting it to owner-only (0700) on Unix
 /// when it is newly created. Existing directories keep their permissions.
 fn create_project_dir(proj: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
     let existed = proj.exists();
     std::fs::create_dir_all(proj)?;
     #[cfg(unix)]
