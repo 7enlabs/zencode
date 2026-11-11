@@ -40,5 +40,5 @@ jobs:
           configurationFile: renovate-pilot/config.js
           token: ${{ secrets.RENOVATE_TOKEN }}
         env:
-          RENOVATE_DRY_RUN: ${{ inputs.dryRun || 'full' }}
+          RENOVATE_DRY_RUN: ${{ inputs.dryRun || 'false' }}
           LOG_LEVEL: info
