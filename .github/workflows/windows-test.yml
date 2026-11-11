@@ -28,6 +28,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      powershell: ${{ steps.filter.outputs.powershell }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
@@ -39,6 +40,10 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/windows-test.yml'
+            powershell:
+              - 'install.ps1'
+              - 'msix/build-msix.ps1'
               - '.github/workflows/windows-test.yml'
   windows-check:
     needs: changes
@@ -53,3 +58,46 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+  powershell-parse:
+    # The two PowerShell scripts are user-facing entry points (the
+    # one-command install and the MSIX packaging) but had no CI
+    # validation at all: a syntax error would stay green here and
+    # only fail on the next Windows user's machine (bug hunt D P2-4).
+    needs: changes
+    if: ${{ needs.changes.outputs.powershell == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($f in @('install.ps1', 'msix/build-msix.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $f), [ref]$tokens, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              foreach ($e in $errors) {
+                Write-Host "::error file=$f,line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            } else {
+              Write-Host "$f parses cleanly"
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: PSScriptAnalyzer (errors only, when available)
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+            Write-Host 'PSScriptAnalyzer is not on this runner image; skipping'
+            return
+          }
+          $issues = Invoke-ScriptAnalyzer -Path 'install.ps1', 'msix/build-msix.ps1' -Severity Error
+          if ($issues) {
+            $issues | Format-Table -AutoSize | Out-String | Write-Host
+            exit 1
+          }
+          Write-Host 'PSScriptAnalyzer: no errors'
