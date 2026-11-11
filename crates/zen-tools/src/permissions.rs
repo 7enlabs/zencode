@@ -1229,7 +1229,7 @@ mod permission_tests {
         // targets canonicalize to the long name (runneradmin), so deny
         // rules built from the raw cwd never matched.
         use std::os::windows::ffi::OsStrExt;
-        extern "system" {
+        unsafe extern "system" {
             fn GetShortPathNameW(long: *const u16, short: *mut u16, len: u32) -> u32;
         }
         let dir = tmpdir("short83");
