@@ -1,4 +1,5 @@
 use crate::cli::{Cli, OutputFormat};
+use crate::exit_code_for_headless_result;
 use crate::commands;
 use crate::output::{Buffered, StreamJsonSink, print_result};
 use crate::settings::ResolvedConfig;
@@ -1095,7 +1096,7 @@ pub(crate) async fn run_agent_with_result(
         }
     }
 
-    Ok((if result.is_error { 1 } else { 0 }, result))
+    Ok((exit_code_for_headless_result(result.is_error, &result.result), result))
 }
 
 #[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred

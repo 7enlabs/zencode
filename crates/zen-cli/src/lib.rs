@@ -158,6 +158,59 @@ pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
     exit_code::GENERAL
 }
 
+/// Map an HTTP status to its B2 table code (target table,
+/// docs/exit-codes.md): 401 auth, 403 forbidden, 404 not found,
+/// 409 conflict, 429 rate limit; anything else, including 5xx,
+/// is general.
+pub fn exit_code_for_http_status(status: u16) -> i32 {
+    match status {
+        401 => exit_code::AUTH,
+        403 => exit_code::FORBIDDEN,
+        404 => exit_code::NOT_FOUND,
+        409 => exit_code::CONFLICT,
+        429 => exit_code::RATE_LIMIT,
+        _ => exit_code::GENERAL,
+    }
+}
+
+/// Find the first `HTTP <status>` shape in free text, if any. The
+/// agent client formats provider failures as `HTTP <status>: <body>`
+/// (zen-agent client), and that text can carry a request id or extra
+/// context around it, so match the shape anywhere instead of assuming
+/// it is a prefix. Only a three-digit status counts, so a bare
+/// number or a longer run of digits never matches.
+pub fn http_status_in_text(text: &str) -> Option<u16> {
+    let lower = text.to_lowercase();
+    let mut rest = lower.as_str();
+    while let Some(idx) = rest.find("http ") {
+        let after = &rest[idx + "http ".len()..];
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.len() == 3
+            && let Ok(status) = digits.parse::<u16>()
+        {
+            return Some(status);
+        }
+        rest = after;
+    }
+    None
+}
+
+/// Exit code for a finished headless (`-p`) turn (issue #165): the
+/// agent reports provider failures as a `result/error_during_execution`
+/// event whose text is `HTTP <status>: ...` instead of propagating an
+/// error, so `exit_code_for_error` never sees them. Map the status
+/// from the result text to the B2 table; an error without an HTTP
+/// status keeps the blanket general code, and a successful turn
+/// stays 0.
+pub fn exit_code_for_headless_result(is_error: bool, result_text: &str) -> i32 {
+    if !is_error {
+        return exit_code::OK;
+    }
+    http_status_in_text(result_text)
+        .map(exit_code_for_http_status)
+        .unwrap_or(exit_code::GENERAL)
+}
+
 pub async fn run(cli: Cli) -> Result<i32> {
     let cwd = std::env::current_dir()?;
     let home = resolve_home();
