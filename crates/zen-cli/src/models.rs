@@ -120,6 +120,10 @@ pub fn provider_base_url(provider: &str) -> Option<&'static str> {
 /// no known provider, so catalog filtering must not exclude anything
 /// there (catalog by real provider).
 pub fn provider_for_base_url(base_url: &str) -> Option<&'static str> {
+    // A hand-set base URL often arrives with a trailing slash or
+    // stray whitespace (copy-paste); normalize before comparing so
+    // the provider is still recognized (bug hunt C F4).
+    let base_url = base_url.trim().trim_end_matches('/');
     if base_url == crate::settings::DEFAULT_BASE_URL {
         Some("experientiallabs")
     } else if base_url == OPENROUTER_BASE_URL {

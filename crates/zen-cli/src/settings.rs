@@ -301,18 +301,25 @@ fn resolve_model(cli: &Cli, settings_model: Option<&str>) -> String {
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
 }
 
+/// Canonicalize a base URL from any source: trim stray whitespace
+/// and trailing slashes, so `https://openrouter.ai/api/v1/` and the
+/// bare constant are the same URL everywhere (bug hunt C F4).
+fn normalize_base_url(u: &str) -> String {
+    u.trim().trim_end_matches('/').to_string()
+}
+
 fn resolve_base_url(cli: &Cli, settings_url: Option<&str>) -> String {
     if let Some(u) = &cli.base_url {
-        return u.clone();
+        return normalize_base_url(u);
     }
     if let Ok(v) = std::env::var("ZEN_BASE_URL") {
-        if !v.is_empty() {
-            return v;
+        if !v.trim().is_empty() {
+            return normalize_base_url(&v);
         }
     }
     settings_url
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+        .filter(|s| !s.trim().is_empty())
+        .map(normalize_base_url)
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
 }
 
@@ -848,6 +855,46 @@ mod tests {
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
         assert_eq!(cfg.max_turns, DEFAULT_MAX_TURNS);
         assert_eq!(cfg.permission_mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn base_url_is_normalized_from_every_source() {
+        let _env = env_lock();
+        let mut cli = base_cli();
+        cli.base_url = Some(" https://openrouter.ai/api/v1/ ".to_string());
+        assert_eq!(
+            resolve_base_url(&cli, None),
+            crate::models::OPENROUTER_BASE_URL
+        );
+        let cli = base_cli();
+        assert_eq!(
+            resolve_base_url(&cli, Some("https://openrouter.ai/api/v1//")),
+            crate::models::OPENROUTER_BASE_URL
+        );
+        let old = std::env::var("ZEN_BASE_URL").ok();
+        std::env::set_var("ZEN_BASE_URL", "https://openrouter.ai/api/v1/");
+        assert_eq!(
+            resolve_base_url(&cli, None),
+            crate::models::OPENROUTER_BASE_URL
+        );
+        match old {
+            Some(o) => std::env::set_var("ZEN_BASE_URL", o),
+            None => std::env::remove_var("ZEN_BASE_URL"),
+        }
+        // Provider recognition tolerates the same sloppiness, so
+        // callers holding an unnormalized URL still work.
+        assert_eq!(
+            crate::models::provider_for_base_url("https://openrouter.ai/api/v1/"),
+            Some("openrouter")
+        );
+        assert_eq!(
+            crate::models::provider_for_base_url(&format!("{DEFAULT_BASE_URL}/")),
+            Some("experientiallabs")
+        );
+        assert_eq!(
+            crate::models::provider_for_base_url("https://example.com/v1/"),
+            None
+        );
     }
 
     #[test]
