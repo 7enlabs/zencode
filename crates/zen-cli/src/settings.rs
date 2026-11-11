@@ -713,8 +713,7 @@ pub fn resolve_config_with_home(
                 ));
                 model.clone()
             }
-            (Some(_), Some(_)) => crate::models::gateway_model_id(&trimmed).to_string(),
-            _ => trimmed,
+            _ => crate::models::gateway_model_id(&trimmed).to_string(),
         }
     });
 
@@ -961,7 +960,11 @@ mod tests {
         let _env = env_lock();
         let old_m = std::env::var("ZEN_MODEL").ok();
         let old_b = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
+        // Main model deliberately differs from every btw candidate below,
+        // so a fallback to the main model is observable (the previous
+        // version used the default model, which coincided with the
+        // same-provider btw id and let the guard mutant survive).
+        std::env::set_var("ZEN_MODEL", "custom-main-model");
         std::env::remove_var("ZEN_BASE_URL");
         let home = std::env::temp_dir().join(format!("zen_cfg_btw_home_{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
@@ -980,7 +983,8 @@ mod tests {
         )
         .unwrap();
         let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
-        assert_eq!(cfg.btw_model.as_deref(), Some(cfg.model.as_str()));
+        assert_eq!(cfg.model, "custom-main-model");
+        assert_eq!(cfg.btw_model.as_deref(), Some("custom-main-model"));
         assert!(
             cfg.warnings.iter().any(|w| w.contains("btw model")),
             "cross-provider btw warning: {:?}",
@@ -996,11 +1000,33 @@ mod tests {
         .unwrap();
         let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
         assert_eq!(cfg.btw_model.as_deref(), Some("deepseek-v4.1-flash"));
+        assert!(
+            !cfg.warnings.iter().any(|w| w.contains("btw model")),
+            "same-provider btw must not warn: {:?}",
+            cfg.warnings
+        );
+
+        // Unknown id passes through trimmed, with no warning.
+        fs::write(
+            dir.join(".zen/settings.json"),
+            r#"{"btw":{"model":"  some-unknown-model  "}}"#,
+        )
+        .unwrap();
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        assert_eq!(cfg.btw_model.as_deref(), Some("some-unknown-model"));
+        assert!(
+            !cfg.warnings.iter().any(|w| w.contains("btw model")),
+            "unknown btw id must not warn: {:?}",
+            cfg.warnings
+        );
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&home);
-        if let Some(o) = old_m {
-            std::env::set_var("ZEN_MODEL", o);
+        match old_m {
+            Some(o) => std::env::set_var("ZEN_MODEL", o),
+            // The test sets ZEN_MODEL above; leave no trace when the
+            // caller had none, or later tests in this process inherit it.
+            None => std::env::remove_var("ZEN_MODEL"),
         }
         if let Some(o) = old_b {
             std::env::set_var("ZEN_BASE_URL", o);
