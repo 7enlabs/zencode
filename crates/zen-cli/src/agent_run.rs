@@ -2000,8 +2000,6 @@ mod slash_pin_tests {
 
 #[cfg(test)]
 mod descendants_tests {
-    use super::*;
-
     // A spawned child must show up as a descendant on every Unix
     // platform: the /proc walk this replaced was Linux-only and left
     // tool children alive on macOS (c8_9 signal tests, issue #112).
@@ -2013,7 +2011,7 @@ mod descendants_tests {
             .spawn()
             .expect("sleep for the descendants fixture");
         let pid = child.id();
-        let found = descendants_of(std::process::id());
+        let found = super::descendants_of(std::process::id());
         let _ = child.kill();
         let _ = child.wait();
         assert!(
