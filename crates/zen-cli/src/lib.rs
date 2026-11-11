@@ -418,7 +418,24 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 ));
             }
             let cfg = settings::resolve_config_with_home(cli, cwd, home)?;
-            let model = args.model.clone().unwrap_or_else(|| cfg.model.clone());
+            // Same validation as the configured model (issue #167):
+            // `eval --model` bypasses resolve_config, so a malformed
+            // id here would otherwise be POSTed verbatim. The
+            // configured model was already validated above; only the
+            // explicit override needs checking (trimmed, like --model).
+            let model = match &args.model {
+                Some(m) => {
+                    let m = m.trim();
+                    if let Some(reason) = crate::models::invalid_model_reason(m) {
+                        return Err(coded_error(
+                            exit_code::VALIDATION,
+                            crate::models::invalid_model_message(m, &reason),
+                        ));
+                    }
+                    m.to_string()
+                }
+                None => cfg.model.clone(),
+            };
             let opts = eval::EvalOptions {
                 model,
                 task_filter: args.task.clone(),

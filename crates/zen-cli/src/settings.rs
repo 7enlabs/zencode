@@ -693,6 +693,30 @@ pub fn resolve_config_with_home(
         );
     }
 
+    // Bug hunt R2, issue #167: a malformed model id used to be POSTed
+    // verbatim to /chat/completions and only fail at the provider (or
+    // after a full retry when the provider was unreachable). Reject it
+    // here, before any network call, as a validation error (exit 4).
+    // Format only, not a catalog allowlist: unknown ids are legitimate
+    // (any OpenRouter id, Ollama local model, custom gateway id), so
+    // only the shape is checked - see models::invalid_model_reason.
+    // This runs after Ollama routing, so the stripped bare id is what
+    // is checked, and after resolve_model, so a blank env/settings
+    // value still means "unset" (only an explicit --model "" below is
+    // an error, because it must not silently run the default model).
+    if cli.model.as_deref().is_some_and(|m| m.trim().is_empty()) {
+        return Err(crate::coded_error(
+            crate::exit_code::VALIDATION,
+            "invalid model '': --model needs a model id; omit the flag to use the default model",
+        ));
+    }
+    if let Some(reason) = crate::models::invalid_model_reason(&model) {
+        return Err(crate::coded_error(
+            crate::exit_code::VALIDATION,
+            crate::models::invalid_model_message(&model, &reason),
+        ));
+    }
+
     // The /btw side question runs on the main backend, which is
     // bound to this base URL's provider: a btw model written as a
     // catalog id must be translated like every other model, and a
@@ -1126,6 +1150,87 @@ mod tests {
         ]);
         let cfg = resolve_config(&cli, &dir).unwrap();
         assert_eq!(cfg.model, "cli-override");
+    }
+
+    // Bug hunt R2, issue #167: a malformed --model must fail in config
+    // resolution (exit 4, before any network call), and an explicit
+    // empty --model flag must fail instead of silently running the
+    // default model. A well-formed unknown id still resolves: there
+    // is no catalog allowlist.
+    #[test]
+    fn config_rejects_malformed_model_with_exit_4() {
+        let _env = env_lock();
+        let old_m = std::env::var("ZEN_MODEL").ok();
+        let old_b = std::env::var("ZEN_BASE_URL").ok();
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
+        let dir = std::env::temp_dir().join(format!("zen_cfg_badmodel_{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("zen_cfg_badmodel_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&home).unwrap();
+
+        let mut cli = base_cli();
+        cli.model = Some("bad model!!".into());
+        let err = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("invalid model 'bad model!!'"),
+            "{err:#}"
+        );
+        assert_eq!(
+            crate::exit_code_for_error(&err),
+            crate::exit_code::VALIDATION
+        );
+
+        let mut cli = base_cli();
+        cli.model = Some("".into());
+        let err = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap_err();
+        assert!(format!("{err:#}").contains("invalid model ''"), "{err:#}");
+        assert_eq!(
+            crate::exit_code_for_error(&err),
+            crate::exit_code::VALIDATION
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        if let Some(o) = old_m {
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
+        }
+        if let Some(o) = old_b {
+            unsafe { std::env::set_var("ZEN_BASE_URL", o) };
+        }
+    }
+
+    #[test]
+    fn config_accepts_wellformed_unknown_model() {
+        let _env = env_lock();
+        let old_m = std::env::var("ZEN_MODEL").ok();
+        let old_b = std::env::var("ZEN_BASE_URL").ok();
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
+        let dir = std::env::temp_dir().join(format!("zen_cfg_okmodel_{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("zen_cfg_okmodel_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&home).unwrap();
+
+        let mut cli = base_cli();
+        cli.model = Some("some-unknown-model".into());
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        assert_eq!(cfg.model, "some-unknown-model");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        if let Some(o) = old_m {
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
+        }
+        if let Some(o) = old_b {
+            unsafe { std::env::set_var("ZEN_BASE_URL", o) };
+        }
     }
 
     #[test]
