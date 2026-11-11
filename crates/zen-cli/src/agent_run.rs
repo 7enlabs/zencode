@@ -1273,25 +1273,26 @@ pub fn kill_new_descendants(keep: &[u32]) {
     }
 }
 
-/// Walk the process tree via /proc, so this only finds descendants on
-/// Linux: elsewhere the directory read fails and the result is empty,
-/// which makes descendant cleanup a no-op rather than an error.
+/// Walk the process tree via `ps`, which lists pid/ppid on Linux and
+/// macOS alike. The previous /proc walk only found descendants on
+/// Linux: on macOS /proc does not exist, the walk returned nothing,
+/// and SIGINT/SIGTERM cleanup left tool children (e.g. a backgrounded
+/// `sleep`) running - the three c8_9 signal tests failed there
+/// (issue #112). Where `ps` is absent the result is empty, which
+/// keeps descendant cleanup a no-op rather than an error.
 pub fn descendants_of(root: u32) -> Vec<u32> {
     let mut parent_of: Vec<(u32, u32)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir("/proc") {
-        for e in entries.flatten() {
-            let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-                continue;
-            };
-            let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) else {
-                continue;
-            };
-
-            let Some(after) = stat.rfind(')').map(|i| &stat[i + 1..]) else {
-                continue;
-            };
-            if let Some(ppid) = after.split_whitespace().nth(1).and_then(|p| p.parse().ok()) {
-                parent_of.push((pid, ppid));
+    if let Ok(out) = std::process::Command::new("ps")
+        .args(["-ax", "-o", "pid=", "-o", "ppid="])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let mut it = line.split_whitespace();
+            if let (Some(pid), Some(ppid)) = (it.next(), it.next()) {
+                if let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) {
+                    parent_of.push((pid, ppid));
+                }
             }
         }
     }
@@ -1994,5 +1995,29 @@ mod slash_pin_tests {
     fn none_without_a_command_or_model() {
         assert_eq!(slash_pin_model(&None), None);
         assert_eq!(slash_pin_model(&cmd(None)), None);
+    }
+}
+
+#[cfg(test)]
+mod descendants_tests {
+    // A spawned child must show up as a descendant on every Unix
+    // platform: the /proc walk this replaced was Linux-only and left
+    // tool children alive on macOS (c8_9 signal tests, issue #112).
+    #[test]
+    #[cfg(unix)]
+    fn descendants_of_finds_a_direct_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep for the descendants fixture");
+        let pid = child.id();
+        let found = super::descendants_of(std::process::id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            found.contains(&pid),
+            "sleep {pid} not among descendants of {}: {found:?}",
+            std::process::id()
+        );
     }
 }
