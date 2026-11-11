@@ -631,13 +631,16 @@ async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32>
     let system_prompt = build_system_prompt(cli, cwd, home)?;
 
     let mut prompt_parts: Vec<String> = Vec::new();
-    if cli.input_format == InputFormat::Text && !std::io::stdin().is_terminal() {
+    let arg_prompt = cli.prompt.join(" ").trim().to_string();
+    // Issue #164: only read piped stdin when no prompt argument is given.
+    // Previously read_stdin() blocked on EOF even when a prompt arg was present,
+    // causing `zen -p "prompt" < /dev/null` to hang when stdin was left open.
+    if arg_prompt.is_empty() && cli.input_format == InputFormat::Text && !std::io::stdin().is_terminal() {
         let s = read_stdin()?;
         if !s.is_empty() {
             prompt_parts.push(s);
         }
     }
-    let arg_prompt = cli.prompt.join(" ").trim().to_string();
     if !arg_prompt.is_empty() {
         prompt_parts.push(arg_prompt);
     }
