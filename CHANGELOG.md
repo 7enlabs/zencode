@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Microsoft Store packaging: `msix/` holds the MSIX manifest template
   (runFullTrust, `zen` execution alias), the asset checklist and the
-  makeappx build script. Identity values and logo assets are still
-  pending (Partner Center reservation, brand owner).
+  makeappx build script. The manifest identity is filled from the
+  Partner Center reservation (Name `7ENLabs.ZenCode`); only the logo
+  assets are still pending (brand owner).
 - Windows builds of `zen.exe` now embed VERSIONINFO metadata
   (FileVersion, ProductName, CompanyName) from `crates/zen-cli/build.rs`.
 
@@ -30,8 +31,8 @@ An older entry further below also carries the 0.1.0 label; it records the
 pre-release state as of 2026-10-17, when no v0.1.0 tag existed yet.
 
 ### Added
--  now groups the estimate into instructions, memory (ZEN.md / AGENTS.md text inside the system prompt), tool schemas and message history, with history split into conversation and tool calls/results. The groups add up to the printed total, and the line for the last API-reported prompt size shows how the estimate compares (B4.3).
--  runs the 10 built-in eval tasks against a scripted solver (no API key, no network) and  sets the exit threshold (default 0.5, unchanged). A new  CI job runs it at 100% on every PR, so a broken eval task, check or tool turns CI red (B7.1).
+- `zen context` now groups the estimate into instructions, memory (ZEN.md / AGENTS.md text inside the system prompt), tool schemas and message history, with history split into conversation and tool calls/results. The groups add up to the printed total, and the line for the last API-reported prompt size shows how the estimate compares (B4.3).
+- `zen eval --mock` runs the 10 built-in eval tasks against a scripted solver (no API key, no network) and `--min-pass-rate` sets the exit threshold (default 0.5, unchanged). A new `eval` CI job runs it at 100% on every PR, so a broken eval task, check or tool turns CI red (B7.1).
 - One-command install for Linux, macOS, and Windows (install.sh, install.ps1) with
   `zen update` and `zen update --check` (PR #4): clones the repo or fast-forwards an
   existing checkout, builds the CLI crate in release mode, copies `zen` (`zen.exe` on

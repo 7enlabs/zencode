@@ -7,14 +7,14 @@ resolved configuration, folder-trust state and environment, and most entries bel
 
 Remove an entry when it is fixed, and say so in the PR.
 
-## KI-1: No binary release, install builds from source
+## KI-1: install.sh builds from source (the Windows installer is prebuilt)
 
 - **Where:** `install.sh`, `install.ps1`, `zen update`.
 - **What you see:** `error: cargo not found.` or a build that takes several minutes.
 - **What is not affected:** a binary you already built keeps working; no sudo or administrator rights are used.
 - **Tip:** install Rust with rustup, then rerun the install command from the README.
-- **Why:** no binary releases exist yet. Because of that there is also no `SHA256SUMS.txt` and no signed binary to verify; the installer clones the repo and builds it.
-- **What to do:** install a Rust toolchain and rerun. When binary releases start, the release checklist in CONTRIBUTING.md requires checksums and a stated signing status.
+- **Why:** release v0.1.0 exists and the Windows installer downloads the prebuilt binary and verifies it by SHA-256, but `install.sh` (Linux/macOS) still clones the repo and builds from source, so it needs a Rust toolchain. There is no `SHA256SUMS.txt` file or signed binary yet.
+- **What to do:** on Windows, use `install.ps1` (prebuilt, no toolchain needed). On Linux/macOS, install a Rust toolchain and rerun, until `install.sh` gains a prebuilt path. The release checklist in CONTRIBUTING.md requires checksums and a stated signing status.
 
 ## KI-2: Project hooks, MCP servers or `permissions.allow` are ignored in headless runs
 
