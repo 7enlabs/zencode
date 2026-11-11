@@ -19,10 +19,6 @@ permissions:
   issues: write
   pull-requests: write
 
-concurrency:
-  group: pr-agent-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   pr_agent_job:
     if: ${{ github.event.sender.type != 'Bot' }}
