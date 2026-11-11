@@ -37,8 +37,19 @@ async fn c5_4_headless_builtins_answer_locally() {
 
     let (v, code) = run_p("pb1", &home, &cwd, &server, "/model other-model");
     assert_eq!(code, 0);
-    assert_eq!(v["result"], "Set model to other-model");
+    let result = v["result"].as_str().unwrap();
+    assert!(
+        result.starts_with("Set model to other-model (saved to "),
+        "{result}"
+    );
     assert_eq!(v["model"], "other-model");
+    // The switch is persisted like the REPL's /model: the next run
+    // (with local settings in its sources) starts on the new model.
+    let saved = std::fs::read_to_string(cwd.path().join(".zen/settings.local.json"))
+        .expect("headless /model must persist the choice");
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved["model"], "other-model");
+    assert!(saved["baseUrl"].as_str().is_some_and(|u| !u.is_empty()));
 
     let (v, code) = run_p("pb2", &home, &cwd, &server, "/model");
     assert_eq!(code, 0);
