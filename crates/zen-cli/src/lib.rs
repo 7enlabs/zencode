@@ -713,7 +713,7 @@ fn resolve_session(
 
     let persist = !cli.no_session_persistence && !cli.ephemeral;
 
-    let resumed: Option<std::path::PathBuf> = if let Some(h) = &home_path {
+    let mut resumed: Option<std::path::PathBuf> = if let Some(h) = &home_path {
         if let Some(r) = &cli.resume {
             if r.is_empty() {
                 None
@@ -736,6 +736,13 @@ fn resolve_session(
         }
         None
     };
+
+    // #163: --session-id naming an existing session resumes its history,
+    // like --resume. --resume/-c keep precedence when both are given.
+    // Unknown id starts a fresh session (no error).
+    if resumed.is_none() && home_path.is_some() && cli.session_id.is_some() {
+        resumed = session::find_session_path(home.unwrap(), cli.session_id.as_ref().unwrap());
+    }
 
     let session_id = if let Some(existing) = &resumed {
         if cli.fork_session {
