@@ -287,15 +287,26 @@ fn dedup_append<T: PartialEq + Clone>(target: &mut Vec<T>, source: &[T]) {
 }
 
 fn resolve_model(cli: &Cli, settings_model: Option<&str>) -> String {
+    // A model id with stray surrounding whitespace (the PR #74
+    // vector, fixed there only for `auto`) misses the catalog and
+    // is sent to the gateway verbatim, failing every request with
+    // an invalid-model error; a whitespace-only value is not a
+    // model at all. Trim every source and treat blank as unset
+    // (bug hunt C F5).
     if let Some(m) = &cli.model {
-        return m.clone();
+        let m = m.trim();
+        if !m.is_empty() {
+            return m.to_string();
+        }
     }
     if let Ok(v) = std::env::var("ZEN_MODEL") {
+        let v = v.trim();
         if !v.is_empty() {
-            return v;
+            return v.to_string();
         }
     }
     settings_model
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(String::from)
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
@@ -895,6 +906,31 @@ mod tests {
             crate::models::provider_for_base_url("https://example.com/v1/"),
             None
         );
+    }
+
+    #[test]
+    fn model_id_is_trimmed_and_blank_means_unset() {
+        let _env = env_lock();
+        let old = std::env::var("ZEN_MODEL").ok();
+        std::env::remove_var("ZEN_MODEL");
+        let mut cli = base_cli();
+        cli.model = Some("  padded-model  ".to_string());
+        assert_eq!(resolve_model(&cli, None), "padded-model");
+        let cli = base_cli();
+        std::env::set_var("ZEN_MODEL", " env-model ");
+        assert_eq!(resolve_model(&cli, Some("settings-model")), "env-model");
+        // A whitespace-only env value is unset, not a model named " ".
+        std::env::set_var("ZEN_MODEL", "   ");
+        assert_eq!(
+            resolve_model(&cli, Some("settings-model")),
+            "settings-model"
+        );
+        std::env::remove_var("ZEN_MODEL");
+        assert_eq!(resolve_model(&cli, Some("  ")), DEFAULT_MODEL);
+        match old {
+            Some(o) => std::env::set_var("ZEN_MODEL", o),
+            None => std::env::remove_var("ZEN_MODEL"),
+        }
     }
 
     #[test]
