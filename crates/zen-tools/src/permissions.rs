@@ -35,7 +35,14 @@ fn rule_pattern_path(cwd: &Path, spec: &str) -> (PathBuf, bool) {
     let dir_hint = spec.ends_with('/') || spec.ends_with("/**");
     let spec = spec.trim_end_matches("/**").trim_end_matches('/');
     if let Some(rest) = spec.strip_prefix("//") {
-        (PathBuf::from(format!("/{}", rest)), dir_hint)
+        // The target side is canonicalized (see path_rule_matches),
+        // so an absolute pattern must be too: on macOS /etc is a
+        // symlink to /private/etc, and //etc/hosts would never meet
+        // the canonical target /private/etc/hosts (issue #156).
+        (
+            canonicalize_lenient(&PathBuf::from(format!("/{}", rest))),
+            dir_hint,
+        )
     } else if let Some(rest) = spec.strip_prefix("~/") {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
         (home.join(rest), dir_hint)
@@ -1151,6 +1158,7 @@ mod permission_tests {
             &f("/etc/hosts"),
             &cwd
         ));
+
         assert!(!rule_matches(
             "Write(//etc/hosts)",
             "Write",
@@ -1169,6 +1177,26 @@ mod permission_tests {
             &f("src/x"),
             &cwd
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn absolute_rule_matches_through_a_symlinked_parent() {
+        // Issue #156: on macOS /etc is a symlink to /private/etc, so
+        // a //etc/hosts rule pattern must be canonicalized like the
+        // target side. Reproduce the mechanism with a symlinked temp
+        // dir (Linux has no /etc symlink).
+        let root = tmpdir("link");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("hosts"), "x").unwrap();
+        std::os::unix::fs::symlink(&real, root.join("link")).unwrap();
+        let cwd = PathBuf::from("/work/proj");
+        let f = |p: &str| json!({"file_path": p});
+        let rule = format!("Write(//{}/hosts)", root.join("link").display());
+        let candidate = format!("/{}/hosts", root.join("link").display());
+        assert!(rule_matches(&rule, "Write", &f(&candidate), &cwd));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
