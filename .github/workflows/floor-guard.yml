@@ -42,6 +42,7 @@ jobs:
       - name: Check the change against CONSTRAINTS.md
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
           FLOOR_GUARD_TASK_WARN_UNTIL: "2026-11-14"
         run: |
           ARGS=""
@@ -50,6 +51,10 @@ jobs:
           fi
           if [ -n "$BASE_SHA" ] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
             python3 scripts/floor_guard.py --base "$BASE_SHA" $ARGS
+          elif [ "$EVENT_NAME" = "push" ]; then
+            echo "::error title=floor-guard::base SHA '$BASE_SHA' could not be resolved on a push to main; refusing to degrade to ratchet-only checks"
+            exit 1
           else
+            echo "::warning title=floor-guard::no resolvable base SHA; running ratchet-only checks"
             python3 scripts/floor_guard.py $ARGS
           fi
