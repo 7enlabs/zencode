@@ -354,8 +354,16 @@ pub(crate) fn normalize_arguments(v: Option<Value>) -> String {
 /// Providers (observed OpenRouter 2026-11-10) may append a second JSON
 /// payload after the completion JSON; `serde_json::from_str` rejects that
 /// with "trailing characters". Same first-value approach as `parse_completion`.
+/// A UTF-8 byte order mark at the start of a response body is not
+/// part of the JSON document, but serde_json rejects it ("expected
+/// value at line 1 column 1"), which used to fail the whole request
+/// (bug hunt B P2-1). Strip it before parsing.
+fn strip_bom(body: &str) -> &str {
+    body.strip_prefix('\u{feff}').unwrap_or(body)
+}
+
 fn first_json_value(body: &str) -> Option<Value> {
-    serde_json::Deserializer::from_str(body)
+    serde_json::Deserializer::from_str(strip_bom(body))
         .into_iter::<Value>()
         .next()?
         .ok()
@@ -797,7 +805,7 @@ pub(crate) fn parse_completion(body: &str) -> anyhow::Result<ChatResponse> {
     // (observed 2026-11-10: leading blank lines + one completion JSON for
     // gen-1794290377-QQ8NMlUaKXWUfJ + a trailing second JSON). Parse only the
     // first JSON value and ignore whatever follows it.
-    let mut values = serde_json::Deserializer::from_str(body).into_iter::<WireResp>();
+    let mut values = serde_json::Deserializer::from_str(strip_bom(body)).into_iter::<WireResp>();
     let parsed: WireResp = match values.next() {
         Some(Ok(v)) => v,
         Some(Err(e)) => {
@@ -1078,6 +1086,35 @@ mod tests {
         })
         .to_string();
         assert_eq!(openai_cached_tokens(&format!("{body} {trailing}")), 1500);
+    }
+
+    #[test]
+    fn bom_prefixed_body_parses_like_the_plain_body() {
+        // Bug hunt B P2-1: a UTF-8 BOM before the JSON made
+        // parse_completion fail the whole request, and blinded the
+        // first_json_value helpers (transient, mid-response error and
+        // cached-token signals all read as absent).
+        let completion = json!({
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 2000,
+                "completion_tokens": 2,
+                "total_tokens": 2002,
+                "prompt_tokens_details": {"cached_tokens": 1500}
+            }
+        })
+        .to_string();
+        let body = format!("\u{feff}{completion}");
+        let r = parse_completion(&body).unwrap();
+        assert_eq!(r.message.content.as_deref(), Some("hi"));
+        assert_eq!(openai_cached_tokens(&body), 1500);
+        let empty = "\u{feff}{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[]},\"finish_reason\":\"stop\"}]}";
+        assert!(transient_completion(empty)
+            .unwrap()
+            .contains("empty message"));
+        let err_body = "\u{feff}{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":\"error\",\"error\":{\"message\":\"boom\",\"code\":500}}]}";
+        let e = mid_response_error(err_body).unwrap();
+        assert_eq!(e.code, Some(500));
     }
 
     #[test]
