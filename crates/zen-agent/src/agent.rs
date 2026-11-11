@@ -469,8 +469,9 @@ impl Agent {
                 && let Some(c) = &m.content
             {
                 if glue && !parts.is_empty() {
-                    let last = parts.last_mut().unwrap();
-                    last.insert_str(0, c);
+                    if let Some(last) = parts.last_mut() {
+                        last.insert_str(0, c);
+                    }
                 } else if !c.trim().is_empty() {
                     parts.push(c.clone());
                 }

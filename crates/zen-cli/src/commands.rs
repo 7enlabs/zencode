@@ -673,9 +673,10 @@ fn read_mcp_file(path: &Path) -> Value {
         .map(|v| v.is_object())
         .unwrap_or(false)
     {
-        root.as_object_mut()
-            .unwrap()
-            .insert("mcpServers".to_string(), Value::Object(Default::default()));
+        // `root` was coerced to an object above, so this always succeeds.
+        if let Some(obj) = root.as_object_mut() {
+            obj.insert("mcpServers".to_string(), Value::Object(Default::default()));
+        }
     }
     root
 }

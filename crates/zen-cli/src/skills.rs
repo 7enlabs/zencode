@@ -674,7 +674,10 @@ fn clone_skill_repo(url: &str, dest: &Path) -> Result<(String, Option<String>)> 
         }
     }
     if candidates.len() == 1 {
-        let skill_dir = candidates.pop().unwrap();
+        // Guarded by the length check above.
+        let skill_dir = candidates
+            .pop()
+            .expect("candidates holds exactly one entry");
         let name = skill_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())

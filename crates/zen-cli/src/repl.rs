@@ -2173,7 +2173,9 @@ fn save_local_settings(cwd: &Path, entries: &[(&str, &str)]) -> Result<std::path
             serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.into()));
         map.insert(key.to_string(), parsed);
     }
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    // `path` is `cwd/.zen/settings.local.json`, so its parent (`.zen`) always exists.
+    let parent = cwd.join(".zen");
+    std::fs::create_dir_all(&parent)?;
     // Write a sibling temp file and rename it over the live path -
     // the atomic pattern models::save_cache already uses. A crash
     // mid-write or a second session saving at the same moment can no
@@ -2184,7 +2186,7 @@ fn save_local_settings(cwd: &Path, entries: &[(&str, &str)]) -> Result<std::path
     // threads or processes - never share one temp file.
     static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = path.parent().unwrap().join(format!(
+    let tmp = parent.join(format!(
         "settings.local.json.{}-{}.tmp",
         std::process::id(),
         seq

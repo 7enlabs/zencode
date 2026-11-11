@@ -343,8 +343,8 @@ fn analyze(parsed: &ParsedSession) -> ContextAnalysis {
             {
                 let names: Vec<String> = m
                     .tool_calls
-                    .as_ref()
-                    .unwrap()
+                    .as_deref()
+                    .unwrap_or_default()
                     .iter()
                     .map(|c| tool_call_label(&c.function.name, &c.function.arguments))
                     .collect();

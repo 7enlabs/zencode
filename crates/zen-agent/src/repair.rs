@@ -399,7 +399,8 @@ fn coerce_object(
             continue;
         }
         if let Some(target) = near_miss_key(&key, props, obj) {
-            let v = obj.remove(&key).unwrap();
+            // `key` comes from `obj` itself, so the remove always yields a value.
+            let Some(v) = obj.remove(&key) else { continue };
             notes.push(format!("renamed field '{}{}' to '{}'", path, key, target));
             obj.insert(target, v);
         } else if closed {

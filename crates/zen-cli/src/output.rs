@@ -45,7 +45,8 @@ impl Buffered {
 
             let _ = so.write_all(bytes).and_then(|_| so.flush());
         } else {
-            g.write_all(bytes).unwrap();
+            // Writing to an in-memory Vec cannot fail.
+            let _ = g.write_all(bytes);
         }
     }
 }
@@ -314,7 +315,10 @@ impl StreamJsonSink {
         if let Some(obj) = line.as_object_mut() {
             obj.insert("v".into(), json!(STREAM_JSON_VERSION));
         }
-        self.buf.write_line(&serde_json::to_string(&line).unwrap());
+        // Serializing a JSON Value cannot fail: Value holds no non-finite floats.
+        self.buf.write_line(
+            &serde_json::to_string(&line).expect("serializing a JSON Value cannot fail"),
+        );
     }
 }
 
