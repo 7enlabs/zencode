@@ -55,7 +55,7 @@ else
 fi
 
 echo "Building zen-cli in release mode (this can take a few minutes)"
-"$CARGO" build --release -p zen-cli --manifest-path "$SRC_DIR/Cargo.toml"
+"$CARGO" build --release --locked -p zen-cli --manifest-path "$SRC_DIR/Cargo.toml"
 
 BIN="$SRC_DIR/target/release/zen"
 if [ ! -x "$BIN" ]; then
