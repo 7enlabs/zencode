@@ -3,7 +3,7 @@
 mod common;
 
 use common::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc;
 use std::time::Duration;

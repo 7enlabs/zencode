@@ -608,7 +608,7 @@ where
             return Err(SecretError::new(
                 exit_code::GENERAL,
                 format!("cannot read {}: {e}", path.display()),
-            ))
+            ));
         }
     };
     let mut out = Vec::new();
@@ -1731,10 +1731,10 @@ pub fn redact_text(text: &str, pairs: &[(&str, &str)]) -> String {
 pub fn redact_with_env(text: &str, names: &[String]) -> String {
     let mut owned: Vec<(String, String)> = Vec::new();
     for name in names {
-        if let Ok(value) = std::env::var(name) {
-            if !value.is_empty() {
-                owned.push((name.clone(), value));
-            }
+        if let Ok(value) = std::env::var(name)
+            && !value.is_empty()
+        {
+            owned.push((name.clone(), value));
         }
     }
     let refs: Vec<(&str, &str)> = owned
@@ -1835,10 +1835,10 @@ mod tests {
             store.requests_path(),
             store.audit_path(),
         ] {
-            if let Ok(data) = std::fs::read_to_string(path) {
-                if secret_shaped_pattern(&data).is_some() {
-                    return true;
-                }
+            if let Ok(data) = std::fs::read_to_string(path)
+                && secret_shaped_pattern(&data).is_some()
+            {
+                return true;
             }
         }
         false
@@ -2264,10 +2264,12 @@ mod tests {
         // A request for a near-miss name never exists: it was refused
         // at filing (see unknown_and_typo_names_fail_closed), so no
         // approval or issuance can cite it.
-        assert!(load_requests(&store)
-            .unwrap()
-            .iter()
-            .all(|r| r.name == "OPENROUTER_KEY"));
+        assert!(
+            load_requests(&store)
+                .unwrap()
+                .iter()
+                .all(|r| r.name == "OPENROUTER_KEY")
+        );
     }
 
     #[test]

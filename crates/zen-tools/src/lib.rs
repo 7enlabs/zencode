@@ -18,9 +18,9 @@ mod tests_p0;
 mod tests_p0b;
 
 pub use builtin::{
-    builtin_tools, canonicalize_lenient, expand_tilde, html_to_text, render_todos, resolve_path,
-    search_builtin, spill_output, truncate_middle, BashTool, EditTool, GlobTool, GrepTool,
-    MultiEditTool, ReadTool, TodoWriteTool, WebFetchTool, WriteTool,
+    BashTool, EditTool, GlobTool, GrepTool, MultiEditTool, ReadTool, TodoWriteTool, WebFetchTool,
+    WriteTool, builtin_tools, canonicalize_lenient, expand_tilde, html_to_text, render_todos,
+    resolve_path, search_builtin, spill_output, truncate_middle,
 };
 pub use jobs::{JobKillTool, JobOutputTool};
 pub use tool_docs::tool_long_docs;
@@ -33,6 +33,6 @@ pub fn job_tools() -> Vec<std::sync::Arc<dyn zen_core::Tool>> {
 }
 
 pub use permissions::{
-    dedup, persist_allow_rule, rule_matches, rule_removes_tool, split_compound, suggested_rule,
-    suggested_rules, tool_is_read_only, RulePermissions,
+    RulePermissions, dedup, persist_allow_rule, rule_matches, rule_removes_tool, split_compound,
+    suggested_rule, suggested_rules, tool_is_read_only,
 };

@@ -1,12 +1,12 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use zen_core::{Tool, ToolContext, ToolOutput};
 
 use crate::config::McpServerConfig;
-use crate::transport::{handshake, RemoteTool, Transport};
+use crate::transport::{RemoteTool, Transport, handshake};
 
 pub const MCP_MAX_CHARS: usize = zen_tools::builtin::BASH_MAX_CHARS;
 
@@ -87,10 +87,10 @@ pub(crate) fn render_result(result: Value, ctx: &ToolContext) -> ToolOutput {
             }
         }
     }
-    if parts.is_empty() {
-        if let Some(v) = result.get("structuredContent") {
-            parts.push(v.to_string());
-        }
+    if parts.is_empty()
+        && let Some(v) = result.get("structuredContent")
+    {
+        parts.push(v.to_string());
     }
     let content = zen_tools::spill_output(&parts.join("\n"), MCP_MAX_CHARS, ctx);
     if is_error {

@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -252,10 +252,10 @@ where
         if line.is_empty() {
             break;
         }
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("content-length") {
-                content_length = v.trim().parse().ok();
-            }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case("content-length")
+        {
+            content_length = v.trim().parse().ok();
         }
     }
     let len = content_length.ok_or_else(|| anyhow::anyhow!("LSP frame without Content-Length"))?;
@@ -419,10 +419,10 @@ impl LspClient {
     #[allow(dead_code)] // floor-guard: item kept intentionally, unused for now
     pub(crate) fn kill(&self) {
         let pid = self.child_pid.lock().ok().and_then(|mut g| g.take());
-        if let Ok(mut guard) = self.child.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.start_kill();
-            }
+        if let Ok(mut guard) = self.child.lock()
+            && let Some(mut child) = guard.take()
+        {
+            let _ = child.start_kill();
         }
         kill_process_group(pid);
     }
@@ -567,10 +567,10 @@ impl LspConnection {
         let text = self.ensure_open(path).await?;
         let position = self.position(&text, line1, col1)?;
         let mut params = json!({"textDocument": {"uri": path_to_uri(path)}, "position": position});
-        if let Value::Object(map) = extra {
-            if let Value::Object(p) = &mut params {
-                p.extend(map);
-            }
+        if let Value::Object(map) = extra
+            && let Value::Object(p) = &mut params
+        {
+            p.extend(map);
         }
         self.client.request(method, params, REQUEST_TIMEOUT).await
     }
@@ -674,10 +674,10 @@ fn range_pos(range: &Value, key: &str) -> Option<(usize, u32)> {
 }
 
 fn display_col(path: &str, line0: usize, utf16: u32) -> usize {
-    if let Ok(text) = std::fs::read_to_string(path) {
-        if let Some(line) = text.lines().nth(line0) {
-            return utf16_to_col(line, utf16);
-        }
+    if let Ok(text) = std::fs::read_to_string(path)
+        && let Some(line) = text.lines().nth(line0)
+    {
+        return utf16_to_col(line, utf16);
     }
     (utf16 + 1) as usize
 }

@@ -265,10 +265,10 @@ fn strip_fences(s: &str) -> &str {
         if let Some(body) = t.strip_suffix("```") {
             t = body.trim();
         }
-    } else if let Some(rest) = t.strip_prefix("json") {
-        if rest.starts_with(|c: char| c.is_whitespace() || c == '{') {
-            t = rest.trim();
-        }
+    } else if let Some(rest) = t.strip_prefix("json")
+        && rest.starts_with(|c: char| c.is_whitespace() || c == '{')
+    {
+        t = rest.trim();
     }
     t
 }
@@ -422,13 +422,13 @@ fn coerce_object(
                 coerce_object(inner, prop, &format!("{}{}.", path, key), notes)
             }
             ("array", Some(Value::Array(items))) => {
-                if let Some(item_schema) = prop.get("items") {
-                    if schema_type(item_schema) == Some("object") {
-                        for (i, item) in items.iter_mut().enumerate() {
-                            if let Value::Object(inner) = item {
-                                let p = format!("{}{}[{}].", path, key, i);
-                                coerce_object(inner, item_schema, &p, notes);
-                            }
+                if let Some(item_schema) = prop.get("items")
+                    && schema_type(item_schema) == Some("object")
+                {
+                    for (i, item) in items.iter_mut().enumerate() {
+                        if let Value::Object(inner) = item {
+                            let p = format!("{}{}[{}].", path, key, i);
+                            coerce_object(inner, item_schema, &p, notes);
                         }
                     }
                 }
@@ -762,11 +762,13 @@ mod tests {
             serde_json::from_str::<Value>(&a).unwrap(),
             json!({"file_path": "b"})
         );
-        assert!(tool_call_in_text(
-            "<tool_call>{\"name\":\"Read\",\"arguments\":{\"file_path\":\"c\"}}</tool_call>",
-            &known
-        )
-        .is_some());
+        assert!(
+            tool_call_in_text(
+                "<tool_call>{\"name\":\"Read\",\"arguments\":{\"file_path\":\"c\"}}</tool_call>",
+                &known
+            )
+            .is_some()
+        );
 
         assert!(
             tool_call_in_text(r#"Run this: {"name": "Read", "arguments": {}}"#, &known).is_none()

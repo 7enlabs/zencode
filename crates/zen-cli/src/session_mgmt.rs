@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -125,10 +125,10 @@ pub fn find_managed_session(home: &Path, id_or_path: &str) -> Option<(PathBuf, b
     if p.is_absolute() && p.exists() {
         return Some((p.clone(), is_archived_path(home, &p)));
     }
-    if p.exists() {
-        if let Ok(abs) = p.canonicalize() {
-            return Some((abs.clone(), is_archived_path(home, &abs)));
-        }
+    if p.exists()
+        && let Ok(abs) = p.canonicalize()
+    {
+        return Some((abs.clone(), is_archived_path(home, &abs)));
     }
     for info in list_all_sessions(home, true) {
         if info.id == id_or_path {

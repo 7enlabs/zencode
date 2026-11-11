@@ -674,12 +674,12 @@ mod tests {
     fn resolve_budget_prefers_flag_then_env() {
         assert_eq!(resolve_budget_usd(Some(2.0)), Some(2.0));
 
-        std::env::set_var("ZEN_MAX_BUDGET_USD", "3.25");
+        unsafe { std::env::set_var("ZEN_MAX_BUDGET_USD", "3.25") };
         assert_eq!(resolve_budget_usd(None), Some(3.25));
-        std::env::remove_var("ZEN_MAX_BUDGET_USD");
+        unsafe { std::env::remove_var("ZEN_MAX_BUDGET_USD") };
         assert_eq!(resolve_budget_usd(None), None);
-        std::env::set_var("ZEN_MAX_BUDGET_USD", "not-a-number");
+        unsafe { std::env::set_var("ZEN_MAX_BUDGET_USD", "not-a-number") };
         assert_eq!(resolve_budget_usd(None), None);
-        std::env::remove_var("ZEN_MAX_BUDGET_USD");
+        unsafe { std::env::remove_var("ZEN_MAX_BUDGET_USD") };
     }
 }

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -108,11 +108,7 @@ impl SkillPermissions {
 }
 
 fn yn(b: bool) -> &'static str {
-    if b {
-        "yes"
-    } else {
-        "no"
-    }
+    if b { "yes" } else { "no" }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -483,12 +479,11 @@ pub fn install_skill(home: &Path, source: &InstallSource, yes: bool) -> Result<R
             return Err(anyhow!("manifest name is empty"));
         }
         name = m.name.clone();
-    } else if let Ok(skill_md) = std::fs::read_to_string(staging.join("SKILL.md")) {
-        if let (Some(fm), _) = zen_ext::split_frontmatter(&skill_md) {
-            if let Some(n) = fm.name.filter(|n| !n.trim().is_empty()) {
-                name = n;
-            }
-        }
+    } else if let Ok(skill_md) = std::fs::read_to_string(staging.join("SKILL.md"))
+        && let (Some(fm), _) = zen_ext::split_frontmatter(&skill_md)
+        && let Some(n) = fm.name.filter(|n| !n.trim().is_empty())
+    {
+        name = n;
     }
 
     if !staging.join("SKILL.md").is_file() {
@@ -595,7 +590,7 @@ pub fn install_builtin(home: &Path, name: &str) -> Result<RegistryEntry> {
             return Err(anyhow!(
                 "embedded manifest for {:?} has no valid ZenCode signature",
                 name
-            ))
+            ));
         }
     }
 
@@ -1521,7 +1516,7 @@ impl SkillPolicyChecker {
                         inner,
                         allowed: None,
                         skill_name: "advisory".to_string(),
-                    }
+                    };
                 }
                 Some(n) => names.extend(n),
             }
@@ -1548,13 +1543,13 @@ impl zen_core::PermissionChecker for SkillPolicyChecker {
         read_only: bool,
         ctx: &zen_core::ToolContext,
     ) -> zen_core::PermissionDecision {
-        if let Some(allowed) = &self.allowed {
-            if !allowed.iter().any(|t| t.eq_ignore_ascii_case(tool_name)) {
-                return zen_core::PermissionDecision::Deny(format!(
-                    "skill {:?} does not declare tool {:?} in its permissions",
-                    self.skill_name, tool_name
-                ));
-            }
+        if let Some(allowed) = &self.allowed
+            && !allowed.iter().any(|t| t.eq_ignore_ascii_case(tool_name))
+        {
+            return zen_core::PermissionDecision::Deny(format!(
+                "skill {:?} does not declare tool {:?} in its permissions",
+                self.skill_name, tool_name
+            ));
         }
         self.inner.check(tool_name, input, read_only, ctx)
     }
@@ -1701,12 +1696,11 @@ impl zen_core::Tool for GatedSkillTool {
             .map(str::to_string);
         let out = self.inner.call(args, ctx).await;
 
-        if !out.is_error {
-            if let Some(name) = name {
-                if let Some(skill) = self.by_name.get(&name) {
-                    self.gate.load_skill(skill.clone());
-                }
-            }
+        if !out.is_error
+            && let Some(name) = name
+            && let Some(skill) = self.by_name.get(&name)
+        {
+            self.gate.load_skill(skill.clone());
         }
         out
     }

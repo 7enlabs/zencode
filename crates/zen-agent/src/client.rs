@@ -175,11 +175,11 @@ pub struct OpenAiClient {
 }
 
 fn with_extra_roots(mut b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    if let Some(pem) = zen_core::extra_root_pem() {
-        if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem) {
-            for c in certs {
-                b = b.add_root_certificate(c);
-            }
+    if let Some(pem) = zen_core::extra_root_pem()
+        && let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem)
+    {
+        for c in certs {
+            b = b.add_root_certificate(c);
         }
     }
     b
@@ -269,13 +269,12 @@ impl OpenAiClient {
             "anthropic-ratelimit-requests-limit",
             "x-ratelimit-limit",
         ] {
-            if let Some(v) = headers.get(name).and_then(|h| h.to_str().ok()) {
-                if let Ok(rpm) = v.trim().parse::<u64>() {
-                    if rpm > 0 {
-                        pacer.update_ceiling(rpm);
-                        return;
-                    }
-                }
+            if let Some(v) = headers.get(name).and_then(|h| h.to_str().ok())
+                && let Ok(rpm) = v.trim().parse::<u64>()
+                && rpm > 0
+            {
+                pacer.update_ceiling(rpm);
+                return;
             }
         }
     }
@@ -507,8 +506,12 @@ pub(crate) fn payment_required_reason(body: &str) -> Option<String> {
         (Some("weight_exceeds_budget"), _) => {
             "this single request's estimated cost is larger than the whole credit budget (weight_exceeds_budget); retrying will not help, lower max_tokens or the prompt size"
         }
-        (_, Some("openrouter_key_limit")) => "the API key's credit limit is spent (openrouter_key_limit)",
-        (_, Some("openrouter_credits")) => "the account balance cannot cover this request (openrouter_credits)",
+        (_, Some("openrouter_key_limit")) => {
+            "the API key's credit limit is spent (openrouter_key_limit)"
+        }
+        (_, Some("openrouter_credits")) => {
+            "the account balance cannot cover this request (openrouter_credits)"
+        }
         (_, Some("openrouter_in_flight_budget")) => {
             "running requests fill the in-flight spending budget (openrouter_in_flight_budget)"
         }
@@ -646,10 +649,10 @@ impl LlmBackend for OpenAiClient {
                         }
                         let mut text =
                             format!("HTTP {}: {}", code, first_chars(&body, ERROR_BODY_CHARS));
-                        if code == 402 {
-                            if let Some(why) = payment_required_reason(&body) {
-                                text = format!("HTTP 402: {why}");
-                            }
+                        if code == 402
+                            && let Some(why) = payment_required_reason(&body)
+                        {
+                            text = format!("HTTP 402: {why}");
                         }
                         Outcome::Classified(
                             class,
@@ -1087,13 +1090,17 @@ mod tests {
         // signals went blind. Same body shape as the PR #85 parse_completion test.
         let trailing = json!({"id": "gen-N"}).to_string();
         let empty = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[]},"finish_reason":"stop"}]}"#;
-        assert!(transient_completion(&format!("{empty} {trailing}"))
-            .unwrap()
-            .contains("empty message"));
+        assert!(
+            transient_completion(&format!("{empty} {trailing}"))
+                .unwrap()
+                .contains("empty message")
+        );
         let err200 = r#"{"error":{"message":"slow down","code":500}}"#;
-        assert!(transient_completion(&format!("{err200} {trailing}"))
-            .unwrap()
-            .contains("gateway error in 200 response: slow down"));
+        assert!(
+            transient_completion(&format!("{err200} {trailing}"))
+                .unwrap()
+                .contains("gateway error in 200 response: slow down")
+        );
     }
 
     #[test]
@@ -1142,9 +1149,11 @@ mod tests {
         assert_eq!(r.message.content.as_deref(), Some("hi"));
         assert_eq!(openai_cached_tokens(&body), 1500);
         let empty = "\u{feff}{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[]},\"finish_reason\":\"stop\"}]}";
-        assert!(transient_completion(empty)
-            .unwrap()
-            .contains("empty message"));
+        assert!(
+            transient_completion(empty)
+                .unwrap()
+                .contains("empty message")
+        );
         let err_body = "\u{feff}{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":\"error\",\"error\":{\"message\":\"boom\",\"code\":500}}]}";
         let e = mid_response_error(err_body).unwrap();
         assert_eq!(e.code, Some(500));
@@ -1417,16 +1426,22 @@ mod tests {
     #[test]
     fn c3_transient_completion_classifies_200_bodies() {
         let harmony = r#"{"error":{"message":"unexpected tokens remaining in message header: Some(\"to=functions.Read\")","code":400},"object":"chat.completion"}"#;
-        assert!(transient_completion(harmony)
-            .unwrap()
-            .contains("unexpected tokens remaining"));
-        assert!(transient_completion(r#"{"choices":[]}"#)
-            .unwrap()
-            .contains("no choices"));
+        assert!(
+            transient_completion(harmony)
+                .unwrap()
+                .contains("unexpected tokens remaining")
+        );
+        assert!(
+            transient_completion(r#"{"choices":[]}"#)
+                .unwrap()
+                .contains("no choices")
+        );
         let empty = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[]},"finish_reason":"stop"}]}"#;
-        assert!(transient_completion(empty)
-            .unwrap()
-            .contains("empty message"));
+        assert!(
+            transient_completion(empty)
+                .unwrap()
+                .contains("empty message")
+        );
         let blank = r#"{"choices":[{"message":{"content":"  \n"},"finish_reason":"stop"}]}"#;
         assert!(transient_completion(blank).is_some());
         let text = r#"{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}"#;
@@ -1475,7 +1490,11 @@ mod tests {
                         break;
                     }
                 }
-                let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", b.len(), b);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    b.len(),
+                    b
+                );
                 sock.write_all(resp.as_bytes()).await.unwrap();
             }
         });
@@ -1544,7 +1563,11 @@ mod tests {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     let body = r#"{"error":{"message":"slow down"}}"#;
-                    let resp = format!("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    let resp = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
                     let _ = sock.write_all(resp.as_bytes()).await;
                 });
             }

@@ -95,21 +95,21 @@ impl zen_core::EventSink for TextSink {
                 self.buf.write_str(&text);
             }
             AgentEvent::Assistant { message, .. } => {
-                if let Some(content) = &message.content {
-                    if !content.is_empty() {
-                        self.buf.write_str(content);
-                    }
+                if let Some(content) = &message.content
+                    && !content.is_empty()
+                {
+                    self.buf.write_str(content);
                 }
 
-                if self.is_repl {
-                    if let Some(calls) = &message.tool_calls {
-                        for tc in calls {
-                            self.buf.write_line(&format!(
-                                "● {}(...) {}",
-                                Self::tool_short(&tc.function.name),
-                                tc.function.arguments
-                            ));
-                        }
+                if self.is_repl
+                    && let Some(calls) = &message.tool_calls
+                {
+                    for tc in calls {
+                        self.buf.write_line(&format!(
+                            "● {}(...) {}",
+                            Self::tool_short(&tc.function.name),
+                            tc.function.arguments
+                        ));
                     }
                 }
             }
@@ -516,10 +516,10 @@ pub fn validate_json_schema(text: &str, schema_path: &std::path::Path) -> Result
         schema.get("required").and_then(|v| v.as_array()),
     ) {
         for r in req {
-            if let Some(name) = r.as_str() {
-                if !obj.contains_key(name) {
-                    return Err(format!("missing required field '{}'", name));
-                }
+            if let Some(name) = r.as_str()
+                && !obj.contains_key(name)
+            {
+                return Err(format!("missing required field '{}'", name));
             }
         }
     }

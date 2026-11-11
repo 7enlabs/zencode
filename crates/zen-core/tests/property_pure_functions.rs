@@ -6,7 +6,7 @@
 //!
 //! Functions under test: `cache_hit_rate`, `split_stable_volatile`.
 
-use zen_core::{cache_hit_rate, split_stable_volatile, UsageStats, CACHE_VOLATILE_MARKER};
+use zen_core::{CACHE_VOLATILE_MARKER, UsageStats, cache_hit_rate, split_stable_volatile};
 
 /// Deterministic pseudo-random generator (64-bit LCG, Knuth constants).
 struct Lcg(u64);

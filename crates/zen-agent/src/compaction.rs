@@ -27,11 +27,11 @@ fn summarization_prompt(focus: Option<&str>) -> String {
          (exact values, commands, errors still needed). Keep exact file paths and identifiers; \
          be concise.",
     );
-    if let Some(f) = focus {
-        if !f.is_empty() {
-            ask.push_str("\n\nExtra focus for this summary: ");
-            ask.push_str(f);
-        }
+    if let Some(f) = focus
+        && !f.is_empty()
+    {
+        ask.push_str("\n\nExtra focus for this summary: ");
+        ask.push_str(f);
     }
     ask
 }

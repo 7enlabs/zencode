@@ -1,7 +1,6 @@
 use zen_core::*;
 
-pub const PLAN_MODE_INSTRUCTION: &str =
-    "\n\n# Plan mode (active)\nYou are in plan mode. Mutating tools are unavailable. Research the \
+pub const PLAN_MODE_INSTRUCTION: &str = "\n\n# Plan mode (active)\nYou are in plan mode. Mutating tools are unavailable. Research the \
      codebase with the read-only tools you have, then present a concrete, step-by-step plan with \
      exact file paths and commands. Do not write or edit files. End your final message with the \
      line `ExitPlanMode` once the plan is ready for approval.";
@@ -278,9 +277,10 @@ mod tests {
         let out = ensure_tool_responses(msgs.clone());
 
         assert!(!out.iter().any(|m| m.tool_call_id.as_deref() == Some("cX")));
-        assert!(out
-            .iter()
-            .any(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some("c2")));
+        assert!(
+            out.iter()
+                .any(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some("c2"))
+        );
         assert_eq!(out.iter().filter(|m| m.role == "tool").count(), 2);
     }
 

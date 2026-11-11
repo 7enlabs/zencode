@@ -69,11 +69,7 @@ fn parse_tools(s: &str) -> Option<Vec<String>> {
             out.push(p.to_string());
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn agent_from_markdown(name_hint: &str, text: &str) -> Option<AgentDefinition> {
@@ -178,11 +174,7 @@ fn agent_from_json(name: &str, value: &Value) -> Option<AgentDefinition> {
                     .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
                     .filter(|s| !s.is_empty())
                     .collect();
-                if list.is_empty() {
-                    None
-                } else {
-                    Some(list)
-                }
+                if list.is_empty() { None } else { Some(list) }
             }
             _ => None,
         })
@@ -321,10 +313,10 @@ fn add_cli_agents(out: &mut Vec<AgentDefinition>, cli_agents: Option<&str>) {
             } else {
                 std::fs::read_to_string(PathBuf::from(trimmed)).ok()
             };
-            if let Some(text) = json_text {
-                if let Err(e) = load_agents_from_json(out, &text) {
-                    eprintln!("zen: {}", e);
-                }
+            if let Some(text) = json_text
+                && let Err(e) = load_agents_from_json(out, &text)
+            {
+                eprintln!("zen: {}", e);
             }
         }
     }
@@ -450,9 +442,11 @@ mod c6_tests {
                 .any(|t| t == "Write" || t == "Edit" || t == "Bash" || t == "Task"),
             "built-in Plan is read-only"
         );
-        assert!(agents
-            .iter()
-            .any(|a| a.name == "general-purpose" && a.tools.is_none()));
+        assert!(
+            agents
+                .iter()
+                .any(|a| a.name == "general-purpose" && a.tools.is_none())
+        );
 
         let agents = load_agents(
             &cwd,

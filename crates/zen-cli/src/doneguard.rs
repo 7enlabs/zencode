@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use zen_core::{glob_match, TodoItem};
+use zen_core::{TodoItem, glob_match};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectKind {
@@ -110,7 +110,7 @@ pub async fn run_check_command(label: &str, argv: &[String], cwd: &Path) -> (boo
             return (
                 false,
                 format!("{label}: timed out after {}s", CHECK_TIMEOUT.as_secs()),
-            )
+            );
         }
         Ok(Err(e)) => return (false, format!("{label}: could not start: {e}")),
         Ok(Ok(o)) => o,
@@ -436,10 +436,10 @@ fn parse_pub_item(line: &str) -> Option<(&'static str, String)> {
             t = rest;
         }
     }
-    if let Some(rest) = t.strip_prefix("const ") {
-        if rest.starts_with("fn") {
-            t = rest;
-        }
+    if let Some(rest) = t.strip_prefix("const ")
+        && rest.starts_with("fn")
+    {
+        t = rest;
     }
     for kind in [
         "fn", "struct", "enum", "trait", "const", "static", "type", "mod", "union",
@@ -488,10 +488,11 @@ fn caller_count(cwd: &Path, def_file: &str, kind: &str, name: &str) -> usize {
                 };
                 if rel == def_file {
                     for line in text.lines() {
-                        if let Some((k, n)) = parse_pub_item(&format!("+{line}")) {
-                            if k == kind && n == name {
-                                continue;
-                            }
+                        if let Some((k, n)) = parse_pub_item(&format!("+{line}"))
+                            && k == kind
+                            && n == name
+                        {
+                            continue;
                         }
                         count += count_word(line, name);
                     }
@@ -672,9 +673,10 @@ mod tests {
         );
         g.set(vec!["src/**".into(), "README.md".into(), "  ".into()]);
         assert_eq!(g.declared, vec!["src/**", "README.md"], "blanks dropped");
-        assert!(g
-            .violations(&["src/a/b.rs".to_string(), "README.md".to_string()])
-            .is_empty());
+        assert!(
+            g.violations(&["src/a/b.rs".to_string(), "README.md".to_string()])
+                .is_empty()
+        );
         assert_eq!(
             g.violations(&["src/a.rs".to_string(), "other/b.rs".to_string()]),
             vec!["other/b.rs"]

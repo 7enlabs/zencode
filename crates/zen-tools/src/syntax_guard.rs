@@ -168,10 +168,10 @@ pub async fn guard_write(
     let Some(msg) = syntax_error(path, new_text).await else {
         return Ok(());
     };
-    if let Some(old) = old_text {
-        if syntax_error(path, old).await.is_some() {
-            return Ok(());
-        }
+    if let Some(old) = old_text
+        && syntax_error(path, old).await.is_some()
+    {
+        return Ok(());
     }
     Err(refusal(path, new_text, &msg))
 }
@@ -194,9 +194,11 @@ mod tests {
         }
         let p = Path::new("m.py");
         let old = "def f():\n    return 1\n";
-        assert!(guard_write(p, Some(old), "def f():\n    return 2\n")
-            .await
-            .is_ok());
+        assert!(
+            guard_write(p, Some(old), "def f():\n    return 2\n")
+                .await
+                .is_ok()
+        );
         let err = guard_write(p, Some(old), "def f():\n    if x\n        return 2\n")
             .await
             .unwrap_err();
@@ -208,25 +210,35 @@ mod tests {
         assert!(err.contains("     2>\t    if x"), "{}", err);
 
         assert!(guard_write(p, None, "def (:\n").await.is_err());
-        assert!(guard_write(p, Some("def (:\n"), "def (:\n  x\n")
-            .await
-            .is_ok());
+        assert!(
+            guard_write(p, Some("def (:\n"), "def (:\n  x\n")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn json_shell_and_js_are_checked_and_other_types_are_not() {
-        assert!(guard_write(Path::new("a.json"), Some("{}"), "{\"a\": 1,}")
-            .await
-            .is_err());
-        assert!(guard_write(Path::new("a.json"), Some("{}"), "{\"a\": 1}")
-            .await
-            .is_ok());
-        assert!(guard_write(Path::new("a.txt"), Some("x"), "{{{")
-            .await
-            .is_ok());
-        assert!(guard_write(Path::new("a.rs"), Some("fn a(){}"), "fn a({")
-            .await
-            .is_ok());
+        assert!(
+            guard_write(Path::new("a.json"), Some("{}"), "{\"a\": 1,}")
+                .await
+                .is_err()
+        );
+        assert!(
+            guard_write(Path::new("a.json"), Some("{}"), "{\"a\": 1}")
+                .await
+                .is_ok()
+        );
+        assert!(
+            guard_write(Path::new("a.txt"), Some("x"), "{{{")
+                .await
+                .is_ok()
+        );
+        assert!(
+            guard_write(Path::new("a.rs"), Some("fn a(){}"), "fn a({")
+                .await
+                .is_ok()
+        );
         if has("bash") {
             assert!(
                 guard_write(Path::new("s.sh"), Some("echo hi\n"), "if then fi\n")

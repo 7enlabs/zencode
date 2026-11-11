@@ -868,10 +868,9 @@ pub fn resolve_shell(preferred: &str) -> ShellSpec {
             .as_deref()
             .map(str::trim)
             .is_none_or(str::is_empty)
+        && let Some(p) = find_program(&spec.program)
     {
-        if let Some(p) = find_program(&spec.program) {
-            spec.program = p.to_string_lossy().into_owned();
-        }
+        spec.program = p.to_string_lossy().into_owned();
     }
     cache
         .lock()

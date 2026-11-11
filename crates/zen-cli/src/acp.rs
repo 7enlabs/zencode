@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -466,10 +466,10 @@ async fn handle_prompt(
 }
 
 fn handle_cancel(sessions: &HashMap<String, AcpSession>, params: &Value) {
-    if let Some(sid) = params.get("sessionId").and_then(Value::as_str) {
-        if let Some(s) = sessions.get(sid) {
-            s.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
+    if let Some(sid) = params.get("sessionId").and_then(Value::as_str)
+        && let Some(s) = sessions.get(sid)
+    {
+        s.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

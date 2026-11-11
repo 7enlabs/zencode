@@ -1,15 +1,15 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 use zen_core::{Tool, ToolContext};
 
 use crate::lsp::LspClient;
 use crate::lsp::{
-    col_to_utf16, detect_language, find_binary, find_project_root, parse_locations, path_to_uri,
-    render_hover, server_spec, uri_to_path, utf16_to_col, LspLanguage, LspManager,
+    LspLanguage, LspManager, col_to_utf16, detect_language, find_binary, find_project_root,
+    parse_locations, path_to_uri, render_hover, server_spec, uri_to_path, utf16_to_col,
 };
 use crate::lsp::{read_frame, write_frame};
 use crate::lsp_tools::{FindReferencesTool, GotoDefinitionTool, HoverTool};
@@ -542,9 +542,10 @@ fn server_specs_match_requirements() {
     let rust = server_spec(LspLanguage::Rust);
     assert_eq!(rust.command, "rust-analyzer");
     assert!(rust.args.is_empty());
-    assert!(rust
-        .install_hint
-        .contains("rustup component add rust-analyzer"));
+    assert!(
+        rust.install_hint
+            .contains("rustup component add rust-analyzer")
+    );
 
     let py = server_spec(LspLanguage::Python);
     assert_eq!(py.command, "pyright-langserver");
@@ -554,9 +555,10 @@ fn server_specs_match_requirements() {
     let ts = server_spec(LspLanguage::TypeScript);
     assert_eq!(ts.command, "typescript-language-server");
     assert_eq!(ts.args, vec!["--stdio".to_string()]);
-    assert!(ts
-        .install_hint
-        .contains("npm install -g typescript-language-server"));
+    assert!(
+        ts.install_hint
+            .contains("npm install -g typescript-language-server")
+    );
 }
 
 #[tokio::test]
@@ -577,7 +579,7 @@ async fn missing_binary_names_the_install_command() {
     let _guard = PATH_LOCK.lock().unwrap();
     let tmp = unique_tmpdir("empty-path");
     let old_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", &tmp);
+    unsafe { std::env::set_var("PATH", &tmp) };
 
     let mgr = LspManager::new();
     let cases = [
@@ -599,8 +601,8 @@ async fn missing_binary_names_the_install_command() {
     }
 
     match old_path {
-        Some(v) => std::env::set_var("PATH", v),
-        None => std::env::remove_var("PATH"),
+        Some(v) => unsafe { std::env::set_var("PATH", v) },
+        None => unsafe { std::env::remove_var("PATH") },
     }
     drop(_guard);
     assert!(failures.is_empty(), "{}", failures.join("\n"));

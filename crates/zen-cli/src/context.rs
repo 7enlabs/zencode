@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -273,22 +273,22 @@ fn analyze(parsed: &ParsedSession) -> ContextAnalysis {
     if let Some(req) = latest {
         let labels = tool_labels(&req.messages);
 
-        if let Some(h) = &req.tools_hash {
-            if let Some(defs) = parsed.tools_by_hash.get(h) {
-                for d in defs {
-                    let t = tool_def_tokens(d);
-                    tool_schemas.push((d.function.name.clone(), t));
-                    tool_schema_tokens += t;
-                }
-                tool_schemas.sort_by_key(|a| std::cmp::Reverse(a.1));
+        if let Some(h) = &req.tools_hash
+            && let Some(defs) = parsed.tools_by_hash.get(h)
+        {
+            for d in defs {
+                let t = tool_def_tokens(d);
+                tool_schemas.push((d.function.name.clone(), t));
+                tool_schema_tokens += t;
             }
+            tool_schemas.sort_by_key(|a| std::cmp::Reverse(a.1));
         }
         let mut history_start = 0;
-        if let Some(first) = req.messages.first() {
-            if first.role == "system" {
-                system_prompt_tokens = message_tokens(first);
-                history_start = 1;
-            }
+        if let Some(first) = req.messages.first()
+            && first.role == "system"
+        {
+            system_prompt_tokens = message_tokens(first);
+            history_start = 1;
         }
 
         let later_text: Vec<String> = req
@@ -766,16 +766,19 @@ mod tests {
         let prunable: Vec<_> = a.turns.iter().filter(|t| t.prunable).collect();
         assert_eq!(prunable.len(), 1);
         assert!(prunable[0].label.contains("read src/main.rs"));
-        assert!(prunable[0]
-            .prune_reason
-            .as_ref()
-            .unwrap()
-            .contains("not referenced"));
+        assert!(
+            prunable[0]
+                .prune_reason
+                .as_ref()
+                .unwrap()
+                .contains("not referenced")
+        );
 
-        assert!(a
-            .top_consumers
-            .iter()
-            .any(|c| c.label.contains("read src/main.rs")));
+        assert!(
+            a.top_consumers
+                .iter()
+                .any(|c| c.label.contains("read src/main.rs"))
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 

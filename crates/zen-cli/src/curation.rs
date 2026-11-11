@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -61,37 +61,37 @@ pub fn embedded_registry() -> Result<CuratedRegistry> {
 pub fn load_curated_registry(home: Option<&Path>) -> Result<CuratedRegistry> {
     let mut reg = embedded_registry()?;
     let user_path = home.map(|h| h.join(".zen").join("registry-curated.json"));
-    if let Some(path) = user_path {
-        if path.exists() {
-            let raw = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let user_reg: CuratedRegistry = serde_json::from_str(&raw)
-                .with_context(|| format!("parsing {}", path.display()))?;
-            if user_reg.format_version != 1 {
+    if let Some(path) = user_path
+        && path.exists()
+    {
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let user_reg: CuratedRegistry =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        if user_reg.format_version != 1 {
+            return Err(anyhow!(
+                "unsupported registry-curated.json format_version {} (expected 1)",
+                user_reg.format_version
+            ));
+        }
+        for entry in user_reg.entries {
+            let problems = validate_curated_entry(&entry);
+            if !problems.is_empty() {
                 return Err(anyhow!(
-                    "unsupported registry-curated.json format_version {} (expected 1)",
-                    user_reg.format_version
+                    "invalid curated entry '{}' in {}: {}",
+                    entry.entry.name,
+                    path.display(),
+                    problems.join("; ")
                 ));
             }
-            for entry in user_reg.entries {
-                let problems = validate_curated_entry(&entry);
-                if !problems.is_empty() {
-                    return Err(anyhow!(
-                        "invalid curated entry '{}' in {}: {}",
-                        entry.entry.name,
-                        path.display(),
-                        problems.join("; ")
-                    ));
-                }
-                if let Some(slot) = reg
-                    .entries
-                    .iter_mut()
-                    .find(|e| e.entry.name == entry.entry.name)
-                {
-                    *slot = entry;
-                } else {
-                    reg.entries.push(entry);
-                }
+            if let Some(slot) = reg
+                .entries
+                .iter_mut()
+                .find(|e| e.entry.name == entry.entry.name)
+            {
+                *slot = entry;
+            } else {
+                reg.entries.push(entry);
             }
         }
     }
@@ -441,9 +441,11 @@ mod tests {
     fn validate_rejects_empty_reviewer() {
         let mut e = sample_curated("x");
         e.curation.reviewer = "   ".to_string();
-        assert!(validate_curated_entry(&e)
-            .iter()
-            .any(|p| p.contains("reviewer")));
+        assert!(
+            validate_curated_entry(&e)
+                .iter()
+                .any(|p| p.contains("reviewer"))
+        );
     }
 
     #[test]
@@ -489,18 +491,22 @@ mod tests {
         let mut e = sample_curated("x");
         e.curation.review_notes =
             "Security: PASS. Quality: PASS. Documentation: PASS. Maintenance: PASS.".to_string();
-        assert!(validate_curated_entry(&e)
-            .iter()
-            .any(|p| p.contains("too short")));
+        assert!(
+            validate_curated_entry(&e)
+                .iter()
+                .any(|p| p.contains("too short"))
+        );
     }
 
     #[test]
     fn validate_rejects_non_curated_tier() {
         let mut e = sample_curated("x");
         e.entry.trust_tier = "community".to_string();
-        assert!(validate_curated_entry(&e)
-            .iter()
-            .any(|p| p.contains("trust_tier")));
+        assert!(
+            validate_curated_entry(&e)
+                .iter()
+                .any(|p| p.contains("trust_tier"))
+        );
     }
 
     #[test]

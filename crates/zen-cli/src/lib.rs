@@ -44,7 +44,7 @@ pub use cli::{
     ModelsArgs, OutputFormat, PermissionMode, ReviewArgs, SessionSubcommand, SessionsArgs,
     UpdateArgs,
 };
-pub use settings::{resolve_config, ResolvedConfig};
+pub use settings::{ResolvedConfig, resolve_config};
 pub use system_prompt::build_system_prompt;
 
 use anyhow::Result;
@@ -61,10 +61,10 @@ fn resolve_home() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
         return Some(PathBuf::from(h));
     }
-    if cfg!(windows) {
-        if let Some(h) = std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()) {
-            return Some(PathBuf::from(h));
-        }
+    if cfg!(windows)
+        && let Some(h) = std::env::var_os("USERPROFILE").filter(|h| !h.is_empty())
+    {
+        return Some(PathBuf::from(h));
     }
     dirs::home_dir()
 }
@@ -168,7 +168,7 @@ pub async fn run_with_home(cli: Cli, cwd: &Path, home: Option<&Path>) -> Result<
     if cli.no_color {
         // --no-color is the flag form of NO_COLOR: the color checks in
         // the REPL and the diff paths already honor the env var.
-        std::env::set_var("NO_COLOR", "1");
+        unsafe { std::env::set_var("NO_COLOR", "1") };
     }
     if cli.acp {
         return acp::run_acp_server(&cli).await;
@@ -688,15 +688,13 @@ pub(crate) fn resolve_session_for_repl(
         return Ok(None);
     }
     // Like /resume, -r also accepts a session name (title).
-    if let (Some(r), Some(h)) = (cli.resume.as_deref().filter(|r| !r.is_empty()), home) {
-        if session::find_session_path(h, r).is_none() {
-            if let Some((_, p)) = session::list_sessions_for_cwd(h, cwd)
-                .into_iter()
-                .find(|(_, p)| session::session_title(p).as_deref() == Some(r))
-            {
-                return Ok(Some(p));
-            }
-        }
+    if let (Some(r), Some(h)) = (cli.resume.as_deref().filter(|r| !r.is_empty()), home)
+        && session::find_session_path(h, r).is_none()
+        && let Some((_, p)) = session::list_sessions_for_cwd(h, cwd)
+            .into_iter()
+            .find(|(_, p)| session::session_title(p).as_deref() == Some(r))
+    {
+        return Ok(Some(p));
     }
     let (_, _, from) = resolve_session(cli, cwd, home)?;
     Ok(from)
@@ -840,9 +838,10 @@ mod tests {
         ]);
         let (id, path, _) = resolve_session(&cli, &dir, Some(&dir)).unwrap();
         assert_eq!(id, "00000000-0000-4000-8000-0000000000aa");
-        assert!(path
-            .unwrap()
-            .ends_with("00000000-0000-4000-8000-0000000000aa.jsonl"));
+        assert!(
+            path.unwrap()
+                .ends_with("00000000-0000-4000-8000-0000000000aa.jsonl")
+        );
     }
 
     #[test]

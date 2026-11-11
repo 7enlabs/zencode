@@ -1,5 +1,5 @@
-use clap::error::ErrorKind;
 use clap::Parser;
+use clap::error::ErrorKind;
 use zen_cli::Cli;
 
 /// Stack for the thread that runs the real main. Windows gives the

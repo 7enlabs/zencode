@@ -421,10 +421,10 @@ fn display_path(path: &Path, home: Option<&Path>) -> String {
         }
     };
     let home_dir = home.map(Path::to_path_buf).or_else(dirs::home_dir);
-    if let Some(h) = home_dir {
-        if let Ok(rel) = path.strip_prefix(&h) {
-            return format!("~/{}", slash(rel));
-        }
+    if let Some(h) = home_dir
+        && let Ok(rel) = path.strip_prefix(&h)
+    {
+        return format!("~/{}", slash(rel));
     }
     slash(path)
 }

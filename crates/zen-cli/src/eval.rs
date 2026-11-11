@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -100,110 +100,169 @@ pub struct EvalTask {
 
 pub static EVAL_TASKS: std::sync::LazyLock<Vec<EvalTask>> = std::sync::LazyLock::new(|| {
     vec![
-    EvalTask {
-        id: "create-file",
-        description: "Create hello.txt with exact content",
-        prompt: "Create a file named hello.txt containing exactly the text: Hello, eval!",
-        setup: &[],
-        check: Check::FileEquals {
-            path: "hello.txt",
-            content: "Hello, eval!",
+        EvalTask {
+            id: "create-file",
+            description: "Create hello.txt with exact content",
+            prompt: "Create a file named hello.txt containing exactly the text: Hello, eval!",
+            setup: &[],
+            check: Check::FileEquals {
+                path: "hello.txt",
+                content: "Hello, eval!",
+            },
         },
-    },
-    EvalTask {
-        id: "create-nested",
-        description: "Create nested markdown checklist",
-        prompt: "Create the file docs/notes/todo.md containing a markdown checklist with exactly these 3 items: Buy milk, Write code, Ship it",
-        setup: &[],
-        check: Check::All(vec![
-            Check::FileContains { path: "docs/notes/todo.md", needle: "Buy milk" },
-            Check::FileContains { path: "docs/notes/todo.md", needle: "Write code" },
-            Check::FileContains { path: "docs/notes/todo.md", needle: "Ship it" },
-        ]),
-    },
-    EvalTask {
-        id: "fix-typo",
-        description: "Fix a typo in an existing file",
-        prompt: "Fix the typo in message.txt: change 'quik' to 'quick'. Keep everything else identical.",
-        setup: &[("message.txt", "The quik brown fox jumps over the lazy dog.\n")],
-        check: Check::All(vec![
-            Check::FileContains { path: "message.txt", needle: "quick" },
-            Check::Not(Box::new(Check::FileContains { path: "message.txt", needle: "quik" })),
-        ]),
-    },
-    EvalTask {
-        id: "fix-bug",
-        description: "Fix a shell-script bug so it prints result=42",
-        prompt: "Fix the bug in calc.sh so that running `sh calc.sh` prints exactly: result=42",
-        setup: &[("calc.sh", "#!/bin/sh\nresult=$((6 * 6))\necho \"result=$result\"\n")],
-        check: Check::CommandOutputContains {
-            cmd: "sh",
-            args: &["calc.sh"],
-            needle: "result=42",
+        EvalTask {
+            id: "create-nested",
+            description: "Create nested markdown checklist",
+            prompt: "Create the file docs/notes/todo.md containing a markdown checklist with exactly these 3 items: Buy milk, Write code, Ship it",
+            setup: &[],
+            check: Check::All(vec![
+                Check::FileContains {
+                    path: "docs/notes/todo.md",
+                    needle: "Buy milk",
+                },
+                Check::FileContains {
+                    path: "docs/notes/todo.md",
+                    needle: "Write code",
+                },
+                Check::FileContains {
+                    path: "docs/notes/todo.md",
+                    needle: "Ship it",
+                },
+            ]),
         },
-    },
-    EvalTask {
-        id: "append-log",
-        description: "Append a line to a log file, keeping existing content",
-        prompt: "Append a new line containing exactly 'eval-ok' to log.txt. Do not remove or change the existing content.",
-        setup: &[("log.txt", "line1\nline2\n")],
-        check: Check::All(vec![
-            Check::FileContains { path: "log.txt", needle: "line1" },
-            Check::FileContains { path: "log.txt", needle: "eval-ok" },
-        ]),
-    },
-    EvalTask {
-        id: "rename-key",
-        description: "Rename a JSON key, keeping its value",
-        prompt: "In data.json, rename the key \"name\" to \"title\". Keep the value \"zen\" and keep the \"version\" key unchanged.",
-        setup: &[("data.json", "{\n  \"name\": \"zen\",\n  \"version\": 1\n}\n")],
-        check: Check::All(vec![
-            Check::FileContains { path: "data.json", needle: "\"title\"" },
-            Check::FileContains { path: "data.json", needle: "\"zen\"" },
-            Check::Not(Box::new(Check::FileContains { path: "data.json", needle: "\"name\"" })),
-        ]),
-    },
-    EvalTask {
-        id: "sum-script",
-        description: "Write a script that prints the sum of 19 and 23",
-        prompt: "Write a shell script named add.sh that prints the sum of 19 and 23 (i.e. running `sh add.sh` must print 42).",
-        setup: &[],
-        check: Check::CommandOutputContains {
-            cmd: "sh",
-            args: &["add.sh"],
-            needle: "42",
+        EvalTask {
+            id: "fix-typo",
+            description: "Fix a typo in an existing file",
+            prompt: "Fix the typo in message.txt: change 'quik' to 'quick'. Keep everything else identical.",
+            setup: &[(
+                "message.txt",
+                "The quik brown fox jumps over the lazy dog.\n",
+            )],
+            check: Check::All(vec![
+                Check::FileContains {
+                    path: "message.txt",
+                    needle: "quick",
+                },
+                Check::Not(Box::new(Check::FileContains {
+                    path: "message.txt",
+                    needle: "quik",
+                })),
+            ]),
         },
-    },
-    EvalTask {
-        id: "delete-file",
-        description: "Delete a scratch file",
-        prompt: "Delete the file scratch.tmp.",
-        setup: &[("scratch.tmp", "temporary\n")],
-        check: Check::FileNotExists { path: "scratch.tmp" },
-    },
-    EvalTask {
-        id: "multi-edit",
-        description: "Fix two typos in one file",
-        prompt: "Fix both typos in notes.txt: change 'teh' to 'the' and 'recieve' to 'receive'.",
-        setup: &[("notes.txt", "teh package will recieve an update soon.\n")],
-        check: Check::All(vec![
-            Check::FileContains { path: "notes.txt", needle: "the package" },
-            Check::FileContains { path: "notes.txt", needle: "receive" },
-            Check::Not(Box::new(Check::FileContains { path: "notes.txt", needle: "teh" })),
-            Check::Not(Box::new(Check::FileContains { path: "notes.txt", needle: "recieve" })),
-        ]),
-    },
-    EvalTask {
-        id: "readme-section",
-        description: "Append an Eval section to README.md",
-        prompt: "Add a new section titled '## Eval' at the end of README.md, with one line describing this benchmark.",
-        setup: &[("README.md", "# Demo project\n\nSome text here.\n")],
-        check: Check::All(vec![
-            Check::FileContains { path: "README.md", needle: "## Eval" },
-            Check::FileContains { path: "README.md", needle: "Some text here." },
-        ]),
-    },
-]
+        EvalTask {
+            id: "fix-bug",
+            description: "Fix a shell-script bug so it prints result=42",
+            prompt: "Fix the bug in calc.sh so that running `sh calc.sh` prints exactly: result=42",
+            setup: &[(
+                "calc.sh",
+                "#!/bin/sh\nresult=$((6 * 6))\necho \"result=$result\"\n",
+            )],
+            check: Check::CommandOutputContains {
+                cmd: "sh",
+                args: &["calc.sh"],
+                needle: "result=42",
+            },
+        },
+        EvalTask {
+            id: "append-log",
+            description: "Append a line to a log file, keeping existing content",
+            prompt: "Append a new line containing exactly 'eval-ok' to log.txt. Do not remove or change the existing content.",
+            setup: &[("log.txt", "line1\nline2\n")],
+            check: Check::All(vec![
+                Check::FileContains {
+                    path: "log.txt",
+                    needle: "line1",
+                },
+                Check::FileContains {
+                    path: "log.txt",
+                    needle: "eval-ok",
+                },
+            ]),
+        },
+        EvalTask {
+            id: "rename-key",
+            description: "Rename a JSON key, keeping its value",
+            prompt: "In data.json, rename the key \"name\" to \"title\". Keep the value \"zen\" and keep the \"version\" key unchanged.",
+            setup: &[(
+                "data.json",
+                "{\n  \"name\": \"zen\",\n  \"version\": 1\n}\n",
+            )],
+            check: Check::All(vec![
+                Check::FileContains {
+                    path: "data.json",
+                    needle: "\"title\"",
+                },
+                Check::FileContains {
+                    path: "data.json",
+                    needle: "\"zen\"",
+                },
+                Check::Not(Box::new(Check::FileContains {
+                    path: "data.json",
+                    needle: "\"name\"",
+                })),
+            ]),
+        },
+        EvalTask {
+            id: "sum-script",
+            description: "Write a script that prints the sum of 19 and 23",
+            prompt: "Write a shell script named add.sh that prints the sum of 19 and 23 (i.e. running `sh add.sh` must print 42).",
+            setup: &[],
+            check: Check::CommandOutputContains {
+                cmd: "sh",
+                args: &["add.sh"],
+                needle: "42",
+            },
+        },
+        EvalTask {
+            id: "delete-file",
+            description: "Delete a scratch file",
+            prompt: "Delete the file scratch.tmp.",
+            setup: &[("scratch.tmp", "temporary\n")],
+            check: Check::FileNotExists {
+                path: "scratch.tmp",
+            },
+        },
+        EvalTask {
+            id: "multi-edit",
+            description: "Fix two typos in one file",
+            prompt: "Fix both typos in notes.txt: change 'teh' to 'the' and 'recieve' to 'receive'.",
+            setup: &[("notes.txt", "teh package will recieve an update soon.\n")],
+            check: Check::All(vec![
+                Check::FileContains {
+                    path: "notes.txt",
+                    needle: "the package",
+                },
+                Check::FileContains {
+                    path: "notes.txt",
+                    needle: "receive",
+                },
+                Check::Not(Box::new(Check::FileContains {
+                    path: "notes.txt",
+                    needle: "teh",
+                })),
+                Check::Not(Box::new(Check::FileContains {
+                    path: "notes.txt",
+                    needle: "recieve",
+                })),
+            ]),
+        },
+        EvalTask {
+            id: "readme-section",
+            description: "Append an Eval section to README.md",
+            prompt: "Add a new section titled '## Eval' at the end of README.md, with one line describing this benchmark.",
+            setup: &[("README.md", "# Demo project\n\nSome text here.\n")],
+            check: Check::All(vec![
+                Check::FileContains {
+                    path: "README.md",
+                    needle: "## Eval",
+                },
+                Check::FileContains {
+                    path: "README.md",
+                    needle: "Some text here.",
+                },
+            ]),
+        },
+    ]
 });
 
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
@@ -253,10 +312,10 @@ impl EventSink for MetricSink {
                 ..
             } => {
                 let map = self.tool_names.lock().expect("eval tool_names lock poisoned: tool-name recording never panics while holding the lock");
-                if let Some(name) = map.get(&tool_use_id) {
-                    if EDIT_TOOLS.contains(&name.as_str()) {
-                        self.edit_failures.fetch_add(1, Ordering::Relaxed);
-                    }
+                if let Some(name) = map.get(&tool_use_id)
+                    && EDIT_TOOLS.contains(&name.as_str())
+                {
+                    self.edit_failures.fetch_add(1, Ordering::Relaxed);
                 }
             }
             _ => {}
@@ -741,51 +800,65 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "hello world").unwrap();
 
-        assert!(Check::FileContains {
-            path: "a.txt",
-            needle: "world"
-        }
-        .run(&dir));
-        assert!(!Check::FileContains {
-            path: "a.txt",
-            needle: "missing"
-        }
-        .run(&dir));
-        assert!(Check::FileEquals {
-            path: "a.txt",
-            content: "hello world"
-        }
-        .run(&dir));
-        assert!(!Check::FileEquals {
-            path: "a.txt",
-            content: "hello"
-        }
-        .run(&dir));
-        assert!(Check::FileNotExists { path: "nope.txt" }.run(&dir));
-        assert!(!Check::FileNotExists { path: "a.txt" }.run(&dir));
-        assert!(Check::All(vec![
+        assert!(
             Check::FileContains {
                 path: "a.txt",
-                needle: "hello"
-            },
-            Check::Not(Box::new(Check::FileContains {
+                needle: "world"
+            }
+            .run(&dir)
+        );
+        assert!(
+            !Check::FileContains {
                 path: "a.txt",
-                needle: "zzz"
-            })),
-        ])
-        .run(&dir));
-        assert!(Check::CommandOutputContains {
-            cmd: "sh",
-            args: &["-c", "echo hi"],
-            needle: "hi",
-        }
-        .run(&dir));
-        assert!(!Check::CommandOutputContains {
-            cmd: "sh",
-            args: &["-c", "echo hi"],
-            needle: "bye",
-        }
-        .run(&dir));
+                needle: "missing"
+            }
+            .run(&dir)
+        );
+        assert!(
+            Check::FileEquals {
+                path: "a.txt",
+                content: "hello world"
+            }
+            .run(&dir)
+        );
+        assert!(
+            !Check::FileEquals {
+                path: "a.txt",
+                content: "hello"
+            }
+            .run(&dir)
+        );
+        assert!(Check::FileNotExists { path: "nope.txt" }.run(&dir));
+        assert!(!Check::FileNotExists { path: "a.txt" }.run(&dir));
+        assert!(
+            Check::All(vec![
+                Check::FileContains {
+                    path: "a.txt",
+                    needle: "hello"
+                },
+                Check::Not(Box::new(Check::FileContains {
+                    path: "a.txt",
+                    needle: "zzz"
+                })),
+            ])
+            .run(&dir)
+        );
+        assert!(
+            Check::CommandOutputContains {
+                cmd: "sh",
+                args: &["-c", "echo hi"],
+                needle: "hi",
+            }
+            .run(&dir)
+        );
+        assert!(
+            !Check::CommandOutputContains {
+                cmd: "sh",
+                args: &["-c", "echo hi"],
+                needle: "bye",
+            }
+            .run(&dir)
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

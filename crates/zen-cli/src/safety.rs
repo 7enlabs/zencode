@@ -1,8 +1,8 @@
 use zen_agent::safety as agent_safety;
 
 pub use agent_safety::{
-    auth_login_warning, concurrency_cap_warning, first_429_notice, parallel_sessions_warning,
-    quota_exhausted_error, repeated_429_warning, SAFETY_DISCLAIMER,
+    SAFETY_DISCLAIMER, auth_login_warning, concurrency_cap_warning, first_429_notice,
+    parallel_sessions_warning, quota_exhausted_error, repeated_429_warning,
 };
 
 /// The registry only tracks a fingerprint of the API key, never the key

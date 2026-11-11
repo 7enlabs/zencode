@@ -114,10 +114,10 @@ pub fn record(
         output_tokens,
         timestamp: chrono::Utc::now().to_rfc3339(),
     });
-    if let Some(parent) = path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
     }
     if let Ok(json) = serde_json::to_string_pretty(&ledger) {
         let _ = std::fs::write(&path, json);

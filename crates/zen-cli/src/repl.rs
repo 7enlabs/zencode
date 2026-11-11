@@ -4,8 +4,8 @@ use crate::repl_polish;
 use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use zen_core::{EventSink, RunResult, UsageStats};
 
 enum LineAction {
@@ -166,15 +166,15 @@ fn welcome_box(
         )]);
     }
     // Recent activity, one dim line when a previous session exists.
-    if let Some((_, path)) = sessions.first() {
-        if let Ok(mtime) = path.metadata().and_then(|m| m.modified()) {
-            let local: chrono::DateTime<chrono::Local> = mtime.into();
-            content.push(vec![]);
-            content.push(vec![(
-                format!("Last session {}", local.format("%H:%M")),
-                Some(Dim),
-            )]);
-        }
+    if let Some((_, path)) = sessions.first()
+        && let Ok(mtime) = path.metadata().and_then(|m| m.modified())
+    {
+        let local: chrono::DateTime<chrono::Local> = mtime.into();
+        content.push(vec![]);
+        content.push(vec![(
+            format!("Last session {}", local.format("%H:%M")),
+            Some(Dim),
+        )]);
     }
     content.push(vec![]);
     content.push(vec![(
@@ -273,7 +273,9 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         )
     );
     if first_run {
-        println!("Type /help for commands, !cmd for shell, @file to attach files, #note to remember, Ctrl-D to exit. While typing a /command, Tab lists the matches and Esc cancels.");
+        println!(
+            "Type /help for commands, !cmd for shell, @file to attach files, #note to remember, Ctrl-D to exit. While typing a /command, Tab lists the matches and Esc cancels."
+        );
     }
 
     let assembly = crate::agent_run::assemble(
@@ -548,7 +550,7 @@ impl ReplInterrupts {
     fn install() -> Option<Self> {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             let mut sig = signal(SignalKind::interrupt()).ok()?;
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let in_turn = Arc::new(AtomicBool::new(false));
@@ -661,10 +663,10 @@ fn resume_into(
         r.set_path(path.clone());
     }
     *repl.writer = crate::session::TranscriptWriter::new(path, &id, cwd);
-    if history != committed {
-        if let Err(e) = repl.writer.persist_turn(&committed, &history) {
-            eprintln!("warning: could not write transcript: {}", e);
-        }
+    if history != committed
+        && let Err(e) = repl.writer.persist_turn(&committed, &history)
+    {
+        eprintln!("warning: could not write transcript: {}", e);
     }
     agent.set_messages(with_hook_context(agent.messages(), history));
     *repl.session_id = id.clone();
@@ -887,16 +889,15 @@ async fn handle_line(
     persist(repl.writer, &before, agent);
     record_turn_cost(home, repl.session_id.as_str(), cfg, agent, &usage_before);
 
-    if agent.config.permission_mode == zen_core::PermissionMode::Plan {
-        if let Some(r) = &result {
-            if zen_agent::plan::looks_like_plan_exit(&r.result) {
-                repl.pending_plan = Some(crate::planmode::strip_plan_exit_markers(&r.result));
-                println!(
-                    "Plan ready. Reply `approve` to accept it (exits plan mode → acceptEdits), \
+    if agent.config.permission_mode == zen_core::PermissionMode::Plan
+        && let Some(r) = &result
+        && zen_agent::plan::looks_like_plan_exit(&r.result)
+    {
+        repl.pending_plan = Some(crate::planmode::strip_plan_exit_markers(&r.result));
+        println!(
+            "Plan ready. Reply `approve` to accept it (exits plan mode → acceptEdits), \
                      or keep chatting to refine."
-                );
-            }
-        }
+        );
     }
     if scope_active {
         let after = crate::doneguard::changed_files(cwd);
@@ -1002,28 +1003,28 @@ fn humanise_context(ctx: Option<u32>) -> String {
 /// The probe data (context window, latency) is threaded through instead of
 /// being discarded — the picker shows it.
 fn available_model_rows(home: Option<&Path>, base_url: &str) -> (Vec<ModelRow>, Option<String>) {
-    if let Some(cache) = crate::models::load_cache(home) {
-        if cache.base_url == base_url {
-            let rows: Vec<ModelRow> = cache
-                .results
-                .iter()
-                .filter(|p| p.success)
-                .map(ModelRow::from_probe)
-                .collect();
-            if !rows.is_empty() {
-                // `zen models` warns when the probe cache is stale;
-                // the picker - the path users actually switch with -
-                // used it silently, offering models that may have
-                // left the free tier or been renamed (bug hunt A B5).
-                let stale = crate::models::cache_is_stale(&cache).then(|| {
+    if let Some(cache) = crate::models::load_cache(home)
+        && cache.base_url == base_url
+    {
+        let rows: Vec<ModelRow> = cache
+            .results
+            .iter()
+            .filter(|p| p.success)
+            .map(ModelRow::from_probe)
+            .collect();
+        if !rows.is_empty() {
+            // `zen models` warns when the probe cache is stale;
+            // the picker - the path users actually switch with -
+            // used it silently, offering models that may have
+            // left the free tier or been renamed (bug hunt A B5).
+            let stale = crate::models::cache_is_stale(&cache).then(|| {
                     let age = crate::models::cache_age_secs(&cache).unwrap_or(-1);
                     format!(
                         "warning: models cache is {} old (>24h); run `zen models --refresh` to re-probe",
                         crate::models::human_age(age)
                     )
                 });
-                return (rows, stale);
-            }
+            return (rows, stale);
         }
     }
     // The catalog fallback shows only what the current provider
@@ -1348,7 +1349,9 @@ async fn handle_slash(
             // together, so the switch cannot strand a model on the
             // wrong gateway (the PR #71 HTTP 400 bug).
             if arg.is_empty() {
-                println!("usage: /provider <experientiallabs|openrouter> — switch provider; model resets to that provider's best free model");
+                println!(
+                    "usage: /provider <experientiallabs|openrouter> — switch provider; model resets to that provider's best free model"
+                );
             } else {
                 match crate::models::provider_default_model(&arg) {
                     Some(entry) => {
@@ -1384,7 +1387,9 @@ async fn handle_slash(
         }
         "/btw" => {
             if arg.is_empty() {
-                println!("usage: /btw <question> \u{2014} ask a quick side question; the main conversation is untouched");
+                println!(
+                    "usage: /btw <question> \u{2014} ask a quick side question; the main conversation is untouched"
+                );
             } else {
                 let model = cfg
                     .btw_model
@@ -1480,7 +1485,11 @@ async fn handle_slash(
                     let repo = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("repo");
                     let wt_path = cwd.join(format!("../{}-{}", repo, name));
                     match crate::git::create_worktree(cwd, &wt_path, name) {
-                        Ok(p) => println!("created worktree {} on branch {}\ncd to it and run zen there for an isolated session", p.display(), name),
+                        Ok(p) => println!(
+                            "created worktree {} on branch {}\ncd to it and run zen there for an isolated session",
+                            p.display(),
+                            name
+                        ),
                         Err(e) => eprintln!("failed: {}", e),
                     }
                 }
@@ -2699,8 +2708,8 @@ mod model_picker_tests {
         // so the resolved config is the plain default one.
         let old_model = std::env::var("ZEN_MODEL").ok();
         let old_base = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         let cli = crate::cli::Cli::parse_from(["zen"]);
         let dir = std::env::temp_dir().join(format!("zen_model400_cfg_{}", uuid::Uuid::new_v4()));
         let home = std::env::temp_dir().join(format!("zen_model400_home_{}", uuid::Uuid::new_v4()));
@@ -2710,12 +2719,12 @@ mod model_picker_tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&home).ok();
         match old_model {
-            Some(v) => std::env::set_var("ZEN_MODEL", v),
-            None => std::env::remove_var("ZEN_MODEL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_MODEL", v) },
+            None => unsafe { std::env::remove_var("ZEN_MODEL") },
         }
         match old_base {
-            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
-            None => std::env::remove_var("ZEN_BASE_URL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_BASE_URL", v) },
+            None => unsafe { std::env::remove_var("ZEN_BASE_URL") },
         }
         cfg
     }
@@ -2787,7 +2796,7 @@ mod model_picker_tests {
     fn switch_to_openrouter_model_changes_provider() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key") };
         let backend = std::sync::Arc::new(RecordingBackend {
             models: std::sync::Mutex::new(vec![]),
         });
@@ -2812,8 +2821,8 @@ mod model_picker_tests {
         assert!(!std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
 
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -2821,7 +2830,7 @@ mod model_picker_tests {
     fn switch_rebuilds_backend_when_only_base_url_changes() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "shared-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "shared-key") };
         let backend = std::sync::Arc::new(RecordingBackend {
             models: std::sync::Mutex::new(vec![]),
         });
@@ -2848,8 +2857,8 @@ mod model_picker_tests {
         assert!(!std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
 
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -2887,7 +2896,7 @@ mod model_picker_tests {
     fn switch_to_openrouter_model_without_key_is_refused() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::remove_var("OPENROUTER_API_KEY");
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
         let backend = std::sync::Arc::new(RecordingBackend {
             models: std::sync::Mutex::new(vec![]),
         });
@@ -2911,8 +2920,8 @@ mod model_picker_tests {
         assert!(std::sync::Arc::ptr_eq(&old_llm, &agent.llm));
 
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -2926,7 +2935,7 @@ mod model_picker_tests {
         use clap::Parser;
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::remove_var("OPENROUTER_API_KEY");
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
         let dir = std::env::temp_dir().join(format!("zen_slash_pin_{}", uuid::Uuid::new_v4()));
         let cmd_dir = dir.join(".zen").join("commands");
         std::fs::create_dir_all(&cmd_dir).unwrap();
@@ -2990,8 +2999,8 @@ mod model_picker_tests {
         // Re-acquire the lock for the env restore.
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3033,7 +3042,7 @@ mod model_picker_tests {
         // the startup key, not leak the OpenRouter key.
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-key") };
         let backend = std::sync::Arc::new(RecordingBackend {
             models: std::sync::Mutex::new(vec![]),
         });
@@ -3069,8 +3078,8 @@ mod model_picker_tests {
         assert_eq!(cfg.model, "deepseek-v4.1-flash");
 
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -3124,8 +3133,8 @@ mod model_picker_tests {
         std::fs::create_dir_all(&home).unwrap();
         let old_model = std::env::var("ZEN_MODEL").ok();
         let old_base = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         // Pin: the saved id is what the next run starts on.
         let path = save_model_choice(
             &dir,
@@ -3152,12 +3161,12 @@ mod model_picker_tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&home).ok();
         match old_model {
-            Some(v) => std::env::set_var("ZEN_MODEL", v),
-            None => std::env::remove_var("ZEN_MODEL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_MODEL", v) },
+            None => unsafe { std::env::remove_var("ZEN_MODEL") },
         }
         match old_base {
-            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
-            None => std::env::remove_var("ZEN_BASE_URL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_BASE_URL", v) },
+            None => unsafe { std::env::remove_var("ZEN_BASE_URL") },
         }
     }
 
@@ -3170,11 +3179,11 @@ mod model_picker_tests {
         use clap::Parser;
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old_key = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-key") };
         let old_model = std::env::var("ZEN_MODEL").ok();
         let old_base = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         let dir = std::env::temp_dir().join(format!("zen_model_baseurl_{}", uuid::Uuid::new_v4()));
         let home =
             std::env::temp_dir().join(format!("zen_model_baseurl_home_{}", uuid::Uuid::new_v4()));
@@ -3209,16 +3218,16 @@ mod model_picker_tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&home).ok();
         match old_key {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
         match old_model {
-            Some(v) => std::env::set_var("ZEN_MODEL", v),
-            None => std::env::remove_var("ZEN_MODEL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_MODEL", v) },
+            None => unsafe { std::env::remove_var("ZEN_MODEL") },
         }
         match old_base {
-            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
-            None => std::env::remove_var("ZEN_BASE_URL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_BASE_URL", v) },
+            None => unsafe { std::env::remove_var("ZEN_BASE_URL") },
         }
     }
 
@@ -3227,26 +3236,26 @@ mod model_picker_tests {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old_model = std::env::var("ZEN_MODEL").ok();
         let old_base = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         assert!(env_shadow_note().is_none());
-        std::env::set_var("ZEN_MODEL", "env-pinned");
+        unsafe { std::env::set_var("ZEN_MODEL", "env-pinned") };
         let note = env_shadow_note().expect("ZEN_MODEL shadows the saved model");
         assert!(note.contains("ZEN_MODEL"), "{note}");
         assert!(!note.contains("ZEN_BASE_URL"), "{note}");
-        std::env::set_var("ZEN_BASE_URL", "https://env.example/v1");
+        unsafe { std::env::set_var("ZEN_BASE_URL", "https://env.example/v1") };
         let note = env_shadow_note().expect("both vars shadow");
         assert!(
             note.contains("ZEN_MODEL") && note.contains("ZEN_BASE_URL"),
             "{note}"
         );
         match old_model {
-            Some(v) => std::env::set_var("ZEN_MODEL", v),
-            None => std::env::remove_var("ZEN_MODEL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_MODEL", v) },
+            None => unsafe { std::env::remove_var("ZEN_MODEL") },
         }
         match old_base {
-            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
-            None => std::env::remove_var("ZEN_BASE_URL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_BASE_URL", v) },
+            None => unsafe { std::env::remove_var("ZEN_BASE_URL") },
         }
     }
 
@@ -3257,8 +3266,8 @@ mod model_picker_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let old_model = std::env::var("ZEN_MODEL").ok();
         let old_base = std::env::var("ZEN_BASE_URL").ok();
-        std::env::remove_var("ZEN_MODEL");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
         report_model_switch(
             &dir,
             false,
@@ -3275,12 +3284,12 @@ mod model_picker_tests {
         );
         std::fs::remove_dir_all(&dir).ok();
         match old_model {
-            Some(v) => std::env::set_var("ZEN_MODEL", v),
-            None => std::env::remove_var("ZEN_MODEL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_MODEL", v) },
+            None => unsafe { std::env::remove_var("ZEN_MODEL") },
         }
         match old_base {
-            Some(v) => std::env::set_var("ZEN_BASE_URL", v),
-            None => std::env::remove_var("ZEN_BASE_URL"),
+            Some(v) => unsafe { std::env::set_var("ZEN_BASE_URL", v) },
+            None => unsafe { std::env::remove_var("ZEN_BASE_URL") },
         }
     }
 
@@ -3336,7 +3345,7 @@ mod model_picker_tests {
     fn route_moves_openrouter_model_to_its_provider() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-key") };
         let mut cfg = test_cfg();
         cfg.model = "qwen/qwen3-coder:free".to_string();
         let routed = crate::settings::route_catalog_model(&mut cfg).unwrap();
@@ -3344,8 +3353,8 @@ mod model_picker_tests {
         assert_eq!(cfg.base_url, "https://openrouter.ai/api/v1");
         assert_eq!(cfg.api_key.as_deref(), Some("or-key"));
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -3353,14 +3362,14 @@ mod model_picker_tests {
     fn route_refuses_openrouter_model_without_key() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::remove_var("OPENROUTER_API_KEY");
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
         let mut cfg = test_cfg();
         cfg.model = "qwen/qwen3-coder:free".to_string();
         let err = crate::settings::route_catalog_model(&mut cfg).unwrap_err();
         assert!(err.to_string().contains("OPENROUTER_API_KEY"), "{err}");
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
     }
 
@@ -3398,7 +3407,7 @@ mod model_picker_tests {
         assert_eq!(cfg.model, "deepseek-v4.1-flash");
         // On the OpenRouter base, auto is that provider's default.
         let old = std::env::var("OPENROUTER_API_KEY").ok();
-        std::env::set_var("OPENROUTER_API_KEY", "or-key");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-key") };
         let mut cfg = test_cfg();
         cfg.model = "auto".to_string();
         cfg.base_url = crate::models::OPENROUTER_BASE_URL.to_string();
@@ -3406,8 +3415,8 @@ mod model_picker_tests {
         assert!(routed);
         assert_eq!(cfg.model, "qwen/qwen3-coder:free");
         match old {
-            Some(v) => std::env::set_var("OPENROUTER_API_KEY", v),
-            None => std::env::remove_var("OPENROUTER_API_KEY"),
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
         }
         // Casing must not change the meaning (PR #73 review
         // follow-up): `Auto` and `AUTO` resolve the same way.

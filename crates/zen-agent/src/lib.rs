@@ -22,12 +22,12 @@ pub use agent::{
     DEFAULT_STOP_HOOK_CONTINUES, DEFAULT_TOOL_TIMEOUT_MS,
 };
 pub use client::{
-    is_anthropic_url, make_backend, make_backend_with, request_id_from_error, AnthropicClient,
-    HttpTimeouts, OpenAiClient,
+    AnthropicClient, HttpTimeouts, OpenAiClient, is_anthropic_url, make_backend, make_backend_with,
+    request_id_from_error,
 };
 pub use providers::{ApiStandard, ModelSpec, ProviderInfo};
-pub use rategate::{RateGate, RateGateSettings, DEFAULT_DAILY_LIMIT};
-pub use safety::{classify_error, user_agent, ErrorClass};
+pub use rategate::{DEFAULT_DAILY_LIMIT, RateGate, RateGateSettings};
+pub use safety::{ErrorClass, classify_error, user_agent};
 pub use subagent::SubAgentExecutor;
 pub use tool_bundles::{ToolBundle, ToolPhase};
 

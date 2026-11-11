@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -6,10 +6,10 @@ pub const DEFAULT_REPO: &str = "https://github.com/7enlabs/zencode.git";
 pub const DEFAULT_BRANCH: &str = "main";
 
 pub fn default_src_dir(home: Option<&Path>) -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("ZENCODE_SRC_DIR") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir));
-        }
+    if let Ok(dir) = std::env::var("ZENCODE_SRC_DIR")
+        && !dir.is_empty()
+    {
+        return Some(PathBuf::from(dir));
     }
     home.map(|h| h.join(".local").join("share").join("zencode"))
 }
@@ -97,11 +97,7 @@ fn backup_path_for(target: &Path) -> PathBuf {
 }
 
 fn built_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "zen.exe"
-    } else {
-        "zen"
-    }
+    if cfg!(windows) { "zen.exe" } else { "zen" }
 }
 
 pub fn run_update(
@@ -116,7 +112,9 @@ pub fn run_update(
     };
     let git = "git";
     if Command::new(git).arg("--version").output().is_err() {
-        anyhow::bail!("git not found; zen update works on a source checkout and needs Git - install Git first, then rerun. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead");
+        anyhow::bail!(
+            "git not found; zen update works on a source checkout and needs Git - install Git first, then rerun. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead"
+        );
     }
 
     if !src_dir.join(".git").is_dir() {
@@ -228,7 +226,9 @@ pub fn run_update(
     }
 
     let Some(cargo) = find_cargo(home) else {
-        anyhow::bail!("cargo not found; zen update rebuilds from source and needs a Rust toolchain - install Rust first, for example from https://rustup.rs. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead");
+        anyhow::bail!(
+            "cargo not found; zen update rebuilds from source and needs a Rust toolchain - install Rust first, for example from https://rustup.rs. If you installed the prebuilt binary, re-run the installer one-command from INSTALL.md to update instead"
+        );
     };
     if !quiet && !json {
         println!("Building zen-cli in release mode (this can take a few minutes)");
@@ -272,9 +272,9 @@ pub fn run_update(
         let _ = std::fs::remove_file(&backup);
     }
     if target.exists() {
-        std::fs::rename(&target, &backup).with_context(|| {
-            "could not move the running binary aside; close other zen processes and retry"
-        })?;
+        std::fs::rename(&target, &backup).with_context(
+            || "could not move the running binary aside; close other zen processes and retry",
+        )?;
     }
     if let Err(e) = std::fs::copy(&built, &target) {
         let _ = std::fs::rename(&backup, &target);
@@ -324,7 +324,7 @@ mod tests {
         // No ZENCODE_SRC_DIR override and no checkout under home:
         // --check reports nothing to do and exits 0.
         let old = std::env::var("ZENCODE_SRC_DIR").ok();
-        std::env::remove_var("ZENCODE_SRC_DIR");
+        unsafe { std::env::remove_var("ZENCODE_SRC_DIR") };
         let home =
             std::env::temp_dir().join(format!("zen_update_nocheckout_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
@@ -333,8 +333,8 @@ mod tests {
         assert_eq!(code, 0);
         let _ = std::fs::remove_dir_all(&home);
         match old {
-            Some(v) => std::env::set_var("ZENCODE_SRC_DIR", v),
-            None => std::env::remove_var("ZENCODE_SRC_DIR"),
+            Some(v) => unsafe { std::env::set_var("ZENCODE_SRC_DIR", v) },
+            None => unsafe { std::env::remove_var("ZENCODE_SRC_DIR") },
         }
     }
 
@@ -343,7 +343,7 @@ mod tests {
         // A checkout with an untracked file must refuse to update
         // (and never reach the network) - an error, not Ok(0).
         let old = std::env::var("ZENCODE_SRC_DIR").ok();
-        std::env::remove_var("ZENCODE_SRC_DIR");
+        unsafe { std::env::remove_var("ZENCODE_SRC_DIR") };
         let home = std::env::temp_dir().join(format!("zen_update_dirty_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let src = home.join(".local").join("share").join("zencode");
@@ -363,8 +363,8 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&home);
         match old {
-            Some(v) => std::env::set_var("ZENCODE_SRC_DIR", v),
-            None => std::env::remove_var("ZENCODE_SRC_DIR"),
+            Some(v) => unsafe { std::env::set_var("ZENCODE_SRC_DIR", v) },
+            None => unsafe { std::env::remove_var("ZENCODE_SRC_DIR") },
         }
     }
 

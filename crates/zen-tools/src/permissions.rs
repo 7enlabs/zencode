@@ -718,15 +718,15 @@ impl PermissionChecker for RulePermissions {
                 dyn_rules.push(rule.to_string());
             }
         }
-        if let Some(path) = &self.local_settings_path {
-            if let Err(e) = persist_allow_rule(path, rule) {
-                eprintln!(
-                    "warning: could not save rule '{}' to {}: {}",
-                    rule,
-                    path.display(),
-                    e
-                );
-            }
+        if let Some(path) = &self.local_settings_path
+            && let Err(e) = persist_allow_rule(path, rule)
+        {
+            eprintln!(
+                "warning: could not save rule '{}' to {}: {}",
+                rule,
+                path.display(),
+                e
+            );
         }
     }
 }
@@ -789,13 +789,13 @@ pub fn suggested_rule(tool_name: &str, input: &Value) -> Option<String> {
 pub fn suggested_rules(tool_name: &str, input: &Value) -> Vec<String> {
     if tool_name == "Bash" {
         let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(parts) = split_compound(cmd) {
-            if parts.len() > 1 {
-                return dedup(parts.into_iter().map(|p| format!("Bash({})", p)).collect())
-                    .into_iter()
-                    .take(5)
-                    .collect();
-            }
+        if let Some(parts) = split_compound(cmd)
+            && parts.len() > 1
+        {
+            return dedup(parts.into_iter().map(|p| format!("Bash({})", p)).collect())
+                .into_iter()
+                .take(5)
+                .collect();
         }
     }
     suggested_rule(tool_name, input).into_iter().collect()
@@ -1229,7 +1229,7 @@ mod permission_tests {
         // targets canonicalize to the long name (runneradmin), so deny
         // rules built from the raw cwd never matched.
         use std::os::windows::ffi::OsStrExt;
-        extern "system" {
+        unsafe extern "system" {
             fn GetShortPathNameW(long: *const u16, short: *mut u16, len: u32) -> u32;
         }
         let dir = tmpdir("short83");

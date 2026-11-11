@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use zen_core::*;
 
-use crate::client::{mid_response_error, OpenAiClient};
-use crate::rategate::{fetch_key_quota, openrouter_key_url, quota_command_report, KeyQuota};
+use crate::client::{OpenAiClient, mid_response_error};
+use crate::rategate::{KeyQuota, fetch_key_quota, openrouter_key_url, quota_command_report};
 use crate::safety::ErrorClass;
 use crate::testutil::*;
 
@@ -306,10 +306,10 @@ fn p0_5_mid_response_error_classification() {
     let top = r#"{"id":"gen-2","error":{"code":503,"message":"overloaded","metadata":{"error_type":"provider_overloaded"}}}"#;
     assert_eq!(mid_response_error(top).unwrap().code, Some(503));
 
-    assert!(mid_response_error(
-        r#"{"error":{"message":"unexpected tokens remaining","code":400}}"#
-    )
-    .is_none());
+    assert!(
+        mid_response_error(r#"{"error":{"message":"unexpected tokens remaining","code":400}}"#)
+            .is_none()
+    );
     assert!(mid_response_error(OK_BODY).is_none());
 }
 

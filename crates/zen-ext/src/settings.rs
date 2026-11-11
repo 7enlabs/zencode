@@ -181,10 +181,10 @@ fn load_file_layer(
     bypass_forbidden: &mut bool,
 ) {
     if let Some(layer) = read_json_file(path, label, warnings) {
-        if let Some(disable_bypass) = layer.get("disableBypassPermissionsMode") {
-            if disable_bypass.as_str() == Some("disable") {
-                *bypass_forbidden = true;
-            }
+        if let Some(disable_bypass) = layer.get("disableBypassPermissionsMode")
+            && disable_bypass.as_str() == Some("disable")
+        {
+            *bypass_forbidden = true;
         }
         *merged = merge_json(merged.clone(), layer);
         sources.push(label.to_string());
@@ -208,12 +208,11 @@ fn load_file_layer_bypass(
             }
         }
 
-        if let Some(Value::Object(permissions)) = layer.get_mut("permissions") {
-            if let Some(Value::String(default_mode)) = permissions.get_mut("defaultMode") {
-                if default_mode == "bypassPermissions" {
-                    permissions.remove("defaultMode");
-                }
-            }
+        if let Some(Value::Object(permissions)) = layer.get_mut("permissions")
+            && let Some(Value::String(default_mode)) = permissions.get_mut("defaultMode")
+            && default_mode == "bypassPermissions"
+        {
+            permissions.remove("defaultMode");
         }
         *merged = merge_json(merged.clone(), layer);
         sources.push(label.to_string());
@@ -325,10 +324,10 @@ fn load_cli_layer(
         load_file_layer(&path, "cli", merged, sources, warnings, bypass_forbidden);
     } else {
         if let Some(layer) = parse_inline_json(trimmed, "cli", warnings) {
-            if let Some(disable_bypass) = layer.get("disableBypassPermissionsMode") {
-                if disable_bypass.as_str() == Some("disable") {
-                    *bypass_forbidden = true;
-                }
+            if let Some(disable_bypass) = layer.get("disableBypassPermissionsMode")
+                && disable_bypass.as_str() == Some("disable")
+            {
+                *bypass_forbidden = true;
             }
             *merged = merge_json(merged.clone(), layer);
             sources.push("cli".to_string());
@@ -425,28 +424,28 @@ fn load_settings_impl(
     let mut warnings = Vec::new();
     let mut bypass_forbidden = false;
 
-    if is_enabled(sources, "user") {
-        if let Some(home) = home {
-            let path = home.join(".zen").join("settings.json");
-            load_file_layer(
-                &path,
-                "user",
-                &mut merged,
-                &mut loaded_sources,
-                &mut warnings,
-                &mut bypass_forbidden,
-            );
-            let hooks_path = home.join(".zen").join("hooks.json");
-            load_hooks_file(
-                &hooks_path,
-                "user-hooks",
-                &mut merged,
-                &mut loaded_sources,
-                &mut warnings,
-                true,
-                &mut skipped,
-            );
-        }
+    if is_enabled(sources, "user")
+        && let Some(home) = home
+    {
+        let path = home.join(".zen").join("settings.json");
+        load_file_layer(
+            &path,
+            "user",
+            &mut merged,
+            &mut loaded_sources,
+            &mut warnings,
+            &mut bypass_forbidden,
+        );
+        let hooks_path = home.join(".zen").join("hooks.json");
+        load_hooks_file(
+            &hooks_path,
+            "user-hooks",
+            &mut merged,
+            &mut loaded_sources,
+            &mut warnings,
+            true,
+            &mut skipped,
+        );
     }
 
     if is_enabled(sources, "project") {

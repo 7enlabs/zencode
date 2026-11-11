@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -66,12 +66,12 @@ impl StdioTransport {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
-                        if let Some(id) = val.get("id").and_then(id_to_u64) {
-                            let tx = reader_pending.lock().expect("reader_pending lock must not be poisoned: holders only remove or drain pending response senders and never panic while holding it").remove(&id);
-                            if let Some(tx) = tx {
-                                let _ = tx.send(val);
-                            }
+                    if let Ok(val) = serde_json::from_str::<Value>(trimmed)
+                        && let Some(id) = val.get("id").and_then(id_to_u64)
+                    {
+                        let tx = reader_pending.lock().expect("reader_pending lock must not be poisoned: holders only remove or drain pending response senders and never panic while holding it").remove(&id);
+                        if let Some(tx) = tx {
+                            let _ = tx.send(val);
                         }
                     }
                 }
@@ -154,10 +154,10 @@ impl StdioTransport {
 
     pub(crate) fn kill(&self) {
         let pid = self.child_pid.lock().ok().and_then(|mut g| g.take());
-        if let Ok(mut guard) = self.child.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.start_kill();
-            }
+        if let Ok(mut guard) = self.child.lock()
+            && let Some(mut child) = guard.take()
+        {
+            let _ = child.start_kill();
         }
         kill_process_group(pid);
     }
@@ -195,11 +195,11 @@ pub(crate) struct HttpTransport {
 }
 
 fn with_extra_roots(mut b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    if let Some(pem) = zen_core::extra_root_pem() {
-        if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem) {
-            for c in certs {
-                b = b.add_root_certificate(c);
-            }
+    if let Some(pem) = zen_core::extra_root_pem()
+        && let Ok(certs) = reqwest::Certificate::from_pem_bundle(&pem)
+    {
+        for c in certs {
+            b = b.add_root_certificate(c);
         }
     }
     b
@@ -250,10 +250,10 @@ impl HttpTransport {
     }
 
     fn capture_session(&self, resp: &reqwest::Response) {
-        if let Some(sid) = resp.headers().get("Mcp-Session-Id") {
-            if let Ok(s) = sid.to_str() {
-                *self.session_id.lock().expect("session_id lock must not be poisoned: holders only clone or replace the session id string and never panic while holding it") = Some(s.to_string());
-            }
+        if let Some(sid) = resp.headers().get("Mcp-Session-Id")
+            && let Ok(s) = sid.to_str()
+        {
+            *self.session_id.lock().expect("session_id lock must not be poisoned: holders only clone or replace the session id string and never panic while holding it") = Some(s.to_string());
         }
     }
 

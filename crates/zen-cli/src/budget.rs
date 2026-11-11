@@ -78,8 +78,8 @@ mod tests {
     }
 
     fn unset_env() {
-        std::env::remove_var("ZEN_MAX_BUDGET_USD");
-        std::env::remove_var("ZEN_BUDGET_WARN_AT");
+        unsafe { std::env::remove_var("ZEN_MAX_BUDGET_USD") };
+        unsafe { std::env::remove_var("ZEN_BUDGET_WARN_AT") };
     }
 
     #[test]
@@ -93,7 +93,7 @@ mod tests {
     fn flag_beats_env_beats_config() {
         let _g = env_lock();
         unset_env();
-        std::env::set_var("ZEN_MAX_BUDGET_USD", "3.0");
+        unsafe { std::env::set_var("ZEN_MAX_BUDGET_USD", "3.0") };
 
         let p = resolve_budget(None, None, Some(5.0), None).unwrap();
         assert_eq!(p.max_budget_usd, 3.0);
@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(p.warn_at, 0.8);
         let p = resolve_budget(Some(5.0), Some(0.5), None, Some(0.9)).unwrap();
         assert_eq!(p.warn_at, 0.5);
-        std::env::set_var("ZEN_BUDGET_WARN_AT", "0.6");
+        unsafe { std::env::set_var("ZEN_BUDGET_WARN_AT", "0.6") };
         let p = resolve_budget(Some(5.0), None, None, Some(0.9)).unwrap();
         assert_eq!(p.warn_at, 0.6);
         unset_env();
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(resolve_budget(Some(0.0), None, None, None), None);
         assert_eq!(resolve_budget(Some(-2.0), None, None, None), None);
         assert_eq!(resolve_budget(Some(f64::INFINITY), None, None, None), None);
-        std::env::set_var("ZEN_MAX_BUDGET_USD", "not-a-number");
+        unsafe { std::env::set_var("ZEN_MAX_BUDGET_USD", "not-a-number") };
         assert_eq!(resolve_budget(None, None, None, None), None);
         unset_env();
     }

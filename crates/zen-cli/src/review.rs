@@ -438,10 +438,10 @@ pub fn extract_findings(text: &str) -> Result<Vec<Finding>> {
             .unwrap_or(inner_start);
         if let Some(end) = search[content_start..].find("```") {
             let inner = search[content_start..content_start + end].trim();
-            if inner.starts_with('[') {
-                if let Ok(v) = serde_json::from_str::<Vec<Finding>>(inner) {
-                    return Ok(v);
-                }
+            if inner.starts_with('[')
+                && let Ok(v) = serde_json::from_str::<Vec<Finding>>(inner)
+            {
+                return Ok(v);
             }
             search = &search[content_start + end..];
         } else {
@@ -449,12 +449,12 @@ pub fn extract_findings(text: &str) -> Result<Vec<Finding>> {
         }
     }
 
-    if let (Some(s), Some(e)) = (text.find('['), text.rfind(']')) {
-        if s < e {
-            let inner = &text[s..=e];
-            if let Ok(v) = serde_json::from_str::<Vec<Finding>>(inner) {
-                return Ok(v);
-            }
+    if let (Some(s), Some(e)) = (text.find('['), text.rfind(']'))
+        && s < e
+    {
+        let inner = &text[s..=e];
+        if let Ok(v) = serde_json::from_str::<Vec<Finding>>(inner) {
+            return Ok(v);
         }
     }
     anyhow::bail!(
@@ -859,22 +859,25 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
         let mut add = Command::new("git");
         git_env(&mut add);
-        assert!(add
-            .args(["add", "."])
-            .current_dir(&dir)
-            .output()
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            add.args(["add", "."])
+                .current_dir(&dir)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         let mut commit = Command::new("git");
         git_env(&mut commit);
-        assert!(commit
-            .args(["commit", "-qm", "init"])
-            .current_dir(&dir)
-            .output()
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            commit
+                .args(["commit", "-qm", "init"])
+                .current_dir(&dir)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         dir
     }
 
@@ -1104,12 +1107,14 @@ mod tests {
     #[test]
     fn collect_diff_bad_base_errors() {
         let dir = git_repo();
-        assert!(collect_diff(
-            &dir,
-            &ReviewScope::Base("no-such-branch-xyz".into()),
-            1_000_000
-        )
-        .is_err());
+        assert!(
+            collect_diff(
+                &dir,
+                &ReviewScope::Base("no-such-branch-xyz".into()),
+                1_000_000
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -136,10 +136,12 @@ async fn headless_json_against_mock_server() {
     assert_eq!(v["is_error"], false);
     assert_eq!(v["result"], "hello from mock");
     assert_eq!(v["model"], "mock-model");
-    assert!(v["session_id"]
-        .as_str()
-        .map(|s| !s.is_empty())
-        .unwrap_or(false));
+    assert!(
+        v["session_id"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    );
     assert_eq!(v["total_cost_usd"], 0.0);
     assert!(v["permission_denials"].as_array().is_some());
     assert_eq!(v["usage"]["input_tokens"], 7);

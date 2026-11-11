@@ -77,10 +77,10 @@ pub fn find_session_path(home: &Path, id_or_path: &str) -> Option<PathBuf> {
     if p.is_absolute() && p.exists() {
         return Some(p);
     }
-    if p.exists() {
-        if let Ok(abs) = p.canonicalize() {
-            return Some(abs);
-        }
+    if p.exists()
+        && let Ok(abs) = p.canonicalize()
+    {
+        return Some(abs);
     }
 
     let projects_root = home.join(".zen").join("projects");
@@ -489,10 +489,10 @@ pub fn list_sessions_for_cwd(home: &Path, cwd: &Path) -> Vec<(String, PathBuf)> 
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                sessions.push((mtime, stem.to_string(), path));
-            }
+        if let Ok(mtime) = entry.metadata().and_then(|m| m.modified())
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            sessions.push((mtime, stem.to_string(), path));
         }
     }
     sessions.sort_by_key(|s| std::cmp::Reverse(s.0));

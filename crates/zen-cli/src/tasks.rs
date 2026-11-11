@@ -202,7 +202,7 @@ pub fn load_registry(path: &Path) -> Result<Vec<TaskCard>> {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => {
-            return Err(e).with_context(|| format!("reading task registry {}", path.display()))
+            return Err(e).with_context(|| format!("reading task registry {}", path.display()));
         }
     };
     let mut cards: Vec<TaskCard> = Vec::new();
@@ -902,13 +902,13 @@ pub fn render_claim_text(outcome: &ClaimOutcome) -> String {
     if let Some(key) = &outcome.idempotency_key {
         out.push_str(&format!("idempotency_key: {}\n", key));
     }
-    if let Some(prev) = &outcome.previous_holder {
-        if prev != holder {
-            out.push_str(&format!(
-                "Note: previously held by {}; the overlap is flagged, not blocked.\n",
-                prev
-            ));
-        }
+    if let Some(prev) = &outcome.previous_holder
+        && prev != holder
+    {
+        out.push_str(&format!(
+            "Note: previously held by {}; the overlap is flagged, not blocked.\n",
+            prev
+        ));
     }
     if outcome.replayed {
         out.push_str("Observe-only: a repeated claim is a no-op; no seat was blocked.\n");
@@ -1887,11 +1887,13 @@ mod tests {
         assert_eq!(swept.reassign_count, 1);
         // The old holder stays on the card as history.
         assert_eq!(swept.owner.as_deref(), Some("zc-developer"));
-        assert!(swept
-            .orphan_reason
-            .as_ref()
-            .unwrap()
-            .contains("2026-11-06T09:00:00+00:00"));
+        assert!(
+            swept
+                .orphan_reason
+                .as_ref()
+                .unwrap()
+                .contains("2026-11-06T09:00:00+00:00")
+        );
         assert!(!swept.dead_lettered);
         // Seed + one sweep snapshot.
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
@@ -2085,10 +2087,12 @@ mod tests {
         assert!(claim_task(&path, "B-4", "sd-developer", fixed_now()).is_err());
         assert!(heartbeat_task(&path, "B-4", "sd-developer", fixed_now()).is_err());
         // A fifth sweep leaves the parked card alone, too.
-        assert!(sweep_tasks(&path, fixed_now(), false)
-            .unwrap()
-            .entries
-            .is_empty());
+        assert!(
+            sweep_tasks(&path, fixed_now(), false)
+                .unwrap()
+                .entries
+                .is_empty()
+        );
         assert_eq!(registry_lines(&path), lines_before);
     }
 
@@ -2186,9 +2190,11 @@ mod tests {
     fn revive_unknown_id_records_nothing() {
         let path = temp_registry("revive_unknown");
         append_snapshot(&path, &card("B-4", "work")).unwrap();
-        assert!(revive_task(&path, "B-9", "zc-leader", fixed_now())
-            .unwrap()
-            .is_none());
+        assert!(
+            revive_task(&path, "B-9", "zc-leader", fixed_now())
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(registry_lines(&path), 1);
     }
 

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use zen_core::*;
 
 use crate::agent::combine_permission;
@@ -246,12 +246,13 @@ async fn deny_is_recorded_in_result_and_event() {
     assert_eq!(r.permission_denials[0].tool_input, json!({"p":"a"}));
     let tool_msg = agent.messages().iter().find(|m| m.role == "tool").unwrap();
     assert_eq!(tool_msg.content.as_deref(), Some("rule says no"));
-    assert!(sink
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|e| matches!(e, AgentEvent::PermissionDenied(_))));
+    assert!(
+        sink.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, AgentEvent::PermissionDenied(_)))
+    );
 }
 
 #[tokio::test]
@@ -267,11 +268,13 @@ async fn ask_without_prompter_denies_in_headless_mode() {
     let r = agent.run_turn("go").await;
     assert_eq!(r.permission_denials.len(), 1);
     let tool_msg = agent.messages().iter().find(|m| m.role == "tool").unwrap();
-    assert!(tool_msg
-        .content
-        .as_deref()
-        .unwrap()
-        .contains("non-interactive"));
+    assert!(
+        tool_msg
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("non-interactive")
+    );
 }
 
 #[tokio::test]
@@ -796,26 +799,30 @@ async fn c10_manual_compact_replaces_history_keeps_pairs_and_fires_hooks() {
         .unwrap();
     let msgs = agent.messages();
     assert!(msgs[0].content.as_deref().unwrap().contains("SUMMARY TEXT"));
-    assert!(msgs[0]
-        .content
-        .as_deref()
-        .unwrap()
-        .starts_with("[Compaction summary"));
+    assert!(
+        msgs[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .starts_with("[Compaction summary")
+    );
     assert_paired(msgs);
-    assert!(msgs
-        .iter()
-        .all(|m| m.role != "tool" || msgs.iter().any(|a| a.tool_calls.is_some())));
+    assert!(
+        msgs.iter()
+            .all(|m| m.role != "tool" || msgs.iter().any(|a| a.tool_calls.is_some()))
+    );
 
     let sreq = llm.requests().last().cloned().unwrap();
     assert!(sreq.tools.is_empty());
-    assert!(sreq
-        .messages
-        .last()
-        .unwrap()
-        .content
-        .as_deref()
-        .unwrap()
-        .contains("focus on parser"));
+    assert!(
+        sreq.messages
+            .last()
+            .unwrap()
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("focus on parser")
+    );
 
     let calls = hooks.calls.lock().unwrap();
     let pre = calls.iter().find(|c| c.0 == HookEvent::PreCompact).unwrap();
@@ -1297,12 +1304,14 @@ async fn r7_fenced_args_and_lowercase_name_are_repaired_and_run() {
         json!(true)
     );
 
-    assert!(hooks
-        .calls
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(ev, target, _)| *ev == HookEvent::PreToolUse && target == "Edit"));
+    assert!(
+        hooks
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(ev, target, _)| *ev == HookEvent::PreToolUse && target == "Edit")
+    );
 }
 
 #[tokio::test]
@@ -1364,17 +1373,20 @@ async fn c5_empty_reply_is_requeried_then_accepted_after_two() {
 #[tokio::test]
 async fn c7_unparsed_sample_error_is_requeried_but_other_errors_end_the_run() {
     let llm = MockLlm::with_errors(vec![
-        Err(anyhow::anyhow!("model returned no choices (body: {{\"error\":{{\"message\":\"unexpected tokens remaining in message header\"}}}})")),
+        Err(anyhow::anyhow!(
+            "model returned no choices (body: {{\"error\":{{\"message\":\"unexpected tokens remaining in message header\"}}}})"
+        )),
         Ok(resp("done")),
     ]);
     let (mut agent, _s, _h) = build_agent(llm.clone(), registry_with(vec![]), allow(), base_cfg());
     let r = agent.run_turn("go").await;
     assert_eq!(r.result, "done");
     let last = llm.requests()[1].messages.last().unwrap().clone();
-    assert!(last
-        .content
-        .unwrap()
-        .contains("could not parse your last reply"));
+    assert!(
+        last.content
+            .unwrap()
+            .contains("could not parse your last reply")
+    );
 
     let llm = MockLlm::with_errors(vec![
         Err(anyhow::anyhow!("HTTP 401: bad key")),
@@ -1561,10 +1573,12 @@ async fn r7_short_turn_and_empty_todo_list_get_no_notes() {
     let reg = registry_with(vec![fake("Edit", false, "edited")]);
     let (mut agent, _s, _h) = build_agent(MockLlm::new(script), reg, allow(), base_cfg());
     agent.run_turn("go").await;
-    assert!(agent
-        .messages()
-        .iter()
-        .all(|m| !m.content.as_deref().unwrap_or("").contains("[zen:")));
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .all(|m| !m.content.as_deref().unwrap_or("").contains("[zen:"))
+    );
 }
 
 #[tokio::test]
@@ -1599,11 +1613,13 @@ async fn r7_edit_then_answer_gets_one_reminder_then_bash_then_success() {
         })
         .collect();
     assert_eq!(reminders.len(), 1);
-    assert!(reminders[0]
-        .content
-        .as_deref()
-        .unwrap()
-        .contains("src/a.rs"));
+    assert!(
+        reminders[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("src/a.rs")
+    );
 }
 
 #[tokio::test]
@@ -1692,11 +1708,13 @@ async fn r7_tool_call_written_as_text_runs_as_a_call() {
     assert_eq!(tool.calls.lock().unwrap().len(), 1);
     let second = &llm.requests()[1];
     let tool_msg = second.messages.iter().find(|m| m.role == "tool").unwrap();
-    assert!(tool_msg
-        .content
-        .as_deref()
-        .unwrap()
-        .contains("written as message text"));
+    assert!(
+        tool_msg
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("written as message text")
+    );
     assert_paired(agent.messages());
 }
 
@@ -2070,13 +2088,15 @@ async fn max_parallel_tool_calls_one_is_sequential() {
         "calls must not overlap with cap 1"
     );
     let events = sink.events.lock().unwrap();
-    assert!(events
-        .iter()
-        .filter_map(|e| match e {
-            AgentEvent::ToolResult { parallel, .. } => Some(*parallel),
-            _ => None,
-        })
-        .all(|p| !p));
+    assert!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolResult { parallel, .. } => Some(*parallel),
+                _ => None,
+            })
+            .all(|p| !p)
+    );
     assert_paired(agent.messages());
 }
 

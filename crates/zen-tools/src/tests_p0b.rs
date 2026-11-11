@@ -4,7 +4,7 @@ use zen_core::{Tool, ToolContext};
 
 use crate::builtin::spill_output;
 #[cfg(unix)]
-use crate::builtin::{BashTool, BASH_MAX_CHARS};
+use crate::builtin::{BASH_MAX_CHARS, BashTool};
 
 fn tmp_dir(tag: &str) -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
