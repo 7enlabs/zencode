@@ -954,7 +954,8 @@ mod tests {
     fn list_sessions_for_cwd_returns_sorted() {
         let home = std::env::temp_dir().join(format!("zen_sess_list_{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
-        let cwd = std::env::temp_dir().join(format!("zen_sess_lcwd_{}", std::process::id()));
+        // NOTE: keep this cwd dir unique to this test: the sibling latest_session test shares the process id, and sharing the cwd dir let one test delete it mid-run, so encode_cwd fell back to a non-canonical path and the lookup missed (flaky on macOS/Windows).
+        let cwd = std::env::temp_dir().join(format!("zen_sess_list_cwd_{}", std::process::id()));
         let _ = fs::remove_dir_all(&cwd);
         fs::create_dir_all(&cwd).unwrap();
 
