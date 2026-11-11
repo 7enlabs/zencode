@@ -695,6 +695,29 @@ pub fn resolve_config_with_home(
         );
     }
 
+    // The /btw side question runs on the main backend, which is
+    // bound to this base URL's provider: a btw model written as a
+    // catalog id must be translated like every other model, and a
+    // catalog entry from another provider can never be served
+    // here - fall back to the main model with a warning instead of
+    // sending a foreign id to the gateway (bug hunt C F6; the
+    // fallbackModels half of F6 is covered by the B P2-4 fix).
+    let btw_model = btw_model.map(|m| {
+        let trimmed = m.trim().to_string();
+        let provider = crate::models::provider_for_base_url(&base_url);
+        match (provider, crate::models::catalog_entry(&trimmed)) {
+            (Some(p), Some(e)) if e.provider != p => {
+                warnings.push(format!(
+                    "btw model '{trimmed}' is served by provider '{}', not '{}'; /btw will use the main model",
+                    e.provider, p
+                ));
+                model.clone()
+            }
+            (Some(_), Some(_)) => crate::models::gateway_model_id(&trimmed).to_string(),
+            _ => trimmed,
+        }
+    });
+
     let mut cli_allow = split_rules(&cli.allowed_tools);
     let mut cli_deny = split_rules(&cli.disallowed_tools);
 
@@ -930,6 +953,57 @@ mod tests {
         match old {
             Some(o) => std::env::set_var("ZEN_MODEL", o),
             None => std::env::remove_var("ZEN_MODEL"),
+        }
+    }
+
+    #[test]
+    fn btw_model_is_translated_or_replaced_across_providers() {
+        let _env = env_lock();
+        let old_m = std::env::var("ZEN_MODEL").ok();
+        let old_b = std::env::var("ZEN_BASE_URL").ok();
+        std::env::remove_var("ZEN_MODEL");
+        std::env::remove_var("ZEN_BASE_URL");
+        let home = std::env::temp_dir().join(format!("zen_cfg_btw_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        let dir = std::env::temp_dir().join(format!("zen_cfg_btw_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".zen")).unwrap();
+        let cli = Cli::parse_from(["zen", "--setting-sources", "project", "--trust-folder"]);
+
+        // Cross-provider catalog id on the default (Experiential)
+        // base: /btw runs on the main backend, so the btw model
+        // falls back to the main model with a warning.
+        fs::write(
+            dir.join(".zen/settings.json"),
+            r#"{"btw":{"model":"qwen/qwen3-coder:free"}}"#,
+        )
+        .unwrap();
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        assert_eq!(cfg.btw_model.as_deref(), Some(cfg.model.as_str()));
+        assert!(
+            cfg.warnings.iter().any(|w| w.contains("btw model")),
+            "cross-provider btw warning: {:?}",
+            cfg.warnings
+        );
+
+        // Same-provider catalog id is kept (translated to its
+        // gateway id; identical for this entry).
+        fs::write(
+            dir.join(".zen/settings.json"),
+            r#"{"btw":{"model":"deepseek-v4.1-flash"}}"#,
+        )
+        .unwrap();
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        assert_eq!(cfg.btw_model.as_deref(), Some("deepseek-v4.1-flash"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        if let Some(o) = old_m {
+            std::env::set_var("ZEN_MODEL", o);
+        }
+        if let Some(o) = old_b {
+            std::env::set_var("ZEN_BASE_URL", o);
         }
     }
 
