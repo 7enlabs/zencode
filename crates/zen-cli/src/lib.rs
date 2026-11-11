@@ -800,6 +800,25 @@ mod tests {
     }
 
     #[test]
+    fn exit_code_maps_each_rate_limit_and_not_found_signal_alone() {
+        // Each `||` arm must fire on its own signal: a 429-shaped error
+        // that only says "429", only "rate limit", only "rate_limit" or
+        // only "too many requests" is still a rate limit, and a 404-shaped
+        // error that only says "404" or only "not found" is still not-found.
+        for (text, want) in [
+            ("HTTP 429: slow down", exit_code::RATE_LIMIT),
+            ("Rate limit exceeded, retry later", exit_code::RATE_LIMIT),
+            ("rate_limit_exceeded", exit_code::RATE_LIMIT),
+            ("too many requests, slow down", exit_code::RATE_LIMIT),
+            ("HTTP 404: gone", exit_code::NOT_FOUND),
+            ("model not found", exit_code::NOT_FOUND),
+        ] {
+            let err = anyhow::anyhow!(text);
+            assert_eq!(exit_code_for_error(&err), want, "for {text:?}");
+        }
+    }
+
+    #[test]
     fn exit_code_coded_error_wins_over_text_shapes() {
         // A CodedError keeps its source-picked code even when its message
         // happens to contain a status-shaped substring.
