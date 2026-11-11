@@ -69,6 +69,21 @@ pub fn gateway_model_id(id: &str) -> &str {
     catalog_entry(id).map(|m| m.gateway_id).unwrap_or(id)
 }
 
+/// Default context window when neither an explicit setting nor the
+/// catalog knows the model (bug hunt B2).
+pub const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+
+/// Effective context window for a session (bug hunt B2, direction (a),
+/// Leader decision tin 9607): an explicit `context_window` setting wins,
+/// else the catalog window of the configured model, else the 128k
+/// default. The default model (`deepseek-v4.1-flash`, 1M) used to
+/// compact at ~100k because the 128k default was used blindly.
+pub fn effective_context_window(explicit: Option<u64>, model: &str) -> u64 {
+    explicit
+        .or_else(|| catalog_entry(model).map(|m| u64::from(m.context_window)))
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+}
+
 /// Base URL of the OpenRouter provider.
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
@@ -1782,5 +1797,39 @@ mod tests {
         assert!(restore_cache(Some(&empty)).is_err());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&empty).ok();
+    }
+
+    #[test]
+    fn effective_context_window_uses_catalog_window() {
+        // Bug hunt B2, direction (a): the catalog window is the real one.
+        assert_eq!(
+            effective_context_window(None, "deepseek-v4.1-flash"),
+            1_000_000
+        );
+        assert_eq!(
+            effective_context_window(None, "qwen/qwen3-coder:free"),
+            262_144
+        );
+        assert_eq!(
+            effective_context_window(None, "deepseek/deepseek-r1:free"),
+            131_072
+        );
+    }
+
+    #[test]
+    fn effective_context_window_explicit_setting_wins_over_catalog() {
+        assert_eq!(
+            effective_context_window(Some(50_000), "deepseek-v4.1-flash"),
+            50_000
+        );
+    }
+
+    #[test]
+    fn effective_context_window_unknown_model_falls_back_to_default() {
+        assert_eq!(
+            effective_context_window(None, "some/unknown-model"),
+            128_000
+        );
+        assert_eq!(effective_context_window(None, "auto"), 128_000);
     }
 }

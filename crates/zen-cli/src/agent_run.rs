@@ -430,7 +430,7 @@ pub fn resolve_tool_bundle(cli: &Cli, cfg: &ResolvedConfig) -> zen_agent::ToolBu
     cfg.tool_bundle
 }
 
-fn resolve_auto_compact_threshold(
+pub fn resolve_auto_compact_threshold(
     flag: Option<&str>,
     setting: Option<&serde_json::Value>,
     context_window: u64,
@@ -453,7 +453,7 @@ pub fn base_agent_config(
     cli: &Cli,
     system_prompt: &str,
 ) -> zen_agent::AgentConfig {
-    let context_window = cfg.context_window.unwrap_or(128_000);
+    let context_window = crate::models::effective_context_window(cfg.context_window, &cfg.model);
     let auto_compact_threshold = resolve_auto_compact_threshold(
         cli.autocompact.as_deref(),
         cfg.auto_compact.as_ref(),
@@ -1820,6 +1820,17 @@ mod tools_flag_tests {
         assert_eq!(
             resolve_auto_compact_threshold(None, None, 200_000),
             Some(160_000)
+        );
+    }
+
+    #[test]
+    fn auto_compact_threshold_for_1m_catalog_model_is_800k() {
+        // Bug hunt B2: a 1M catalog model used to compact at ~100k
+        // (80% of the blind 128k default). With the catalog window
+        // the threshold is 80% of 1M.
+        assert_eq!(
+            resolve_auto_compact_threshold(None, None, 1_000_000),
+            Some(800_000)
         );
     }
 
