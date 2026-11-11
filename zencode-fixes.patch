@@ -1,0 +1,37 @@
+diff --git a/crates/zen-ext/src/testutil.rs b/crates/zen-ext/src/testutil.rs
+index ccd40ce..4607cd7 100644
+--- a/crates/zen-ext/src/testutil.rs
++++ b/crates/zen-ext/src/testutil.rs
+@@ -9,14 +9,30 @@ pub struct TempDir {
+ 
+ impl TempDir {
+     pub fn new() -> Self {
+-        let mut base = std::env::temp_dir();
++        // Use a dedicated scratch base for test temp dirs. The project tests
++        // create fixture trees under this base and then walk *up* the
++        // directory tree, collecting AGENTS.md from every ancestor. If the
++        // base sits under the sandbox home, the loader picks up the
++        // sandbox's own AGENTS.md (and cross-test state) and the fixtures no
++        // longer match their expectations. A /tmp base is not reachable from
++        // the sandbox home, so fixtures stay isolated.
+         let pid = std::process::id();
+         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+         let nanos = std::time::SystemTime::now()
+             .duration_since(std::time::UNIX_EPOCH)
+             .map(|d| d.as_nanos())
+             .unwrap_or(0);
+-        base.push(format!("zen-ext-test-{}-{}-{}", pid, n, nanos));
++        let base = if cfg!(unix) {
++            PathBuf::from("/tmp").join(format!(
++                "zen-ext-test-{}-{}-{}",
++                pid, n, nanos
++            ))
++        } else {
++            std::env::temp_dir().join(format!(
++                "zen-ext-test-{}-{}-{}",
++                pid, n, nanos
++            ))
++        };
+         std::fs::create_dir_all(&base).expect("create temp dir");
+         Self { path: base }
+     }

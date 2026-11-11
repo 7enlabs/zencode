@@ -1149,9 +1149,11 @@ mod tests {
         assert_eq!(r.message.content.as_deref(), Some("hi"));
         assert_eq!(openai_cached_tokens(&body), 1500);
         let empty = "\u{feff}{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[]},\"finish_reason\":\"stop\"}]}";
-        assert!(transient_completion(empty)
-            .unwrap()
-            .contains("empty message"));
+        assert!(
+            transient_completion(empty)
+                .unwrap()
+                .contains("empty message")
+        );
         let err_body = "\u{feff}{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":\"error\",\"error\":{\"message\":\"boom\",\"code\":500}}]}";
         let e = mid_response_error(err_body).unwrap();
         assert_eq!(e.code, Some(500));

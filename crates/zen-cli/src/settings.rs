@@ -302,7 +302,7 @@ fn resolve_model(cli: &Cli, settings_model: Option<&str>) -> String {
     if let Ok(v) = std::env::var("ZEN_MODEL") {
         let v = v.trim();
         if !v.is_empty() {
-            return v;
+            return v.to_string();
         }
     }
     settings_model
@@ -932,24 +932,32 @@ mod tests {
     fn model_id_is_trimmed_and_blank_means_unset() {
         let _env = env_lock();
         let old = std::env::var("ZEN_MODEL").ok();
-        std::env::remove_var("ZEN_MODEL");
+        unsafe {
+            std::env::remove_var("ZEN_MODEL");
+        }
         let mut cli = base_cli();
         cli.model = Some("  padded-model  ".to_string());
         assert_eq!(resolve_model(&cli, None), "padded-model");
         let cli = base_cli();
-        std::env::set_var("ZEN_MODEL", " env-model ");
+        unsafe {
+            std::env::set_var("ZEN_MODEL", " env-model ");
+        }
         assert_eq!(resolve_model(&cli, Some("settings-model")), "env-model");
         // A whitespace-only env value is unset, not a model named " ".
-        std::env::set_var("ZEN_MODEL", "   ");
+        unsafe {
+            std::env::set_var("ZEN_MODEL", "   ");
+        }
         assert_eq!(
             resolve_model(&cli, Some("settings-model")),
             "settings-model"
         );
-        std::env::remove_var("ZEN_MODEL");
+        unsafe {
+            std::env::remove_var("ZEN_MODEL");
+        }
         assert_eq!(resolve_model(&cli, Some("  ")), DEFAULT_MODEL);
         match old {
-            Some(o) => std::env::set_var("ZEN_MODEL", o),
-            None => std::env::remove_var("ZEN_MODEL"),
+            Some(o) => unsafe { std::env::set_var("ZEN_MODEL", o) },
+            None => unsafe { std::env::remove_var("ZEN_MODEL") },
         }
     }
 
@@ -962,8 +970,12 @@ mod tests {
         // so a fallback to the main model is observable (the previous
         // version used the default model, which coincided with the
         // same-provider btw id and let the guard mutant survive).
-        std::env::set_var("ZEN_MODEL", "custom-main-model");
-        std::env::remove_var("ZEN_BASE_URL");
+        unsafe {
+            std::env::set_var("ZEN_MODEL", "custom-main-model");
+        }
+        unsafe {
+            std::env::remove_var("ZEN_BASE_URL");
+        }
         let home = std::env::temp_dir().join(format!("zen_cfg_btw_home_{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
@@ -1021,13 +1033,15 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&home);
         match old_m {
-            Some(o) => std::env::set_var("ZEN_MODEL", o),
+            Some(o) => unsafe { std::env::set_var("ZEN_MODEL", o) },
             // The test sets ZEN_MODEL above; leave no trace when the
             // caller had none, or later tests in this process inherit it.
-            None => std::env::remove_var("ZEN_MODEL"),
+            None => unsafe { std::env::remove_var("ZEN_MODEL") },
         }
         if let Some(o) = old_b {
-            std::env::set_var("ZEN_BASE_URL", o);
+            unsafe {
+                std::env::set_var("ZEN_BASE_URL", o);
+            }
         }
     }
 
