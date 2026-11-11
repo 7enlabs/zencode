@@ -2125,7 +2125,23 @@ fn save_local_settings(cwd: &Path, entries: &[(&str, &str)]) -> Result<std::path
         map.insert(key.to_string(), parsed);
     }
     std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, serde_json::to_string_pretty(&obj)? + "\n")?;
+    // Write a sibling temp file and rename it over the live path -
+    // the atomic pattern models::save_cache already uses. A crash
+    // mid-write or a second session saving at the same moment can no
+    // longer leave settings.local.json torn or interleaved, which
+    // used to disable the whole local settings layer until the user
+    // repaired the file by hand (bug hunt C F7). The temp name is
+    // unique per write (pid + sequence) so concurrent writers -
+    // threads or processes - never share one temp file.
+    static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.parent().unwrap().join(format!(
+        "settings.local.json.{}-{}.tmp",
+        std::process::id(),
+        seq
+    ));
+    std::fs::write(&tmp, serde_json::to_string_pretty(&obj)? + "\n")?;
+    std::fs::rename(&tmp, &path)?;
     Ok(path)
 }
 /// Record a successful `/model` or `/provider` switch in
@@ -3091,6 +3107,54 @@ mod model_picker_tests {
             Some(v) => std::env::set_var("ZEN_BASE_URL", v),
             None => std::env::remove_var("ZEN_BASE_URL"),
         }
+    }
+
+    #[test]
+    fn save_local_settings_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!("zen_atomic_save_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = save_local_settings(&dir, &[("model", "m1"), ("baseUrl", "http://x")]).unwrap();
+        assert_eq!(path, dir.join(".zen").join("settings.local.json"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["model"], "m1");
+        assert_eq!(value["baseUrl"], "http://x");
+        let names: Vec<String> = std::fs::read_dir(dir.join(".zen"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["settings.local.json"],
+            "temp file must be renamed away"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_local_settings_concurrent_writers_never_tear_the_file() {
+        let dir = std::env::temp_dir().join(format!("zen_atomic_race_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let d = dir.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25 {
+                    let v = format!("model-{t}-{i}");
+                    save_local_settings(&d, &[("model", v.as_str())]).unwrap();
+                    // Every completed save leaves a parseable file:
+                    // readers never observe a half-written document.
+                    let text = std::fs::read_to_string(d.join(".zen").join("settings.local.json"))
+                        .unwrap();
+                    serde_json::from_str::<serde_json::Value>(&text)
+                        .expect("settings file must never be torn or interleaved");
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
