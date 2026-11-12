@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- `delegate` tool: multi-seat coordination in one session (single / parallel /
+  chain modes, handoff envelope JSON with 50 KB cap and parent-computed
+  sha256, per-subagent timeout, max 4 concurrent, nesting max 2 levels),
+  with built-in `scout` (read-only), `worker` (separate worktree when editing
+  code) and `reviewer` (read-only, cannot spawn sub-agents) roles.
+  See `docs/tools/delegate.md` and
+  `docs/multi-seat-coordination-phase1-design.md`.
 - Microsoft Store packaging: `msix/` holds the MSIX manifest template
   (runFullTrust, `zen` execution alias), the asset checklist and the
   makeappx build script. The manifest identity is filled from the

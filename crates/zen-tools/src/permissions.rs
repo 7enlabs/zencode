@@ -11,7 +11,7 @@ use zen_core::{
 pub fn tool_is_read_only(name: &str) -> bool {
     matches!(
         name,
-        "Read" | "Glob" | "Grep" | "TodoWrite" | "Task" | "Skill"
+        "Read" | "Glob" | "Grep" | "TodoWrite" | "Task" | "delegate" | "Skill"
     )
 }
 
@@ -1596,7 +1596,15 @@ mod permission_tests {
             PermissionMode::DontAsk,
         ] {
             let p = perms(mode, &[], &[], &[], None);
-            for tool in ["Read", "Glob", "Grep", "TodoWrite", "Task", "Skill"] {
+            for tool in [
+                "Read",
+                "Glob",
+                "Grep",
+                "TodoWrite",
+                "Task",
+                "delegate",
+                "Skill",
+            ] {
                 assert!(
                     is_allow(&p.check(tool, &json!({}), true, &ctx)),
                     "{} should be allowed in {}",

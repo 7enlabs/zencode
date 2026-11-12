@@ -268,16 +268,44 @@ pub async fn assemble(
     let subagent_sink = Arc::new(ForwardSink::default());
     if !agents.is_empty() && cli.tools.as_deref() != Some("") && !tool_denied("Task") {
         let fwd: Arc<dyn EventSink> = subagent_sink.clone();
-        let executor = zen_agent::SubAgentExecutor::new(
-            crate::eventlog::wrap(cfg.gated_llm_client(fwd.clone(), home), recorder.as_ref()),
-            registry.clone(),
-            Arc::new(skill_gate.shared(assembly_permissions.clone())),
-            hooks.clone(),
-            fwd,
-            ToolContext::new(cwd.to_path_buf(), session_id.to_string()),
-            base_agent_config(cfg, cli, ""),
-        );
-        registry.register(Arc::new(zen_mcp::TaskTool::new(agents, Arc::new(executor))));
+        let make_executor = |tools: ToolRegistry| {
+            zen_agent::SubAgentExecutor::new(
+                crate::eventlog::wrap(cfg.gated_llm_client(fwd.clone(), home), recorder.as_ref()),
+                tools,
+                Arc::new(skill_gate.shared(assembly_permissions.clone())),
+                hooks.clone(),
+                fwd.clone(),
+                ToolContext::new(cwd.to_path_buf(), session_id.to_string()),
+                base_agent_config(cfg, cli, ""),
+            )
+        };
+        let executor = make_executor(registry.clone());
+        registry.register(Arc::new(zen_mcp::TaskTool::new(
+            agents.clone(),
+            Arc::new(executor),
+        )));
+
+        if !tool_denied("delegate") {
+            // delegate (phase 1 design §4.3) nests at most 2 levels; Task keeps
+            // its existing 1-level limit. The executor snapshots the registry
+            // its children inherit, so register the tool first and then build
+            // a second executor from the final registry: otherwise a depth-1
+            // child would not see `delegate` and could never spawn depth 2.
+            // The first registration is replaced by the second (register
+            // keeps one tool per name).
+            let mut executor = make_executor(registry.clone());
+            executor.set_max_depth(zen_mcp::MAX_DELEGATE_DEPTH);
+            registry.register(Arc::new(zen_mcp::DelegateTool::new(
+                agents.clone(),
+                Arc::new(executor),
+            )));
+            let mut executor = make_executor(registry.clone());
+            executor.set_max_depth(zen_mcp::MAX_DELEGATE_DEPTH);
+            registry.register(Arc::new(zen_mcp::DelegateTool::new(
+                agents,
+                Arc::new(executor),
+            )));
+        }
 
         assembly_permissions = Arc::new(skill_gate.shared(build_permissions(cwd, cfg, cli)));
     }

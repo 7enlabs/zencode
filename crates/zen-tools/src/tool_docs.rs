@@ -11,6 +11,7 @@ pub fn tool_long_docs(name: &str) -> Option<&'static str> {
         "TodoWrite" => include_str!("../../../docs/tools/todowrite.md"),
         "JobOutput" => include_str!("../../../docs/tools/joboutput.md"),
         "JobKill" => include_str!("../../../docs/tools/jobkill.md"),
+        "delegate" => include_str!("../../../docs/tools/delegate.md"),
         _ => return None,
     })
 }
@@ -33,6 +34,7 @@ mod tests {
             "TodoWrite",
             "JobOutput",
             "JobKill",
+            "delegate",
         ] {
             let docs = tool_long_docs(name).unwrap_or_else(|| panic!("missing docs for {name}"));
             assert!(docs.contains(&format!("# {name}")) || docs.contains(name));

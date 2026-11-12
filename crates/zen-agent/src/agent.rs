@@ -115,7 +115,9 @@ impl AgentConfig {
         match self.tool_timeouts.get(tool) {
             Some(t) => ((t > &0).then_some(*t), TimeoutSource::PerTool),
 
-            None if matches!(tool, "Task" | "JobOutput") => (None, TimeoutSource::None),
+            None if matches!(tool, "Task" | "delegate" | "JobOutput") => {
+                (None, TimeoutSource::None)
+            }
             None => match self.tool_timeouts.get("default") {
                 Some(t) => ((t > &0).then_some(*t), TimeoutSource::Default),
                 None => (Some(DEFAULT_TOOL_TIMEOUT_MS), TimeoutSource::BuiltIn),
