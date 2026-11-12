@@ -10,8 +10,11 @@ ZenCode is designed to be a **good API citizen** so your paid accounts
 ## What ZenCode does automatically
 
 - **Exponential backoff with jitter** on rate limits (base 1s, doubling, ±25%
-  jitter, capped at 60s), max 5 retries per request. It never hammers through 429s.
-- **Always respects `Retry-After`** headers when the server sends one.
+  jitter, capped at 60s), max 3 retries per request and at most 10 s of
+  retry delay per request. It never hammers through 429s.
+- **Always respects `Retry-After`** headers when the server sends one; a wait
+  longer than the 10 s retry delay budget ends the request at once instead of
+  sleeping it out.
 - **Never retries billing/quota errors.** `insufficient_quota` (and similar) is a
   hard stop with a clear message - retrying a billing error only creates
   failed-request noise on your account.

@@ -294,13 +294,13 @@ fn retries(sink: &CollectSink) -> usize {
 }
 
 #[tokio::test]
-async fn p0_4_gateway_errors_retry_past_four_attempts_within_the_budget() {
+async fn p0_4_gateway_errors_retry_until_success_within_the_budget() {
+    // Issue #166 cut retries from five to three, so the scripted
+    // success now comes on the 4th attempt instead of the 6th.
     let (url, served) = status_server(vec![
         (503, "busy"),
         (502, "bad"),
         (504, "slow"),
-        (503, "busy"),
-        (429, "rl"),
         (200, OK_BODY),
     ])
     .await;
@@ -310,10 +310,10 @@ async fn p0_4_gateway_errors_retry_past_four_attempts_within_the_budget() {
     let r = c
         .chat(req())
         .await
-        .expect("should succeed on the 6th attempt");
+        .expect("should succeed on the 4th attempt");
     assert_eq!(r.message.content.as_deref(), Some("ok"));
-    assert_eq!(served.load(Ordering::SeqCst), 6);
-    assert_eq!(retries(&sink), 5);
+    assert_eq!(served.load(Ordering::SeqCst), 4);
+    assert_eq!(retries(&sink), 3);
 }
 
 #[tokio::test]
@@ -351,7 +351,8 @@ async fn p0_4_total_wait_is_capped() {
 }
 
 #[tokio::test]
-async fn p0_4_other_5xx_stop_after_five_retries() {
+async fn p0_4_other_5xx_stop_after_three_retries() {
+    // Issue #166 cut retries from five to three.
     let (url, served) = status_server(vec![(500, "boom")]).await;
     let sink = Arc::new(CollectSink::default());
     let mut c = crate::client::OpenAiClient::new(url, None, sink.clone());
@@ -359,7 +360,7 @@ async fn p0_4_other_5xx_stop_after_five_retries() {
     let err = c.chat(req()).await.unwrap_err().to_string();
     assert!(err.contains("HTTP 500"), "{}", err);
 
-    assert_eq!(served.load(Ordering::SeqCst), 6);
+    assert_eq!(served.load(Ordering::SeqCst), 4);
 }
 
 #[cfg(unix)]

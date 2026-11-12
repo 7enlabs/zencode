@@ -6,7 +6,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zen_core::*;
 
-const MAX_ATTEMPTS: u32 = 6;
+/// Retries of one model request: the first attempt plus this many
+/// retries. Three retries (sleeps of 1 s, 2 s, 4 s, about 7 s
+/// nominal and at most ~9 s with the +/-25% jitter) still cover a
+/// transient blip, while a failing request no longer burns ~28 s
+/// of the 120 s turn budget the way five retries did (bug hunt R2,
+/// issue #166).
+const MAX_ATTEMPTS: u32 = 4;
+
+/// Total time one `chat()` call may spend sleeping between retries.
+/// A server `Retry-After` larger than what is left of this budget
+/// ends the request at once instead of being slept out (issue #166).
+const MAX_RETRY_DELAY_TOTAL_MS: u64 = 10_000;
 
 pub const MID_RESPONSE_MAX_RETRIES: u32 = 3;
 
@@ -536,6 +547,7 @@ impl LlmBackend for OpenAiClient {
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
         let url = self.endpoint();
         let mut waited_ms: u64 = 0;
+        let mut slept_ms: u64 = 0;
         let mut attempt: u32 = 0;
 
         let mut warned_first_429 = false;
@@ -691,9 +703,10 @@ impl LlmBackend for OpenAiClient {
                 ErrorClass::RateLimit | ErrorClass::Overloaded | ErrorClass::Transient => {}
             }
 
-            if attempt >= MAX_ATTEMPTS {
-                return Err(anyhow::anyhow!(err_text));
-            }
+            // The specific give-up reasons come first: when the
+            // attempt cap and a budget (or the mid-response cap)
+            // run out together, the error should say which bound
+            // was hit instead of failing with the bare text.
             if mid_response_errors > MID_RESPONSE_MAX_RETRIES {
                 return Err(anyhow::anyhow!(
                     "{} (gave up: the provider failed mid-response {} times in a row)",
@@ -719,6 +732,32 @@ impl LlmBackend for OpenAiClient {
                     self.max_total_wait_ms / 1000
                 ));
             }
+            // The retry-delay budget caps the total sleep of this
+            // one request (issue #166): even when the server asks
+            // for a long wait, or the wall budget above still has
+            // room, a single failing request must not burn more
+            // than 10 s of the turn before the caller can react.
+            let delay_budget_left = MAX_RETRY_DELAY_TOTAL_MS.saturating_sub(slept_ms);
+            if let Some(hint) = server_hint_ms.filter(|h| *h > delay_budget_left) {
+                return Err(anyhow::anyhow!(
+                    "{} (not retried: the server asked to wait {} s, more than the {} s left of the per-request retry delay budget of {} s; issue #166)",
+                    err_text,
+                    hint.div_ceil(1000),
+                    delay_budget_left / 1000,
+                    MAX_RETRY_DELAY_TOTAL_MS / 1000
+                ));
+            }
+            if delay_budget_left == 0 {
+                return Err(anyhow::anyhow!(
+                    "{} (gave up after {} attempts: retry delay budget of {} s spent; issue #166)",
+                    err_text,
+                    attempt,
+                    MAX_RETRY_DELAY_TOTAL_MS / 1000
+                ));
+            }
+            if attempt >= MAX_ATTEMPTS {
+                return Err(anyhow::anyhow!(err_text));
+            }
 
             if status == Some(429) && !warned_first_429 {
                 warned_first_429 = true;
@@ -743,7 +782,8 @@ impl LlmBackend for OpenAiClient {
             let delay_ms = jittered
                 .min(self.max_retry_delay_ms.max(self.base_retry_delay_ms))
                 .max(server_hint_ms.unwrap_or(0))
-                .min(budget_left);
+                .min(budget_left)
+                .min(delay_budget_left);
 
             let mut err_for_event = err_text.clone();
             if class == ErrorClass::Overloaded {
@@ -762,6 +802,7 @@ impl LlmBackend for OpenAiClient {
             });
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             waited_ms = waited_ms.saturating_add(delay_ms);
+            slept_ms = slept_ms.saturating_add(delay_ms);
         }
     }
 }
@@ -1594,6 +1635,226 @@ mod tests {
             "one slow attempt spends the whole budget"
         );
     }
+
+    /// Stub that always answers 429 immediately, counting hits.
+    /// `retry_after` is sent as a `Retry-After` header when given.
+    async fn always_429_server(
+        retry_after: Option<&str>,
+    ) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits2 = hits.clone();
+        let header = retry_after.map(str::to_string);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                hits2.fetch_add(1, Ordering::SeqCst);
+                let header = header.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let mut got = Vec::new();
+                    loop {
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        let txt = String::from_utf8_lossy(&got);
+                        if let Some(h) = txt.find("\r\n\r\n") {
+                            let len = txt[..h]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if got.len() >= h + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    let body = r#"{"error":{"message":"slow down"}}"#;
+                    let extra = header
+                        .map(|v| format!("Retry-After: {v}\r\n"))
+                        .unwrap_or_default();
+                    let resp = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    /// Stub that answers 429 once with the given `Retry-After`,
+    /// then 200 with a fixed completion. Used for the boundary
+    /// tests: a hint exactly at a budget must still be retried.
+    async fn once_429_then_success_server(
+        retry_after: &str,
+    ) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits2 = hits.clone();
+        let header = retry_after.to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let n = hits2.fetch_add(1, Ordering::SeqCst);
+                let header = header.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let mut got = Vec::new();
+                    loop {
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        let txt = String::from_utf8_lossy(&got);
+                        if let Some(h) = txt.find("\r\n\r\n") {
+                            let len = txt[..h]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if got.len() >= h + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    let resp = if n == 0 {
+                        let body = r#"{"error":{"message":"slow down"}}"#;
+                        format!(
+                            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            header,
+                            body
+                        )
+                    } else {
+                        let body = r#"{"choices":[{"message":{"content":"fixed"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                    };
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    fn chat_req() -> ChatRequest {
+        ChatRequest {
+            model: "m".into(),
+            messages: vec![ChatMessage::user("hi")],
+            tools: vec![],
+            max_tokens: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_attempts_capped_at_three_and_delay_under_ten_seconds() {
+        // Issue #166: five retries with 1/2/4/8/16 s backoff burned
+        // ~28 s of the 120 s turn budget on every failing request.
+        // With the default delays the whole failing request must now
+        // finish in well under 10 s of sleep (1+2+4 s nominal).
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let (addr, hits) = always_429_server(None).await;
+        let sink = Arc::new(crate::testutil::CollectSink::default());
+        let c = OpenAiClient::new(format!("http://{addr}/v1"), None, sink);
+        let started = Instant::now();
+        let err = c.chat(chat_req()).await.unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(err.to_string().contains("HTTP 429"), "err: {err}");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "one attempt plus three retries"
+        );
+        assert!(
+            elapsed.as_millis() >= 5_000,
+            "sleeps of 1+2+4 s expected, elapsed: {elapsed:?}"
+        );
+        assert!(
+            elapsed.as_millis() < 12_000,
+            "failing request must end well under 10 s of sleep, elapsed: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_beyond_delay_budget_gives_up_at_once() {
+        // Issue #166: the server asks to wait 60 s, far more than
+        // the 10 s per-request retry delay budget, so the request
+        // must fail after the first attempt instead of sleeping.
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let (addr, hits) = always_429_server(Some("60")).await;
+        let sink = Arc::new(crate::testutil::CollectSink::default());
+        let c = OpenAiClient::new(format!("http://{addr}/v1"), None, sink);
+        let started = Instant::now();
+        let err = c.chat(chat_req()).await.unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(err.to_string().contains("not retried"), "err: {err}");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a 60 s Retry-After must not be waited out"
+        );
+        assert!(
+            elapsed.as_millis() < 5_000,
+            "gave up at once, elapsed: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_equal_to_delay_budget_is_retried() {
+        // Issue #166, mutant kill for client.rs:741 (`>` -> `>=`):
+        // a 10 s Retry-After is exactly the 10 s per-request retry
+        // delay budget, so it must still be waited out and retried,
+        // not rejected at once. The `>=` mutant gives up here. The
+        // 10 s sleep is the point: elapsed proves the hint was
+        // honoured instead of skipped.
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let (addr, hits) = once_429_then_success_server("10").await;
+        let sink = Arc::new(crate::testutil::CollectSink::default());
+        let c = OpenAiClient::new(format!("http://{addr}/v1"), None, sink);
+        let started = Instant::now();
+        let r = c.chat(chat_req()).await;
+        let elapsed = started.elapsed();
+        let r = r.unwrap_or_else(|e| panic!("hint at the delay budget must be retried: {e}"));
+        assert_eq!(r.message.content.as_deref(), Some("fixed"));
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "one 429, then a retry that succeeds"
+        );
+        assert!(
+            elapsed.as_millis() >= 9_000,
+            "the 10 s hint must be slept, elapsed: {elapsed:?}"
+        );
+        assert!(elapsed.as_millis() < 15_000, "elapsed: {elapsed:?}");
+    }
 }
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -1853,6 +2114,7 @@ impl LlmBackend for AnthropicClient {
         let body = anthropic_request_body(&req);
         let mut attempt: u32 = 0;
         let mut waited_ms: u64 = 0;
+        let mut slept_ms: u64 = 0;
         loop {
             attempt += 1;
             let mut rb = self.http.post(&url).json(&body);
@@ -1873,6 +2135,7 @@ impl LlmBackend for AnthropicClient {
                     format!("network error: {e}")
                 }
             };
+            let mut server_hint_ms: Option<u64> = None;
             let (retryable, long, status, err_text): (bool, bool, Option<u16>, String) = match res {
                 Ok(resp) => 'resp: {
                     let code = resp.status().as_u16();
@@ -1882,6 +2145,14 @@ impl LlmBackend for AnthropicClient {
                         Err(e) => break 'resp (true, false, Some(code), timeout_text(&e)),
                     };
                     let rid = request_id(&headers, &resp_body);
+                    // Honour the server's Retry-After like the
+                    // OpenAI client does (issue #166): this loop
+                    // used to ignore it and sleep blind backoff.
+                    let retry_after = headers
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    server_hint_ms = server_retry_hint_ms(retry_after.as_deref(), &resp_body);
                     if resp_body.contains("\"type\":\"error\"")
                         || resp_body.contains("\"type\": \"error\"")
                     {
@@ -1942,9 +2213,6 @@ impl LlmBackend for AnthropicClient {
             let _ = long;
             let attempt_cap = MAX_ATTEMPTS;
             let budget_left = self.max_total_wait_ms.saturating_sub(waited_ms);
-            if attempt >= attempt_cap {
-                return Err(anyhow::anyhow!(err_text));
-            }
             if budget_left == 0 {
                 return Err(anyhow::anyhow!(
                     "{} (gave up after {} attempts: retry wait budget of {} s spent; settings retry.maxWaitSecs)",
@@ -1953,6 +2221,42 @@ impl LlmBackend for AnthropicClient {
                     self.max_total_wait_ms / 1000
                 ));
             }
+            // Same per-request retry-delay budget as the OpenAI
+            // client (issue #166): at most 10 s of sleep per
+            // request, and a server wait longer than what is left
+            // ends the request at once.
+            let delay_budget_left = MAX_RETRY_DELAY_TOTAL_MS.saturating_sub(slept_ms);
+            if let Some(hint) = server_hint_ms.filter(|h| *h > budget_left) {
+                return Err(anyhow::anyhow!(
+                    "{} (not retried: the server asked to wait {} s, more than the {} s left of the retry budget; settings retry.maxWaitSecs)",
+                    err_text,
+                    hint.div_ceil(1000),
+                    budget_left / 1000
+                ));
+            }
+            if let Some(hint) = server_hint_ms.filter(|h| *h > delay_budget_left) {
+                return Err(anyhow::anyhow!(
+                    "{} (not retried: the server asked to wait {} s, more than the {} s left of the per-request retry delay budget of {} s; issue #166)",
+                    err_text,
+                    hint.div_ceil(1000),
+                    delay_budget_left / 1000,
+                    MAX_RETRY_DELAY_TOTAL_MS / 1000
+                ));
+            }
+            if delay_budget_left == 0 {
+                return Err(anyhow::anyhow!(
+                    "{} (gave up after {} attempts: retry delay budget of {} s spent; issue #166)",
+                    err_text,
+                    attempt,
+                    MAX_RETRY_DELAY_TOTAL_MS / 1000
+                ));
+            }
+            // The specific give-up reasons above come first so the
+            // error says which bound was hit when they run out
+            // together (same order as the OpenAI client).
+            if attempt >= attempt_cap {
+                return Err(anyhow::anyhow!(err_text));
+            }
             let delay_ms = safety::backoff_with_jitter(
                 attempt.min(16),
                 self.base_retry_delay_ms,
@@ -1960,7 +2264,9 @@ impl LlmBackend for AnthropicClient {
                 safety::jitter_now_nanos(),
             )
             .min(self.max_retry_delay_ms.max(self.base_retry_delay_ms))
-            .min(budget_left);
+            .max(server_hint_ms.unwrap_or(0))
+            .min(budget_left)
+            .min(delay_budget_left);
             self.sink.emit(AgentEvent::ApiRetry {
                 attempt,
                 max_retries: attempt_cap - 1,
@@ -1970,6 +2276,7 @@ impl LlmBackend for AnthropicClient {
             });
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             waited_ms = waited_ms.saturating_add(delay_ms);
+            slept_ms = slept_ms.saturating_add(delay_ms);
         }
     }
 }
@@ -2340,5 +2647,320 @@ mod anthropic_tests {
         assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    /// Stub that always answers 429 to POST /messages, counting
+    /// hits. `retry_after` is sent as a `Retry-After` header.
+    async fn always_429_anthropic_server(
+        retry_after: &str,
+    ) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits2 = hits.clone();
+        let retry_after = retry_after.to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                hits2.fetch_add(1, Ordering::SeqCst);
+                let retry_after = retry_after.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let mut got = Vec::new();
+                    loop {
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        let txt = String::from_utf8_lossy(&got);
+                        if let Some(h) = txt.find("\r\n\r\n") {
+                            let len = txt[..h]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if got.len() >= h + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    let body = r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        retry_after,
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    /// Stub that answers 429 once with the given `Retry-After`,
+    /// then 200 with a fixed Anthropic completion. Used for the
+    /// boundary tests: a hint exactly at a budget must still be
+    /// retried.
+    async fn once_429_then_success_anthropic_server(
+        retry_after: &str,
+    ) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits2 = hits.clone();
+        let retry_after = retry_after.to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let n = hits2.fetch_add(1, Ordering::SeqCst);
+                let retry_after = retry_after.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let mut got = Vec::new();
+                    loop {
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        let txt = String::from_utf8_lossy(&got);
+                        if let Some(h) = txt.find("\r\n\r\n") {
+                            let len = txt[..h]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or(0);
+                            if got.len() >= h + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    let resp = if n == 0 {
+                        let body = r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#;
+                        format!(
+                            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            retry_after,
+                            body
+                        )
+                    } else {
+                        let body = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":5,"cache_read_input_tokens":90,"cache_creation_input_tokens":10}}"#;
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                    };
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    #[tokio::test]
+    async fn anthropic_client_honours_retry_after_as_delay() {
+        // Issue #166: this loop used to ignore Retry-After and sleep
+        // blind backoff. With ~1 ms backoff configured, a 2 s hint
+        // must drive the waits: three 2 s sleeps, four attempts.
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let (addr, hits) = always_429_anthropic_server("2").await;
+        let sink: Arc<dyn EventSink> = Arc::new(crate::testutil::CollectSink::default());
+        let mut c = AnthropicClient::new(format!("http://{addr}"), None, sink);
+        c.base_retry_delay_ms = 1;
+        c.max_retry_delay_ms = 1;
+        let started = Instant::now();
+        let err = c.chat(req()).await.unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(err.to_string().contains("HTTP 429"), "err: {err}");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            4,
+            "one attempt plus three retries"
+        );
+        assert!(
+            elapsed.as_millis() >= 4_000,
+            "three 2 s Retry-After waits expected, elapsed: {elapsed:?}"
+        );
+        assert!(elapsed.as_millis() < 12_000, "elapsed: {elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_client_gives_up_when_retry_after_exceeds_delay_budget() {
+        // Issue #166: a 60 s Retry-After is far beyond the 10 s
+        // per-request retry delay budget, so the request must fail
+        // after the first attempt instead of sleeping it out.
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let (addr, hits) = always_429_anthropic_server("60").await;
+        let sink: Arc<dyn EventSink> = Arc::new(crate::testutil::CollectSink::default());
+        let c = AnthropicClient::new(format!("http://{addr}"), None, sink);
+        let started = Instant::now();
+        let err = c.chat(req()).await.unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(err.to_string().contains("not retried"), "err: {err}");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a 60 s Retry-After must not be waited out"
+        );
+        assert!(
+            elapsed.as_millis() < 5_000,
+            "gave up at once, elapsed: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_retry_after_equal_to_delay_budget_is_retried() {
+        // Issue #166, mutant kill for client.rs:2140 (`>` -> `>=`):
+        // a 10 s Retry-After is exactly the 10 s per-request retry
+        // delay budget, so it must still be waited out and retried,
+        // not rejected at once. The `>=` mutant gives up here. The
+        // 10 s sleep is the point: elapsed proves the hint was
+        // honoured instead of skipped.
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let (addr, hits) = once_429_then_success_anthropic_server("10").await;
+        let sink: Arc<dyn EventSink> = Arc::new(crate::testutil::CollectSink::default());
+        let mut c = AnthropicClient::new(format!("http://{addr}"), None, sink);
+        c.base_retry_delay_ms = 1;
+        c.max_retry_delay_ms = 1;
+        let started = Instant::now();
+        let r = c.chat(req()).await;
+        let elapsed = started.elapsed();
+        let r = r.unwrap_or_else(|e| panic!("hint at the delay budget must be retried: {e}"));
+        assert_eq!(r.message.content.as_deref(), Some("ok"));
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "one 429, then a retry that succeeds"
+        );
+        assert!(
+            elapsed.as_millis() >= 9_000,
+            "the 10 s hint must be slept, elapsed: {elapsed:?}"
+        );
+        assert!(elapsed.as_millis() < 15_000, "elapsed: {elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_retry_after_equal_to_wall_budget_is_retried() {
+        // Issue #166, mutant kill for client.rs:2229 (`>` -> `>=`,
+        // rev1 line 2132): a Retry-After exactly equal to the
+        // remaining wall retry budget must still be retried, not
+        // rejected at once.
+        //
+        // The boundary is exactly 1 ms wide by construction: with
+        // a 1000 ms budget and a 999 ms hint, the correct code
+        // retries only when the first attempt costs exactly 1 ms
+        // of wall time (999 <= 1000 - 1), while the `>=` mutant
+        // gives up for any first attempt costing >= 1 ms, i.e.
+        // essentially every round. A loopback attempt costs 1 ms
+        // in the usual case but 2 ms or more under parallel load,
+        // so one round is flaky: the rev2 test with 3 rounds
+        // failed 2/5 runs under `cargo test -p zen-agent --lib
+        // retry`. Failed rounds give up at once and cost only a
+        // few ms, so the scenario is retried up to 30 times with
+        // a 100 ms pause between rounds to sample different load
+        // phases; a run fails only if all 30 rounds land on an
+        // attempt of >= 2 ms. The mutant still fails every run:
+        // it rejects all 30 rounds.
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        let mut last_err = String::new();
+        for round in 0..30 {
+            if round > 0 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let (addr, hits) = once_429_then_success_anthropic_server("0.999").await;
+            let sink: Arc<dyn EventSink> = Arc::new(crate::testutil::CollectSink::default());
+            let mut c = AnthropicClient::new(format!("http://{addr}"), None, sink);
+            c.base_retry_delay_ms = 1;
+            c.max_retry_delay_ms = 1;
+            c.max_total_wait_ms = 1_000;
+            let started = Instant::now();
+            match c.chat(req()).await {
+                Ok(r) => {
+                    assert_eq!(r.message.content.as_deref(), Some("ok"));
+                    assert_eq!(
+                        hits.load(Ordering::SeqCst),
+                        2,
+                        "one 429, then a retry that succeeds"
+                    );
+                    assert!(
+                        started.elapsed().as_millis() >= 900,
+                        "the 999 ms hint must be slept, elapsed: {:?}",
+                        started.elapsed()
+                    );
+                    return;
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    // Only a wall-budget give-up is the timing race;
+                    // anything else is a real failure, fail at once.
+                    assert!(
+                        last_err.contains("retry budget; settings retry.maxWaitSecs"),
+                        "unexpected error: {last_err}"
+                    );
+                }
+            }
+        }
+        panic!("hint at the wall budget was never retried in 30 rounds: {last_err}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_retry_after_beyond_wall_budget_gives_up_at_once() {
+        // Issue #166, mutant kill for client.rs:2132 (`>` -> `==`):
+        // a 60 s Retry-After is far beyond the 5 s wall retry
+        // budget, so the request must fail after the first attempt
+        // with the wall-budget reason, not the delay-budget one.
+        // The `==` mutant skips the wall check (60 s != 5 s) and
+        // falls through to the delay-budget give-up instead.
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        let (addr, hits) = always_429_anthropic_server("60").await;
+        let sink: Arc<dyn EventSink> = Arc::new(crate::testutil::CollectSink::default());
+        let mut c = AnthropicClient::new(format!("http://{addr}"), None, sink);
+        c.base_retry_delay_ms = 1;
+        c.max_retry_delay_ms = 1;
+        c.max_total_wait_ms = 5_000;
+        let started = Instant::now();
+        let err = c.chat(req()).await.unwrap_err();
+        let elapsed = started.elapsed();
+        let msg = err.to_string();
+        assert!(msg.contains("not retried"), "err: {msg}");
+        assert!(
+            msg.contains("retry budget; settings retry.maxWaitSecs"),
+            "wall-budget reason expected, err: {msg}"
+        );
+        assert!(
+            !msg.contains("per-request retry delay budget"),
+            "delay-budget reason must not fire here, err: {msg}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a 60 s Retry-After must not be waited out"
+        );
+        assert!(
+            elapsed.as_millis() < 5_000,
+            "gave up at once, elapsed: {elapsed:?}"
+        );
     }
 }
