@@ -24,10 +24,10 @@ Regenerate after an intended change with
   record as it arrives (e.g. show `init`, `assistant`, `tool_progress` live). Lines from
   concurrent emitters (sub-agents, tool heartbeats) never interleave inside a line.
 - Order: the `init` line first, then events in the order the agent loop reports them, then exactly
-  one `result` line last (on a normal end, an error, or SIGINT). Exceptions: a run killed by
-  SIGTERM exits 143 and prints nothing; a built-in slash command that is not available in `-p`
-  mode prints only an error `result` line, with no `init`. Headless built-ins (`/cost`,
-  `/context`, `/compact`, …) print `init` then `result`, with no events in between.
+  one `result` line last (on a normal end, an error, SIGINT, or SIGTERM). Exceptions: a built-in
+  slash command that is not available in `-p` mode prints only an error `result` line, with no
+  `init`. Headless built-ins (`/cost`, `/context`, `/compact`, …) print `init` then `result`, with
+  no events in between.
 - No `seq` field exists in v1 stream-json records. (The session file written to disk uses
   `v`/`seq`; that is a different format.) A consumer that wants a sequence number numbers lines
   itself.
@@ -221,7 +221,8 @@ requeried: any partial text is sent as an `assistant` record, then the turn ends
 `error_during_execution` result whose `result` starts with `Blocked by the provider's content filter`.
 
 Exit code: `0` when `is_error` is false, `1` when true, `130` after SIGINT (with an
-`error_during_execution` result `"Interrupted by user"`), `143` after SIGTERM (no output).
+`error_during_execution` result `"Interrupted by user"`), `143` after SIGTERM (with the same
+`error_during_execution` result `"Interrupted by user"`).
 
 ## Fixtures
 
