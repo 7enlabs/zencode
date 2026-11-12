@@ -49,6 +49,7 @@ pub use system_prompt::build_system_prompt;
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Resolve the user's home directory, honoring explicit overrides.
 ///
@@ -632,8 +633,16 @@ async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32>
 
     let mut prompt_parts: Vec<String> = Vec::new();
     if cli.input_format == InputFormat::Text && !std::io::stdin().is_terminal() {
-        let s = read_stdin()?;
-        if !s.is_empty() {
+        // Issue #164: read piped stdin only when data is actually there.
+        // The old code read stdin to EOF unconditionally, so `zen -p
+        // <prompt>` hung forever when stdin was left open with no data
+        // (e.g. spawned by a bridge without stdin closed). Skipping the
+        // read entirely when a prompt argument exists would lose the
+        // documented prepend behaviour, so instead probe for data with a
+        // bounded wait and keep whatever arrived (see read_piped_stdin).
+        if let Some(s) = read_piped_stdin()?
+            && !s.is_empty()
+        {
             prompt_parts.push(s);
         }
     }
@@ -774,21 +783,194 @@ fn resolve_session(
     Ok((session_id, Some(path), resumed))
 }
 
-fn read_stdin() -> Result<String> {
-    use std::io::Read;
-    let mut buf = Vec::new();
-    let mut handle = std::io::stdin().take(10 * 1024 * 1024 + 1);
-    handle.read_to_end(&mut buf)?;
-    if buf.len() > 10 * 1024 * 1024 {
-        anyhow::bail!("stdin input exceeds 10 MB limit");
+/// Longest `run_headless` waits for the first byte of piped stdin
+/// before concluding there is no piped data (issue #164). Long enough
+/// for a parent that writes stdin right after spawning (the test
+/// harness and `echo ... | zen -p ...` both do), short enough that an
+/// open-but-empty pipe never looks like a hang.
+const STDIN_FIRST_BYTE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Longest to wait for the next chunk after data already arrived,
+/// before treating a writer that never closes stdin as done. Keeps
+/// what arrived instead of blocking on EOF.
+const STDIN_CHUNK_GAP_TIMEOUT: Duration = Duration::from_millis(200);
+/// Same cap the old blocking `read_stdin` enforced.
+const STDIN_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// Read piped stdin without ever blocking on EOF (issue #164).
+///
+/// Returns `Ok(None)` when no byte arrives within
+/// `STDIN_FIRST_BYTE_TIMEOUT`: stdin is an open pipe with no data (or
+/// a TTY was already excluded by the caller), so the caller proceeds
+/// with the prompt argument alone instead of hanging. Otherwise
+/// returns the piped text, trimmed as before: all bytes up to EOF, or
+/// up to a `STDIN_CHUNK_GAP_TIMEOUT` stall when the writer never
+/// closes stdin. Pure `std`, so this compiles on Linux, macOS and
+/// Windows with no new dependency.
+fn read_piped_stdin() -> Result<Option<String>> {
+    read_available(
+        std::io::stdin(),
+        STDIN_FIRST_BYTE_TIMEOUT,
+        STDIN_CHUNK_GAP_TIMEOUT,
+    )
+}
+
+fn read_available<R: std::io::Read + Send + 'static>(
+    mut source: R,
+    first_byte_timeout: Duration,
+    chunk_gap_timeout: Duration,
+) -> Result<Option<String>> {
+    use std::sync::mpsc::RecvTimeoutError;
+    // A reader thread owns the blocking read; the caller only waits a
+    // bounded time per chunk. If the pipe stays open with no data, the
+    // thread stays blocked on its read and is left behind: the process
+    // exits after the headless run, so the thread dies with it.
+    // Channel items: Ok(Some(bytes)) = one chunk, Ok(None) = EOF.
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Option<Vec<u8>>, std::io::Error>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match source.read(&mut buf) {
+                Ok(0) => {
+                    let _ = tx.send(Ok(None));
+                    break;
+                }
+                Ok(n) => {
+                    if tx.send(Ok(Some(buf[..n].to_vec()))).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
+    let mut out: Vec<u8> = Vec::new();
+    let mut timeout = first_byte_timeout;
+    loop {
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(Some(chunk))) => {
+                out.extend_from_slice(&chunk);
+                if out.len() > STDIN_MAX_BYTES {
+                    anyhow::bail!("stdin input exceeds 10 MB limit");
+                }
+                timeout = chunk_gap_timeout;
+            }
+            Ok(Ok(None)) => break, // EOF: all piped bytes received.
+            Ok(Err(e)) => return Err(e.into()),
+            Err(RecvTimeoutError::Timeout) => {
+                if out.is_empty() {
+                    return Ok(None); // No piped data in the window.
+                }
+                break; // Writer stalled: keep what arrived.
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
     }
-    Ok(String::from_utf8_lossy(&buf).trim().to_string())
+    Ok(Some(String::from_utf8_lossy(&out).trim().to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn piped_stdin_available_data_is_returned() {
+        // Issue #164: piped data must still reach the prompt (the rev1
+        // fix dropped it whenever a prompt argument was present, which
+        // broke stdin_is_prepended_to_prompt).
+        let out = read_available(
+            std::io::Cursor::new(b"stdin-payload-line".to_vec()),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        )
+        .expect("piped data must read");
+        assert_eq!(out.as_deref(), Some("stdin-payload-line"));
+        // Immediate EOF with no bytes is empty input, not "no data".
+        let out = read_available(
+            std::io::Cursor::new(Vec::new()),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        )
+        .expect("empty pipe must read");
+        assert_eq!(out.as_deref(), Some(""));
+    }
+
+    /// A reader fed by a channel: it blocks until the test sends a
+    /// chunk, so it behaves like an open pipe whose writer is silent.
+    struct ChannelReader {
+        rx: std::sync::mpsc::Receiver<Vec<u8>>,
+        pending: Vec<u8>,
+    }
+
+    impl std::io::Read for ChannelReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pending.is_empty() {
+                self.pending = self.rx.recv().unwrap_or_default();
+            }
+            if self.pending.is_empty() {
+                return Ok(0);
+            }
+            let n = self.pending.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn piped_stdin_no_data_returns_none_without_blocking() {
+        // Issue #164: an open pipe with no data must not hang.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let reader = ChannelReader {
+            rx,
+            pending: Vec::new(),
+        };
+        let started = std::time::Instant::now();
+        let out = read_available(reader, Duration::from_millis(50), Duration::from_millis(50))
+            .expect("a silent pipe must not error");
+        assert!(out.is_none(), "silent pipe must yield no stdin");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "probe must return promptly, took {:?}",
+            started.elapsed()
+        );
+        drop(tx); // Lets the leaked reader thread finish.
+    }
+
+    #[test]
+    fn piped_stdin_keeps_arrived_data_when_writer_stalls() {
+        // A writer that sends one chunk and then never closes stdin
+        // must not lose that chunk to the EOF wait.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let reader = ChannelReader {
+            rx,
+            pending: Vec::new(),
+        };
+        tx.send(b"first-chunk".to_vec()).expect("send chunk");
+        let out = read_available(
+            reader,
+            Duration::from_millis(100),
+            Duration::from_millis(50),
+        )
+        .expect("stalled writer must not error");
+        assert_eq!(out.as_deref(), Some("first-chunk"));
+        drop(tx);
+    }
+
+    #[test]
+    fn piped_stdin_over_limit_is_an_error() {
+        let big = vec![b'x'; STDIN_MAX_BYTES + 1];
+        let err = read_available(
+            std::io::Cursor::new(big),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        )
+        .expect_err("over-limit stdin must error");
+        assert!(err.to_string().contains("10 MB"), "err: {err}");
+    }
 
     #[test]
     fn exit_code_maps_provider_status_shapes() {
