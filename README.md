@@ -41,13 +41,13 @@ takes a few minutes.
 Linux and macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/7enlabs/zencode/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/7enlabs/zencore/main/install.sh | sh
 ```
 
 Windows, in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/7enlabs/zencode/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/7enlabs/zencore/main/install.ps1 | iex"
 ```
 
 The scripts clone this repo, build `zen-cli` in release mode, and copy

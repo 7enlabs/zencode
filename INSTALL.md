@@ -6,13 +6,13 @@ Release v0.1.0 ships a prebuilt Windows binary, so there is nothing
 to compile. One command in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/7enlabs/zencode/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/7enlabs/zencore/main/install.ps1 | iex"
 ```
 
 Safer alternative, download first and read the script before running:
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/7enlabs/zencode/main/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/7enlabs/zencore/main/install.ps1 -OutFile install.ps1
 .\install.ps1
 ```
 
@@ -48,7 +48,7 @@ Linux and macOS still install from source for now — there is no
 prebuilt binary for those platforms in v0.1.0:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/7enlabs/zencode/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/7enlabs/zencore/main/install.sh | sh
 ```
 
 ## Where the binary goes
@@ -89,8 +89,8 @@ If you prefer to build the CLI yourself, you need Git and a Rust
 toolchain (`cargo`). The build can take a few minutes.
 
 ```sh
-git clone https://github.com/7enlabs/zencode.git
-cd zencode
+git clone https://github.com/7enlabs/zencore.git
+cd zencore
 cargo build --release -p zen-cli
 cp target/release/zen ~/.local/bin/zen
 ```

@@ -17,7 +17,7 @@ EXE_BYTES = b"fake zen.exe bytes for hashing"
 EXE_SHA = hashlib.sha256(EXE_BYTES).hexdigest()
 PS1 = (
     "param(\n"
-    "  [string]$Url = 'https://github.com/7enlabs/zencode/releases/download/v9.9.9/zen-x86_64-pc-windows-msvc.zip',\n"
+    "  [string]$Url = 'https://github.com/7enlabs/zencore/releases/download/v9.9.9/zen-x86_64-pc-windows-msvc.zip',\n"
     f"  [string]$Sha256 = '{EXE_SHA}'\n"
     ")\n"
 )

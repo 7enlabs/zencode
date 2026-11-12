@@ -11,7 +11,7 @@
 
   One command (from INSTALL.md):
 
-    powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/7enlabs/zencode/main/install.ps1 | iex"
+    powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/7enlabs/zencore/main/install.ps1 | iex"
 
   With no parameters the script installs release v0.1.0: -Url defaults
   to the v0.1.0 release asset and -Sha256 defaults to the published
@@ -55,7 +55,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$Url = 'https://github.com/7enlabs/zencode/releases/download/v0.1.0/zen-x86_64-pc-windows-msvc.zip',
+  [string]$Url = 'https://github.com/7enlabs/zencore/releases/download/v0.1.0/zen-x86_64-pc-windows-msvc.zip',
   [string]$File,
   [string]$Sha256 = 'eb27ec87c348587423c172710c4b11c86efa18a4454ff8a48fb3cd7128699239',
   [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\ZenCode')

@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const DEFAULT_REPO: &str = "https://github.com/7enlabs/zencode.git";
+pub const DEFAULT_REPO: &str = "https://github.com/7enlabs/zencore.git";
 pub const DEFAULT_BRANCH: &str = "main";
 
 pub fn default_src_dir(home: Option<&Path>) -> Option<PathBuf> {

@@ -2,7 +2,7 @@
 # Install ZenCode CLI from source on Linux and macOS.
 #
 # One command (inspect the script first if you want to):
-#   curl -fsSL https://raw.githubusercontent.com/7enlabs/zencode/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/7enlabs/zencore/main/install.sh | sh
 #
 # What this script does, and nothing else:
 #   1. Clones the repo, or fast-forwards it if it already exists.
@@ -19,7 +19,7 @@
 #   ZENCODE_INSTALL_DIR Where the `zen` binary is copied (default: ~/.local/bin).
 set -eu
 
-REPO="${ZENCODE_REPO:-https://github.com/7enlabs/zencode.git}"
+REPO="${ZENCODE_REPO:-https://github.com/7enlabs/zencore.git}"
 BRANCH="${ZENCODE_BRANCH:-main}"
 SRC_DIR="${ZENCODE_SRC_DIR:-$HOME/.local/share/zencode}"
 INSTALL_DIR="${ZENCODE_INSTALL_DIR:-$HOME/.local/bin}"
