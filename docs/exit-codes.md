@@ -65,5 +65,19 @@ Landed 2026-11-11 (bug hunt B P2-5, with tests):
   review path split 429 out; scripts driving `zen -p` could not tell a
   rate limit from a general failure.
 
+Landed 2026-11-12 (issue #165, with tests):
+
+- The 2026-11-11 item only mapped errors that propagate to `main`:
+  the `-p` headless turn reports a provider failure as a
+  `result/error_during_execution` event whose text is
+  `HTTP <status>: ...`, so it never reached `exit_code_for_error`
+  and always exited 1. The headless path now maps the status from
+  the result text itself (`exit_code_for_headless_result` in lib.rs):
+  401 to auth (2), 403 to forbidden (5), 404 to not found (3),
+  409 to conflict (7), 429 to rate limit (6), 5xx stays general
+  (1); errors without an HTTP status stay 1, success stays 0.
+  The same patch also maps 409 to conflict (7) in
+  `exit_code_for_error`, which previously fell through to 1.
+
 Do not renumber in a patch that is not about exit codes; land each
 queue item with its own tests.

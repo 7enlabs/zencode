@@ -156,7 +156,63 @@ pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
     if text.contains("404") || text.contains("not found") {
         return exit_code::NOT_FOUND;
     }
+    if text.contains("409") {
+        return exit_code::CONFLICT;
+    }
     exit_code::GENERAL
+}
+
+/// Map an HTTP status to its B2 table code (target table,
+/// docs/exit-codes.md): 401 auth, 403 forbidden, 404 not found,
+/// 409 conflict, 429 rate limit; anything else, including 5xx,
+/// is general.
+pub fn exit_code_for_http_status(status: u16) -> i32 {
+    match status {
+        401 => exit_code::AUTH,
+        403 => exit_code::FORBIDDEN,
+        404 => exit_code::NOT_FOUND,
+        409 => exit_code::CONFLICT,
+        429 => exit_code::RATE_LIMIT,
+        _ => exit_code::GENERAL,
+    }
+}
+
+/// Find the first `HTTP <status>` shape in free text, if any. The
+/// agent client formats provider failures as `HTTP <status>: <body>`
+/// (zen-agent client), and that text can carry a request id or extra
+/// context around it, so match the shape anywhere instead of assuming
+/// it is a prefix. Only a three-digit status counts, so a bare
+/// number or a longer run of digits never matches.
+pub fn http_status_in_text(text: &str) -> Option<u16> {
+    let lower = text.to_lowercase();
+    let mut rest = lower.as_str();
+    while let Some(idx) = rest.find("http ") {
+        let after = &rest[idx + "http ".len()..];
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.len() == 3
+            && let Ok(status) = digits.parse::<u16>()
+        {
+            return Some(status);
+        }
+        rest = after;
+    }
+    None
+}
+
+/// Exit code for a finished headless (`-p`) turn (issue #165): the
+/// agent reports provider failures as a `result/error_during_execution`
+/// event whose text is `HTTP <status>: ...` instead of propagating an
+/// error, so `exit_code_for_error` never sees them. Map the status
+/// from the result text to the B2 table; an error without an HTTP
+/// status keeps the blanket general code, and a successful turn
+/// stays 0.
+pub fn exit_code_for_headless_result(is_error: bool, result_text: &str) -> i32 {
+    if !is_error {
+        return exit_code::OK;
+    }
+    http_status_in_text(result_text)
+        .map(exit_code_for_http_status)
+        .unwrap_or(exit_code::GENERAL)
 }
 
 pub async fn run(cli: Cli) -> Result<i32> {
@@ -984,8 +1040,89 @@ mod tests {
         assert_eq!(exit_code_for_error(&err), exit_code::NOT_FOUND);
         let err = anyhow::anyhow!("HTTP 401: bad key");
         assert_eq!(exit_code_for_error(&err), exit_code::AUTH);
+        let err = anyhow::anyhow!("HTTP 409: already exists");
+        assert_eq!(exit_code_for_error(&err), exit_code::CONFLICT);
         let err = anyhow::anyhow!("something else broke");
         assert_eq!(exit_code_for_error(&err), exit_code::GENERAL);
+    }
+
+    #[test]
+    fn exit_code_for_http_status_maps_target_table() {
+        // Target table (docs/exit-codes.md): 401 auth, 403 forbidden,
+        // 404 not found, 409 conflict, 429 rate limit, 5xx general.
+        for (status, want) in [
+            (401, exit_code::AUTH),
+            (403, exit_code::FORBIDDEN),
+            (404, exit_code::NOT_FOUND),
+            (409, exit_code::CONFLICT),
+            (429, exit_code::RATE_LIMIT),
+            (400, exit_code::GENERAL),
+            (500, exit_code::GENERAL),
+            (502, exit_code::GENERAL),
+            (503, exit_code::GENERAL),
+        ] {
+            assert_eq!(exit_code_for_http_status(status), want, "for {status}");
+        }
+    }
+
+    #[test]
+    fn http_status_in_text_finds_first_http_shape() {
+        assert_eq!(
+            http_status_in_text("HTTP 401: bad key"),
+            Some(401),
+            "plain prefix"
+        );
+        assert_eq!(
+            http_status_in_text("request failed: HTTP 500: boom [request-id: abc]"),
+            Some(500),
+            "wrapped shape"
+        );
+        assert_eq!(
+            http_status_in_text("http 429: slow down"),
+            Some(429),
+            "lowercase shape"
+        );
+        assert_eq!(
+            http_status_in_text("HTTP 401: first, HTTP 429: second"),
+            Some(401),
+            "first shape wins"
+        );
+        assert_eq!(http_status_in_text("connection refused"), None);
+        assert_eq!(http_status_in_text("error 404 without http"), None);
+        assert_eq!(http_status_in_text("HTTP 40: too short"), None);
+        assert_eq!(http_status_in_text("HTTP 4010: too long"), None);
+    }
+
+    #[test]
+    fn exit_code_for_headless_result_maps_error_text() {
+        // Issue #165: the -p result event carries the provider
+        // failure as text, so the code comes from the HTTP status
+        // in that text instead of the blanket 1.
+        for (text, want) in [
+            ("HTTP 401: bad key", exit_code::AUTH),
+            ("HTTP 403: insufficient permissions", exit_code::FORBIDDEN),
+            ("HTTP 404: model not found", exit_code::NOT_FOUND),
+            ("HTTP 409: already exists", exit_code::CONFLICT),
+            ("HTTP 429: rate_limit_exceeded", exit_code::RATE_LIMIT),
+            ("HTTP 500: upstream overloaded", exit_code::GENERAL),
+            ("HTTP 503: unavailable", exit_code::GENERAL),
+            ("connection refused", exit_code::GENERAL),
+        ] {
+            assert_eq!(
+                exit_code_for_headless_result(true, text),
+                want,
+                "for {text:?}"
+            );
+        }
+        assert_eq!(
+            exit_code_for_headless_result(false, "HTTP 401: bad key"),
+            exit_code::OK,
+            "a successful turn stays 0 even when its text mentions a status"
+        );
+        assert_eq!(
+            exit_code_for_headless_result(false, "hello from stub"),
+            exit_code::OK
+        );
     }
 
     #[test]

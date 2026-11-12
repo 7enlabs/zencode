@@ -1095,7 +1095,13 @@ pub(crate) async fn run_agent_with_result(
         }
     }
 
-    Ok((if result.is_error { 1 } else { 0 }, result))
+    // The agent reports provider failures as a result event, not as
+    // a propagated error (issue #165): map the HTTP status carried
+    // in the result text to the B2 table instead of the blanket 1.
+    Ok((
+        crate::exit_code_for_headless_result(result.is_error, &result.result),
+        result,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)] // floor-guard: params-struct refactor deferred
