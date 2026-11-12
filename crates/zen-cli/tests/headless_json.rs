@@ -41,19 +41,13 @@ async fn write_json(sock: &mut tokio::net::TcpStream, body: &str) {
 }
 
 fn zen_bin() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
-        let p = std::path::PathBuf::from(dir).join("debug").join("zen");
-        if p.exists() {
-            return p;
-        }
-    }
-
-    let mut p = std::env::current_exe().unwrap();
-    p.pop();
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    p.join("zen")
+    // CARGO_BIN_EXE_zen is set by cargo for integration tests and points
+    // at the built binary wherever cargo places the test executable.
+    // The previous hand-rolled path assumed target/debug/deps layout,
+    // which rustc 1.100 no longer uses (test binaries now run from
+    // target/debug/build/<crate>-<hash>/out), so the spawn failed
+    // with NotFound on main after the 1.100 rollout.
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_zen"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
