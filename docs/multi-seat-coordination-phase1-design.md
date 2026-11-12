@@ -116,7 +116,7 @@ Nghiệm thu bằng 1 việc đa ghế thật (mẫu nghiệm thu game 2048): đ
 
 ## 7. Nguồn và vết kiểm chứng
 
-- Scout Pi: `scout-pi-coordination.md` (1.021 từ, sha256 ccc3ca4abbc39791b798a3a28f9d6b026bccb7fe51bb780973ea0fcfdf7597ba).
+- Scout Pi: `scout-pi-coordination.md` (953 từ, sha256 356c41d32d46886e595fa872841794d93d7d6d94faedafc64cfb1e8ea634590b).
 - Scout Claude Code: `scout-claude-code-coordination.md` (1.214 từ, sha256 a3598bbffe7508290ac090c4cf6122fc97f16eaba9648e1430ba6fe27cc78cee).
 - Scout thực tiễn đội: `scout-team-practice.md` (994 từ, sha256 5eb395d8e6fd5d0e55d46801088aeee1120cdfaea3af7c062a038fb80e790415).
 - Chưa kiểm chứng: tên tool Pi ở bản mới hơn (`task` theo hướng dẫn piagent.fyi so với `subagent` ở bản 1.5.0 đã cài); hành vi runtime (các Scout chỉ đọc, không chạy agent thật) - cần đo ở giai đoạn 2.
