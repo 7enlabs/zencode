@@ -722,6 +722,96 @@ mod tests {
         assert!(env.summary.contains("[truncated to 51200 bytes]"));
     }
 
+    // Mutant-killers for PR #180 (cargo-mutants survivors, Leader tin 10838):
+    // cap_text cut point + suffix, parameters_schema comma logic, is_read_only.
+
+    fn expected_suffix() -> String {
+        format!("\u{2026}[truncated to {} bytes]", ENVELOPE_CAP_BYTES)
+    }
+
+    #[test]
+    fn cap_text_pins_exact_cut_and_suffix() {
+        let big = "x".repeat(ENVELOPE_CAP_BYTES + 1000);
+        let (out, truncated) = cap_text(&big);
+        assert!(truncated);
+        assert_eq!(out.len(), ENVELOPE_CAP_BYTES + expected_suffix().len());
+        assert_eq!(&out[..ENVELOPE_CAP_BYTES], &big[..ENVELOPE_CAP_BYTES]);
+        assert!(out.ends_with(expected_suffix().as_str()));
+    }
+
+    #[test]
+    fn cap_text_at_cap_is_unchanged() {
+        let exact = "x".repeat(ENVELOPE_CAP_BYTES);
+        let (out, truncated) = cap_text(&exact);
+        assert!(!truncated);
+        assert_eq!(out, exact);
+    }
+
+    #[test]
+    fn cap_text_one_byte_over_cap_truncates() {
+        let over = "x".repeat(ENVELOPE_CAP_BYTES + 1);
+        let (out, truncated) = cap_text(&over);
+        assert!(truncated);
+        assert_eq!(out.len(), ENVELOPE_CAP_BYTES + expected_suffix().len());
+        assert_eq!(&out[..ENVELOPE_CAP_BYTES], &over[..ENVELOPE_CAP_BYTES]);
+        assert!(out.ends_with(expected_suffix().as_str()));
+    }
+
+    #[test]
+    fn cap_text_multibyte_char_at_boundary_backs_off() {
+        // "é" is 2 bytes and straddles byte ENVELOPE_CAP_BYTES: the cut must
+        // back off to the previous char boundary instead of slicing mid-char.
+        let mut text = "a".repeat(ENVELOPE_CAP_BYTES - 1);
+        text.push(char::from_u32(0xE9).unwrap());
+        text.push_str(&"b".repeat(100));
+        let (out, truncated) = cap_text(&text);
+        assert!(truncated);
+        assert_eq!(out.len(), ENVELOPE_CAP_BYTES - 1 + expected_suffix().len());
+        assert_eq!(
+            &out[..ENVELOPE_CAP_BYTES - 1],
+            "a".repeat(ENVELOPE_CAP_BYTES - 1).as_str()
+        );
+        assert!(out.ends_with(expected_suffix().as_str()));
+    }
+
+    #[test]
+    fn parameters_schema_joins_agent_descriptions_with_comma() {
+        let t = tool(Arc::new(FakeRunner::new(0)));
+        let schema = t.parameters_schema();
+        let desc = schema["properties"]["agent"]["description"]
+            .as_str()
+            .expect("agent description is a string");
+        assert!(
+            desc.contains("scout agent, worker agent"),
+            "descriptions must be comma-joined: {}",
+            desc
+        );
+        assert!(!desc.starts_with(", "), "no leading comma: {}", desc);
+        assert!(!desc.contains(", ,"), "no doubled comma: {}", desc);
+    }
+
+    #[test]
+    fn parameters_schema_single_agent_has_no_comma() {
+        let t = DelegateTool::new(vec![agent("scout")], Arc::new(FakeRunner::new(0)));
+        let schema = t.parameters_schema();
+        let desc = schema["properties"]["agent"]["description"]
+            .as_str()
+            .expect("agent description is a string");
+        assert!(desc.contains("scout agent"), "description: {}", desc);
+        assert!(
+            !desc.contains(", "),
+            "single agent needs no comma: {}",
+            desc
+        );
+    }
+
+    #[test]
+    fn delegate_tool_is_read_only() {
+        let t = tool(Arc::new(FakeRunner::new(0)));
+        assert!(t.is_read_only());
+        assert_eq!(t.name(), "delegate");
+    }
+
     #[test]
     fn envelope_sha256_known_vector() {
         assert_eq!(
