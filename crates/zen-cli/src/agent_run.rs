@@ -993,15 +993,20 @@ pub(crate) async fn run_agent_with_result(
                     model: cfg.model.clone(),
                     permission_denials: vec![],
                 };
-                if interrupt != Interrupt::Term {
-                    print_result(&result, &cli.effective_output_format(), &buf, false);
-                    if !cli.quiet {
-                        print!("{}", buf.text());
-                    }
-                    if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text
-                    {
-                        println!();
-                    }
+                // Both SIGINT and SIGTERM emit the closing `result` event
+                // before exiting (issue #168): the bridge reads the last
+                // stream-json line to learn the turn ended, so a silent
+                // SIGTERM left it with a dangling `api_retry` line and no
+                // terminator. The exit code still differs (130 vs 143).
+                // In stream-json mode `buf` is `Buffered::stdout`, which
+                // writes through to stdout and flushes per line, so the
+                // event is on the wire before the process exits.
+                print_result(&result, &cli.effective_output_format(), &buf, false);
+                if !cli.quiet {
+                    print!("{}", buf.text());
+                }
+                if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text {
+                    println!();
                 }
                 return Ok((
                     if interrupt == Interrupt::Term {

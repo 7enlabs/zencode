@@ -59,6 +59,15 @@ async fn start_sleeping_run(
     tag: &str,
     signal: &str,
 ) -> (std::process::ExitStatus, String, TempDir) {
+    start_sleeping_run_args(tag, signal, &["--output-format", "json"]).await
+}
+
+#[cfg(unix)]
+async fn start_sleeping_run_args(
+    tag: &str,
+    signal: &str,
+    extra_args: &[&str],
+) -> (std::process::ExitStatus, String, TempDir) {
     let home = TempDir::new(&format!("{}_home", tag));
     let cwd = TempDir::new(&format!("{}_cwd", tag));
     let pid_file = cwd.path().join("sleep.pid");
@@ -87,14 +96,13 @@ async fn start_sleeping_run(
     let mut child = ZenRun::new(tag, &home, &cwd)
         .args([
             "-p",
-            "--output-format",
-            "json",
             "--setting-sources",
             "project",
             "--permission-mode",
             "bypassPermissions",
             "--no-session-persistence",
         ])
+        .args(extra_args.iter().copied())
         .mock("mock-model", &server)
         .arg("sleep please")
         .spawn();
@@ -143,11 +151,14 @@ async fn start_sleeping_run(
 async fn c8_9_sigterm_exits_143_kills_bash_and_runs_session_end() {
     let (status, stdout, _cwd) = start_sleeping_run("sigterm", "-TERM").await;
     assert_eq!(status.code(), Some(143), "stdout: {}", stdout);
-    assert!(
-        stdout.trim().is_empty(),
-        "SIGTERM prints no result: {}",
-        stdout
-    );
+    // Issue #168: SIGTERM must emit the closing `result` event like
+    // SIGINT does, so the bridge sees a terminator instead of a
+    // dangling mid-turn line.
+    let v = last_result(&stdout);
+    assert_eq!(v["type"], "result");
+    assert_eq!(v["is_error"], true);
+    assert_eq!(v["subtype"], "error_during_execution");
+    assert_eq!(v["result"], "Interrupted by user");
 }
 
 #[cfg(unix)]
@@ -159,6 +170,90 @@ async fn c8_9_sigint_ends_turn_with_error_result() {
     assert_eq!(v["type"], "result");
     assert_eq!(v["is_error"], true);
     assert_eq!(v["subtype"], "error_during_execution");
+    assert_eq!(v["result"], "Interrupted by user");
+}
+
+// Issue #168, mutants at agent_run.rs:1008: the trailing blank line after
+// the interrupt result is printed only for Text output when neither
+// --quiet nor --raw is set:
+//   if !cli.quiet && !cli.raw && cli.effective_output_format() == OutputFormat::Text
+// Each arm gets its own run, so each of the five boolean mutants on that
+// line fails at least one test below:
+// - Text, no flags: kills dropping `!` from `!quiet`, dropping `!` from
+//   `!raw`, and `==` to `!=` (the blank line disappears).
+// - Text + --quiet: kills dropping `!` from `!quiet` and both `&&` to
+//   `||` (a blank line appears where stdout must stay empty).
+// - Text + --raw: kills the first `&&` to `||` (`--raw` forces JSON, so
+//   `!quiet` alone makes the mutated condition true and a blank line
+//   appears after the JSON line).
+// - JSON, no flags: kills both `&&` to `||` and `==` to `!=` (a blank
+//   line appears after the single JSON result line).
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn c8_10_sigterm_text_prints_result_plus_blank_line() {
+    let (status, stdout, _cwd) =
+        start_sleeping_run_args("sigterm_text", "-TERM", &["--output-format", "text"]).await;
+    assert_eq!(status.code(), Some(143), "stdout: {}", stdout);
+    assert_eq!(
+        stdout, "Interrupted by user\n",
+        "Text SIGTERM must print the result plus one blank line, got: {:?}",
+        stdout
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn c8_10_sigterm_text_quiet_prints_nothing() {
+    let (status, stdout, _cwd) = start_sleeping_run_args(
+        "sigterm_text_quiet",
+        "-TERM",
+        &["--output-format", "text", "--quiet"],
+    )
+    .await;
+    assert_eq!(status.code(), Some(143), "stdout: {}", stdout);
+    assert_eq!(
+        stdout, "",
+        "Text SIGTERM with --quiet must print nothing, got: {:?}",
+        stdout
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn c8_10_sigterm_text_raw_prints_single_json_line() {
+    let (status, stdout, _cwd) = start_sleeping_run_args(
+        "sigterm_text_raw",
+        "-TERM",
+        &["--output-format", "text", "--raw"],
+    )
+    .await;
+    assert_eq!(status.code(), Some(143), "stdout: {}", stdout);
+    // --raw forces JSON output: the result is one JSON line and the
+    // Text-only blank line must not appear after it.
+    assert_eq!(
+        stdout.matches('\n').count(),
+        1,
+        "expected a single JSON line with no blank line, got: {:?}",
+        stdout
+    );
+    let v = last_result(&stdout);
+    assert_eq!(v["result"], "Interrupted by user");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn c8_10_sigterm_json_prints_single_line_no_blank_line() {
+    let (status, stdout, _cwd) =
+        start_sleeping_run_args("sigterm_json", "-TERM", &["--output-format", "json"]).await;
+    assert_eq!(status.code(), Some(143), "stdout: {}", stdout);
+    assert_eq!(
+        stdout.matches('\n').count(),
+        1,
+        "expected a single JSON line with no blank line, got: {:?}",
+        stdout
+    );
+    let v = last_result(&stdout);
     assert_eq!(v["result"], "Interrupted by user");
 }
 
