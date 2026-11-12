@@ -105,6 +105,69 @@ pub fn is_auto_model(model: &str) -> bool {
     model.trim().eq_ignore_ascii_case("auto")
 }
 
+/// Shape of a model id the CLI will send to a provider (bug hunt R2,
+/// issue #167): letters, digits and `- _ . / : @`, no whitespace or
+/// control characters, no empty `/`- or `:`-separated part, and it
+/// must start and end with a letter or digit.
+///
+/// This is format validation only, on purpose. The CLI deliberately
+/// accepts model ids outside the 5-entry free catalog: any OpenRouter
+/// id, any Ollama local model, any id a custom gateway serves (see
+/// `gateway_model_id`, which passes unknown ids through unchanged),
+/// so a catalog allowlist would reject models that work. A
+/// well-formed id that does not exist still fails at the provider;
+/// catching that locally would need a `/models` lookup, a network
+/// call with its own failure modes. Returns the reason the id is
+/// invalid, or `None` when it is fine.
+pub fn invalid_model_reason(model: &str) -> Option<String> {
+    if model.is_empty() {
+        return Some("model id is empty".to_string());
+    }
+    if let Some(c) = model
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '@')))
+    {
+        return Some(format!(
+            "model id contains invalid character '{}' (allowed: letters, digits, - _ . / : @)",
+            c.escape_debug()
+        ));
+    }
+    if !model
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+        || !model
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return Some("model id must start and end with a letter or digit".to_string());
+    }
+    for part in model.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return Some(format!("model id has an empty or '.' part in '{model}'"));
+        }
+        let colon_parts: Vec<&str> = part.split(':').collect();
+        if colon_parts.len() > 2 {
+            return Some(format!("model id has more than one ':' in '{part}'"));
+        }
+        if colon_parts.iter().any(|p| p.is_empty()) {
+            return Some(format!(
+                "model id has an empty ':'-separated part in '{part}'"
+            ));
+        }
+    }
+    None
+}
+
+/// Full validation error message for an invalid model id, for the
+/// exit-4 paths (config resolution, `eval --model`).
+pub fn invalid_model_message(model: &str, reason: &str) -> String {
+    format!(
+        "invalid model '{model}': {reason} (model ids use letters, digits and - _ . / : @; run `zen models` to list the known free models)"
+    )
+}
+
 /// Base URL of the provider that serves a catalog entry. `None` means
 /// the current base URL stays.
 pub fn provider_base_url(provider: &str) -> Option<&'static str> {
@@ -1306,6 +1369,60 @@ mod tests {
     fn id_looks_free_detection() {
         assert!(id_looks_free("foo/bar:free"));
         assert!(!id_looks_free("foo/bar"));
+    }
+
+    // Bug hunt R2, issue #167: malformed model ids must fail locally,
+    // before any network call. Well-formed ids outside the catalog
+    // stay valid: the CLI deliberately accepts any OpenRouter id,
+    // Ollama local model or custom gateway id.
+    #[test]
+    fn invalid_model_reason_accepts_known_shapes() {
+        for id in [
+            "deepseek-v4.1-flash",
+            "qwen/qwen3-coder:free",
+            "deepseek/deepseek-r1:free",
+            "auto",
+            "Auto",
+            "gpt-4o",
+            "zai/glm-5.2",
+            "qwen3-coder:30b",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "claude-sonnet-4@20250514",
+            "a1_b2.c3-d4",
+            "some-unknown-model",
+        ] {
+            assert_eq!(invalid_model_reason(id), None, "id {id:?} must be valid");
+        }
+    }
+
+    #[test]
+    fn invalid_model_reason_rejects_malformed_ids() {
+        for id in [
+            "",
+            " ",
+            "bad model",
+            "model\tname",
+            "model?",
+            "model#x",
+            "a//b",
+            "/lead",
+            "trail/",
+            "a:b:c",
+            "a::b",
+            "-lead",
+            "trail-",
+            ".lead",
+            "trail.",
+            "ünïcode",
+            "a/./b",
+            "a/../b",
+            "a/:b",
+        ] {
+            assert!(
+                invalid_model_reason(id).is_some(),
+                "id {id:?} must be invalid"
+            );
+        }
     }
 
     // --- P0-2 radar discipline ---
