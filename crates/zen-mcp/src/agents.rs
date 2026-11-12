@@ -272,6 +272,52 @@ pub fn builtin_agents() -> Vec<AgentDefinition> {
             permission_mode: Some("plan".to_string()),
             ..Default::default()
         },
+        // Multi-seat roles (phase 1 design §4.2). Enforcement is at the tool
+        // layer: the executor filters the child registry by these lists, so a
+        // Scout never gets Bash/Write/Edit and a Reviewer never gets
+        // Task/delegate. Project files in `.zen/agents/` override these
+        // builtins when present (see load_agents priority).
+        AgentDefinition {
+            name: "scout".to_string(),
+            description: "Read-only scout: investigates the codebase and reports findings with file:line evidence. Cannot edit files or run commands.".to_string(),
+            tools: Some(
+                READ_ONLY_TOOLS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+            ),
+            system_prompt: "You are a read-only scout sub-agent. Search and read the codebase to answer the question you were given. Reply with the relevant paths, line references and a short answer. Never modify files, never run shell commands. Note: there is no read-only git tool, so use Read/Glob/Grep on the working tree instead of git log/show.".to_string(),
+            permission_mode: Some("plan".to_string()),
+            ..Default::default()
+        },
+        AgentDefinition {
+            name: "worker".to_string(),
+            description: "Implementation worker: edits code, runs tests and verifies. Works on a separate git worktree when editing code.".to_string(),
+            tools: None,
+            system_prompt: "You are an implementation worker sub-agent. Do the task you were given: explore, reproduce if it is a bug, fix the root cause with the smallest change, then verify with the project's build and tests before reporting done. When editing code, work on a separate git worktree (never edit the parent's checkout directly) and report the worktree path and branch. Report evidence (files changed, commands run, test results), never bare claims.".to_string(),
+            ..Default::default()
+        },
+        AgentDefinition {
+            name: "reviewer".to_string(),
+            description: "Independent reviewer: reads code and reports findings only. Cannot edit files, run commands, or spawn sub-agents.".to_string(),
+            tools: Some(
+                READ_ONLY_TOOLS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+            ),
+            disallowed_tools: vec![
+                "Task".to_string(),
+                "delegate".to_string(),
+                "Write".to_string(),
+                "Edit".to_string(),
+                "MultiEdit".to_string(),
+                "Bash".to_string(),
+            ],
+            system_prompt: "You are an independent reviewer sub-agent. Read the code or diff you were given and report findings: what is wrong, where (file:line), and how severe. Never modify files, never run commands, never spawn sub-agents. Your verdict is a report only; only the parent (or the user) approves.".to_string(),
+            permission_mode: Some("plan".to_string()),
+            ..Default::default()
+        },
     ]
 }
 
@@ -469,7 +515,34 @@ mod c6_tests {
 
         let bare = load_cli_agents(None);
         let names: Vec<&str> = bare.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, vec!["general-purpose", "Explore", "Plan"]);
+        assert_eq!(
+            names,
+            vec![
+                "general-purpose",
+                "Explore",
+                "Plan",
+                "scout",
+                "worker",
+                "reviewer"
+            ]
+        );
+        // Multi-seat roles: scout is read-only, reviewer cannot spawn.
+        let scout = bare.iter().find(|a| a.name == "scout").unwrap();
+        let scout_tools = scout.tools.clone().unwrap();
+        assert!(
+            !scout_tools.iter().any(|t| t == "Write"
+                || t == "Edit"
+                || t == "Bash"
+                || t == "Task"
+                || t == "delegate"),
+            "built-in scout is read-only: {:?}",
+            scout_tools
+        );
+        let reviewer = bare.iter().find(|a| a.name == "reviewer").unwrap();
+        assert!(reviewer.disallowed_tools.contains(&"delegate".to_string()));
+        assert!(reviewer.disallowed_tools.contains(&"Task".to_string()));
+        let worker = bare.iter().find(|a| a.name == "worker").unwrap();
+        assert!(worker.tools.is_none(), "worker inherits all tools");
         let _ = std::fs::remove_dir_all(&cwd);
     }
 }

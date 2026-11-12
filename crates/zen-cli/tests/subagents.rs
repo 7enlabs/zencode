@@ -299,6 +299,11 @@ async fn sub_agent_depth_limit() {
         "sub-agent must not get Task: {:?}",
         sub_tools
     );
+    assert!(
+        !sub_tools.contains(&"delegate".to_string()),
+        "sub-agent at max depth must not get delegate either: {:?}",
+        sub_tools
+    );
     let third = request_messages_text(&requests[2]);
     assert!(
         third.contains("Unknown tool 'Task'"),
@@ -367,5 +372,167 @@ async fn sub_agent_custom_model() {
     assert_eq!(
         second_model, "specialist-model",
         "sub-agent should use its own model"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delegate_single_mode_returns_envelope() {
+    let home = TempDir::new("delegate_single_home");
+    let cwd = TempDir::new("delegate_single_cwd");
+
+    let server = MockServer::start(vec![
+        Reply::with_tool_calls(
+            "",
+            Some(serde_json::json!([{
+                "id": "call_delegate_1",
+                "type": "function",
+                "function": {
+                    "name": "delegate",
+                    "arguments": "{\"agent\":\"scout\",\"task\":\"Find X\"}"
+                }
+            }])),
+        ),
+        Reply::text(
+            r#"{"status": "done", "summary": "scout found X in a.rs:10", "evidence": ["a.rs:10"]}"#,
+        ),
+        Reply::text("parent got scout envelope"),
+    ])
+    .await;
+
+    let (stdout, stderr, code) = tokio::time::timeout(Duration::from_secs(90), async {
+        ZenRun::new("delegate_single", &home, &cwd)
+            .args([
+                "-p",
+                "--output-format",
+                "json",
+                "--bare",
+                "--setting-sources",
+                "",
+                "--permission-mode",
+                "bypassPermissions",
+                "--agents",
+                "{}",
+            ])
+            .mock("mock-model", &server)
+            .arg("delegate single to scout")
+            .run_output()
+    })
+    .await
+    .expect("timed out");
+
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let v = last_result(&stdout);
+    assert_eq!(v["result"], "parent got scout envelope");
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected 3 requests, got {}: {:?}",
+        requests.len(),
+        requests
+    );
+
+    let first_tools = request_tool_names(&requests[0]);
+    assert!(
+        first_tools.contains(&"delegate".to_string()),
+        "parent should have delegate tool: {:?}",
+        first_tools
+    );
+
+    let second_sys = system_message(&requests[1]);
+    assert!(
+        second_sys.contains("read-only scout"),
+        "sub-agent should have the scout role prompt: {}",
+        second_sys
+    );
+
+    let third_msgs = request_messages_text(&requests[2]);
+    assert!(
+        third_msgs.contains("scout found X in a.rs:10"),
+        "parent should see the envelope summary: {}",
+        third_msgs
+    );
+    assert!(
+        third_msgs.contains("sha256"),
+        "parent should see the envelope checksum: {}",
+        third_msgs
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delegate_chain_stops_at_first_failed_step() {
+    let home = TempDir::new("delegate_chain_home");
+    let cwd = TempDir::new("delegate_chain_cwd");
+
+    let server = MockServer::start(vec![
+        Reply::with_tool_calls(
+            "",
+            Some(serde_json::json!([{
+                "id": "call_delegate_1",
+                "type": "function",
+                "function": {
+                    "name": "delegate",
+                    "arguments": "{\"chain\":[{\"agent\":\"scout\",\"task\":\"first step\"},{\"agent\":\"worker\",\"task\":\"build on {previous}\"}]}"
+                }
+            }])),
+        ),
+        Reply::text(r#"{"status": "done", "summary": "step1 result"}"#),
+        Reply::text(r#"{"status": "failed", "summary": "step2 broke"}"#),
+        Reply::text("parent saw chain stop"),
+    ])
+    .await;
+
+    let (stdout, stderr, code) = tokio::time::timeout(Duration::from_secs(90), async {
+        ZenRun::new("delegate_chain", &home, &cwd)
+            .args([
+                "-p",
+                "--output-format",
+                "json",
+                "--bare",
+                "--setting-sources",
+                "",
+                "--permission-mode",
+                "bypassPermissions",
+                "--agents",
+                "{}",
+            ])
+            .mock("mock-model", &server)
+            .arg("delegate chain")
+            .run_output()
+    })
+    .await
+    .expect("timed out");
+
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let v = last_result(&stdout);
+    assert_eq!(v["result"], "parent saw chain stop");
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        4,
+        "expected 4 requests, got {}: {:?}",
+        requests.len(),
+        requests
+    );
+
+    let step2_msgs = request_messages_text(&requests[2]);
+    assert!(
+        step2_msgs.contains("step1 result"),
+        "step 2 must see step 1 summary via {{previous}}: {}",
+        step2_msgs
+    );
+
+    let parent_msgs = request_messages_text(&requests[3]);
+    assert!(
+        parent_msgs.contains("stopped_at"),
+        "parent should see the chain stop marker: {}",
+        parent_msgs
+    );
+    assert!(
+        parent_msgs.contains("step2 broke"),
+        "parent should see the failed step summary: {}",
+        parent_msgs
     );
 }

@@ -1,7 +1,7 @@
 # Thiết kế giai đoạn 1: Điều phối đa ghế (Scout/Worker/Reviewer) cho zencode CLI
 
-- Trạng thái: bản nháp chờ Leader duyệt. Giai đoạn 1 chỉ thiết kế, chưa triển khai code.
-- Nhánh: `feature/multi-seat-coord`, base main `1786049`.
+- Trạng thái: Leader đã duyệt thiết kế (tin 10525, 12/11/2026). Giai đoạn 1 chỉ thiết kế, chưa triển khai code. Giai đoạn 2 đang triển khai: PR đầu là tool `delegate` (nhánh `feature/multi-seat-coord`).
+- Nhánh: `feature/multi-seat-coord`, base main `2e7beaf` (rebase từ `1786049` ngày 12/11/2026).
 - Ngày: 12/11/2026. Ghế: ZC Developer. Lệnh: P0, theo lệnh Zen.
 - Nghiệm thu giai đoạn 1: tài liệu này. Leader duyệt thiết kế rồi mới triển khai giai đoạn 2.
 

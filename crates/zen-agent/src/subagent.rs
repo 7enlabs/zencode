@@ -122,8 +122,14 @@ impl SubAgentRunner for SubAgentExecutor {
         }
 
         if depth >= self.max_depth {
-            let remaining: Vec<String> =
-                tools.names().into_iter().filter(|n| n != "Task").collect();
+            // At max depth the child gets no spawning tool at all: neither the
+            // legacy Task nor delegate (a depth-2 delegate child must not
+            // spawn a depth-3 child).
+            let remaining: Vec<String> = tools
+                .names()
+                .into_iter()
+                .filter(|n| n != "Task" && n != "delegate")
+                .collect();
             tools = tools.filtered(&remaining);
         }
 

@@ -85,10 +85,11 @@ Stdin: when `-p` and stdin is not a TTY, read stdin (cap 10 MB, error if larger)
 | `WebFetch` | `url`, `prompt?` | HTTP GET (follow redirects, 10 s timeout, 5 MB cap), HTML → readable text/markdown; optionally summarize with the model against `prompt`. Upgrades http→https. |
 | `TodoWrite` | `todos: [{content, status: pending\|in_progress\|completed, activeForm?}]` | Replaces the session todo list; rendered in REPL; stored in session. At most one `in_progress` recommended. |
 | `Task` | `description`, `prompt`, `subagent_type?` | Runs a sub-agent (§9) with its own fresh context and returns its final text only. |
+| `delegate` | `agent?`, `task?` \\| `tasks?` \\| `chain?`, `timeout_secs?`, `max_concurrent?` | Multi-seat delegation (§9): single / parallel (max 4 concurrent) / chain (`{previous}`, stops at first failed step). Each sub-agent returns a JSON handoff envelope (status/summary/evidence/usage/sha256, summary capped at 50 KB). |
 | (MCP) `mcp__<server>__<tool>` | per server schema | §8. |
 | `Skill` (optional) | `name` | Loads the named skill body into context (§7). |
 
-Read-only tools (no permission needed in `default`): Read, Glob, Grep, TodoWrite, Task(launch), Skill. Mutating: Write, Edit, MultiEdit, Bash, WebFetch, MCP tools.
+Read-only tools (no permission needed in `default`): Read, Glob, Grep, TodoWrite, Task(launch), delegate(launch), Skill. Mutating: Write, Edit, MultiEdit, Bash, WebFetch, MCP tools.
 
 ## 5. Permissions
 **Modes**
@@ -136,6 +137,7 @@ Custom commands: Markdown files in `.zen/commands/*.md` (project) and `~/.zen/co
 ## 9. Sub-agents
 - Definitions: `.zen/agents/*.md` (project), `~/.zen/agents/*.md` (user), `--agents` JSON. Frontmatter: `name`, `description` (when to use), optional `tools` (comma list; omitted = inherit all), `model` (or `inherit`). Body = the sub-agent's system prompt.
 - Invoked via `Task` tool (`subagent_type` = name; default `general-purpose` built-in). Sub-agent runs its own agent loop with fresh history, restricted tool set, same permission settings, cannot spawn further Task by default (depth limit 1, configurable).
+- Invoked via `delegate` tool (§4 of the tool table): three modes single / parallel / chain, handoff envelope JSON (status/summary/evidence/usage/sha256, summary capped at 50 KB), per-subagent timeout (default 600 s), nesting max 2 levels. Built-in roles `scout` (read-only), `worker` (all tools, separate worktree when editing code), `reviewer` (read-only, cannot spawn sub-agents). Child output is scanned for fake system output before the parent reads it.
 - Only the final assistant text returns to the parent as the tool result. In stream-json, sub-agent messages are emitted with `parent_tool_use_id` set to the Task call id (main conversation messages have `null`).
 - SubagentStop hook fires when it ends.
 
