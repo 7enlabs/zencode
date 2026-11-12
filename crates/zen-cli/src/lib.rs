@@ -713,7 +713,7 @@ fn resolve_session(
 
     let persist = !cli.no_session_persistence && !cli.ephemeral;
 
-    let resumed: Option<std::path::PathBuf> = if let Some(h) = &home_path {
+    let mut resumed: Option<std::path::PathBuf> = if let Some(h) = &home_path {
         if let Some(r) = &cli.resume {
             if r.is_empty() {
                 None
@@ -736,6 +736,15 @@ fn resolve_session(
         }
         None
     };
+
+    // #163: --session-id naming an existing session resumes its history,
+    // like --resume. --resume/-c keep precedence when both are given.
+    // An unknown id starts a fresh session, as before (no error).
+    if resumed.is_none()
+        && let (Some(h), Some(id)) = (&home_path, &cli.session_id)
+    {
+        resumed = session::find_session_path(h, id);
+    }
 
     let session_id = if let Some(existing) = &resumed {
         if cli.fork_session {
@@ -842,6 +851,61 @@ mod tests {
             path.unwrap()
                 .ends_with("00000000-0000-4000-8000-0000000000aa.jsonl")
         );
+    }
+
+    #[test]
+    fn resolve_session_id_resumes_existing_session() {
+        // #163: --session-id on an existing session loads its history,
+        // like --resume. Failed before the fix (history source was None).
+        let dir = std::env::temp_dir().join(format!("zen_lib_sid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "00000000-0000-4000-8000-0000000000b1";
+        let proj = session::ensure_session_dir(&dir, &dir, id).unwrap();
+        let p = session::session_path(&proj, id);
+        session::append_typed(&p, "user", id, "cwd", "u", None, None, None).unwrap();
+
+        let cli = Cli::parse_from(["zen", "-p", "--session-id", id, "hi"]);
+        let (got_id, path, src) = resolve_session(&cli, &dir, Some(&dir)).unwrap();
+        assert_eq!(got_id, id);
+        assert_eq!(path.unwrap(), p);
+        assert_eq!(src, Some(p), "--session-id must resume existing history");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_session_id_unknown_starts_fresh() {
+        // #163: an unknown --session-id creates a new session, no error.
+        let dir = std::env::temp_dir().join(format!("zen_lib_sidn_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "00000000-0000-4000-8000-0000000000b2";
+        let cli = Cli::parse_from(["zen", "-p", "--session-id", id, "hi"]);
+        let (got_id, path, src) = resolve_session(&cli, &dir, Some(&dir)).unwrap();
+        assert_eq!(got_id, id);
+        assert!(path.unwrap().ends_with(format!("{}.jsonl", id)));
+        assert_eq!(src, None, "unknown session id must not resume anything");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_session_id_ephemeral_resumes_readonly() {
+        // #163: --ephemeral --session-id replays history read-only,
+        // like --ephemeral --resume.
+        let dir = std::env::temp_dir().join(format!("zen_lib_side_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "00000000-0000-4000-8000-0000000000b3";
+        let proj = session::ensure_session_dir(&dir, &dir, id).unwrap();
+        let p = session::session_path(&proj, id);
+        session::append_typed(&p, "user", id, "cwd", "u", None, None, None).unwrap();
+
+        let cli = Cli::parse_from(["zen", "-p", "--ephemeral", "--session-id", id, "hi"]);
+        let (got_id, path, src) = resolve_session(&cli, &dir, Some(&dir)).unwrap();
+        assert_eq!(got_id, id);
+        assert_eq!(src, Some(p));
+        assert!(path.is_none(), "ephemeral must not open a transcript");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
