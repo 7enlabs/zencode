@@ -234,7 +234,7 @@ with its JSONL journals).
   vocabulary and the `--json` output conventions there are the closest
   in-repo precedent for a search command's UX, but it searches skill metadata,
   not session text.
-- Desktop is a separate repo (`github.com/7enlab/zencode-desktop`); this
+- Desktop is a separate repo (`github.com/7enlabs/zen-desktop`); this
   design covers the shared part only (section 4.7) and defers Desktop-side
   UI/commands to a follow-up design owned with the Desktop line.
 

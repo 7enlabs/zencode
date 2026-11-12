@@ -3,7 +3,7 @@ name: Renovate (self-hosted pilot)
 # Self-hosted Renovate: the job runs in this repo's own Actions, using the
 # official renovatebot/github-action. No hosted Renovate GitHub App is
 # installed on the org. Intended home once approved: .github/workflows/renovate.yml
-# in 7enlabs/zencode (or a dedicated config repo), token in RENOVATE_TOKEN.
+# in 7enlabs/zencore (or a dedicated config repo), token in RENOVATE_TOKEN.
 
 on:
   schedule:
