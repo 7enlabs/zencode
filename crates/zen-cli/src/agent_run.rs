@@ -608,7 +608,7 @@ pub async fn run_agent_headless(
     transcript_path: Option<&Path>,
     history_from: Option<&Path>,
 ) -> Result<i32> {
-    let (code, _) = run_agent_with_result(
+    let (code, result) = run_agent_with_result(
         cli,
         cwd,
         home,
@@ -620,6 +620,14 @@ pub async fn run_agent_headless(
         history_from,
     )
     .await?;
+    // Core-perfect phase 1 (A3): surface the next step for a provider
+    // failure on stderr only — stdout (the JSON/text result contract)
+    // is untouched.
+    if result.is_error
+        && let Some(hint) = crate::provider_error_hint(&result.result)
+    {
+        eprintln!("  hint: {hint}");
+    }
     Ok(code)
 }
 
@@ -1874,7 +1882,11 @@ mod verify_tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // floor-guard: test holds the shared env lock across the await so the var cannot change under the timed command (C1)
     async fn run_verify_command_timeout() {
+        // Hold the shared env lock across the await: the var must not
+        // change under the command being timed (core-perfect C1).
+        let _env = crate::settings::env_lock();
         let env = std::collections::HashMap::new();
 
         unsafe { std::env::set_var("VERIFY_TIMEOUT_SECS", "1") };

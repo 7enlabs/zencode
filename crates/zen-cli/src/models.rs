@@ -1017,7 +1017,16 @@ pub async fn models_command(
             SwitchOutcome::UseOld(old_results) => old_results,
         }
     } else {
-        let cache = cached.expect("cache entry is present: cache_usable is true in this branch");
+        // cache_usable is true here, so the cache must be present —
+        // but that invariant lives only in a comment, so fail with a
+        // clear error instead of panicking if a later refactor breaks
+        // it (core-perfect phase 1, C4). There is no static-catalog
+        // fallback for probe results; re-probing is the recovery path.
+        let Some(cache) = cached else {
+            anyhow::bail!(
+                "models cache is missing even though it was usable; run `zen models --refresh` to re-probe"
+            );
+        };
         if cache_is_stale(&cache) {
             let age = cache_age_secs(&cache).unwrap_or(-1);
             eprintln!(
@@ -1148,6 +1157,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -1919,6 +1929,35 @@ mod tests {
         assert!(restore_cache(Some(&empty)).is_err());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&empty).ok();
+    }
+
+    #[tokio::test]
+    async fn models_command_restore_returns_early_and_restores_pool() {
+        // Mutants job on PR #185: the `if args.restore` early return in
+        // models_command (line 930) had no test, so flipping it (or
+        // dropping the early Ok(())) survived. Restoring must return Ok
+        // without probing, and the live cache must become the backed-up
+        // pool.
+        let dir = test_dir("models-restore-cmd");
+        let old = cache_for("https://x", vec![probe("old-best", true, 0.9)]);
+        save_cache(Some(&dir), &old).unwrap();
+        assert!(backup_cache(Some(&dir)).unwrap());
+        let fresh = cache_for("https://x", vec![probe("new-best", true, 0.95)]);
+        save_cache(Some(&dir), &fresh).unwrap();
+        let cli = crate::cli::Cli::parse_from(["zen", "--quiet"]);
+        let args = crate::cli::ModelsArgs {
+            refresh: false,
+            best: false,
+            yes: false,
+            restore: true,
+        };
+        models_command(&cli, &dir, Some(&dir), &args).await.unwrap();
+        assert_eq!(
+            load_cache(Some(&dir)).unwrap().results[0].model,
+            "old-best",
+            "restore must put the backed-up pool back as the live cache"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -46,6 +46,11 @@ async fn real_main() {
             // source; the blanket GENERAL stays only as the fallback.
             let code = zen_cli::exit_code_for_error(&err);
             eprintln!("Error: {}", err);
+            // Core-perfect phase 1 (A3): a raw provider error gets its
+            // next step right under it.
+            if let Some(hint) = zen_cli::provider_error_hint(&err.to_string()) {
+                eprintln!("  hint: {hint}");
+            }
             std::process::exit(code);
         }
     }

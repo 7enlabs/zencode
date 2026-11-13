@@ -177,6 +177,36 @@ pub fn exit_code_for_http_status(status: u16) -> i32 {
     }
 }
 
+/// Next-step hint for a provider failure surfaced to the user
+/// (core-perfect phase 1, A3). The agent layer formats provider
+/// failures as raw `HTTP <status>: <body>` text; a first-time user
+/// cannot tell a missing key from an exhausted pool from that alone.
+/// Returns None when the text carries no recognizable provider shape,
+/// so callers print nothing extra.
+pub fn provider_error_hint(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    let status = http_status_in_text(text);
+    if status == Some(401)
+        || lower.contains("unauthorized")
+        || lower.contains("no auth credentials")
+        || lower.contains("invalid api key")
+        || lower.contains("authentication failed")
+    {
+        return Some("Check your API key: set ZEN_API_KEY, then run `zen doctor` to verify.");
+    }
+    if status == Some(429) || lower.contains("rate limit") || lower.contains("too many requests") {
+        return Some(
+            "The free model pool is exhausted right now: wait a bit, or switch models with `/model`.",
+        );
+    }
+    if status == Some(400) && lower.contains("invalid model name") {
+        return Some(
+            "This model is not served by the current provider: check `/provider` and `/model`.",
+        );
+    }
+    None
+}
+
 /// Find the first `HTTP <status>` shape in free text, if any. The
 /// agent client formats provider failures as `HTTP <status>: <body>`
 /// (zen-agent client), and that text can carry a request id or extra
@@ -280,10 +310,25 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
             let cfg = settings::resolve_config_with_home(cli, cwd, home)?;
             let store = home.map(zen_agent::RateGate::default_store_path);
             let quota = zen_agent::rategate::quota_report_for(store.as_deref());
+            // Core-perfect phase 1 (A4): a missing key on a route that
+            // needs one is not "all green" — warn loudly and exit AUTH
+            // so scripts and first-time users notice before the first
+            // prompt dies with a raw 401.
+            let key_missing = !cfg.ollama
+                && cfg.api_key().is_none()
+                && models::provider_for_base_url(&cfg.base_url).is_some();
+            let mut warnings = cfg.warnings.clone();
+            if key_missing {
+                warnings.push(
+                    "No API key is configured for this provider: set ZEN_API_KEY, then run `zen doctor` again to check."
+                        .to_string(),
+                );
+            }
+            let doctor_code = if key_missing { exit_code::AUTH } else { 0 };
             match cli.effective_output_format() {
                 OutputFormat::Json | OutputFormat::StreamJson => {
                     if cli.quiet {
-                        return Ok(0);
+                        return Ok(doctor_code);
                     }
                     let report = serde_json::json!({
                         "type": "doctor",
@@ -302,7 +347,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                         "trust_skipped": cfg.trust_skipped,
                         "quota": quota.lines().collect::<Vec<_>>(),
                         "settings_sources": cfg.loaded_sources,
-                        "warnings": cfg.warnings,
+                        "warnings": warnings,
                         "safety_checklist": safety::doctor_safety_checklist(
                             env!("CARGO_PKG_VERSION")
                         ),
@@ -311,7 +356,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                 }
                 OutputFormat::Text => {
                     if cli.quiet {
-                        return Ok(0);
+                        return Ok(doctor_code);
                     }
                     println!("zen doctor");
                     println!("  model: {}", cfg.model);
@@ -343,9 +388,9 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                             println!("    - {}", s);
                         }
                     }
-                    if !cfg.warnings.is_empty() {
+                    if !warnings.is_empty() {
                         println!("  warnings:");
-                        for w in &cfg.warnings {
+                        for w in &warnings {
                             println!("    - {}", w);
                         }
                     }
@@ -355,7 +400,7 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
                     );
                 }
             }
-            Ok(0)
+            Ok(doctor_code)
         }
         Commands::Mcp(mcp) => {
             commands::mcp_command(cli, cwd, home, mcp).await?;
@@ -692,6 +737,9 @@ async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32>
     // the same HTTP 400. The plan flow re-resolves its own
     // config and routes that one itself (PR #71 review F10).
     settings::route_catalog_model(&mut cfg)?;
+    // Fail fast before the first prompt when the route needs a key
+    // and none is configured (core-perfect phase 1, A1).
+    settings::require_api_key_for_route(&cfg)?;
     crate::telemetry::maybe_ping(home, cfg.telemetry.as_deref());
     if cfg.ollama {
         crate::ollama::ensure_ollama_ready(&cfg.base_url, &cfg.model).await?;
@@ -1378,5 +1426,46 @@ mod tests {
         let (id, path, _) = resolve_session(&cli, &dir, Some(&dir)).unwrap();
         assert_eq!(id, "second");
         assert_eq!(path.unwrap(), p2);
+    }
+
+    #[test]
+    fn provider_error_hint_maps_auth_rate_limit_and_bad_model() {
+        // Core-perfect phase 1 (A3): raw provider text gets a next step.
+        let auth = provider_error_hint("HTTP 401: invalid key").unwrap();
+        assert!(auth.contains("ZEN_API_KEY"), "{auth}");
+        assert!(auth.contains("zen doctor"), "{auth}");
+        let auth = provider_error_hint("authentication failed").unwrap();
+        assert!(auth.contains("ZEN_API_KEY"), "{auth}");
+
+        let rate = provider_error_hint("HTTP 429: too many requests").unwrap();
+        assert!(rate.contains("/model"), "{rate}");
+        let rate = provider_error_hint("Error: rate limit exceeded").unwrap();
+        assert!(rate.contains("/model"), "{rate}");
+
+        let model = provider_error_hint("HTTP 400: Invalid Model Name").unwrap();
+        assert!(model.contains("/provider"), "{model}");
+
+        // Anything else gets no hint: callers print nothing extra.
+        assert_eq!(provider_error_hint("Error: file not found"), None);
+        assert_eq!(provider_error_hint("HTTP 500: internal error"), None);
+        assert_eq!(provider_error_hint(""), None);
+    }
+
+    #[test]
+    fn provider_error_hint_each_auth_phrase_alone_and_bad_model_needs_400() {
+        // Mutants job on PR #185: the `||` before "no auth credentials"
+        // (line 191) and before "invalid api key" (line 192) survived,
+        // because no test exercised those phrases without a 401 status;
+        // the `&&` in the 400 + "invalid model name" check (line 202)
+        // survived because no test split the two halves. Each phrase
+        // alone must map to the auth hint, and each half of the 400
+        // check alone must map to nothing.
+        for phrase in ["no auth credentials", "invalid api key"] {
+            let hint = provider_error_hint(phrase)
+                .unwrap_or_else(|| panic!("{phrase} alone must map to the auth hint"));
+            assert!(hint.contains("ZEN_API_KEY"), "{hint}");
+        }
+        assert_eq!(provider_error_hint("invalid model name"), None);
+        assert_eq!(provider_error_hint("HTTP 400: bad request"), None);
     }
 }
