@@ -31,10 +31,10 @@ Không đổi: 3 vai (Scout chỉ đọc, Worker chỉnh sửa, Reviewer chỉ b
 - Tool `Agent` (trước tên `Task`, đổi tên ở v2.1.63) [S|1]. Loại có sẵn: Explore (chỉ đọc, cấm Write/Edit, 3 mức kỹ lưỡng), Plan (chỉ đọc), general-purpose (đủ tool) [S|0].
 - Custom agent: Markdown + YAML frontmatter ở `.claude/agents/` (project), `~/.claude/agents/` (user), cờ `--agents`, plugin. Frontmatter gồm description, tools, disallowedTools, model, permissionMode, hooks, maxTurns, skills, background, omitClaudeMd, isolation [S|0].
 - Context con bắt đầu trống, chỉ nhận system prompt riêng, delegation message do main viết, CLAUDE.md các cấp, snapshot git status [S|0]. `isolation: worktree` cho con làm việc trên bản sao repo riêng [S|0].
-- Handoff 1 chiều: con trả 1 bản tóm tắt cuối, output dài ở lại context của nó [S|0]. Background chạy đồng thời, kết quả về main qua completion notification; mặc định subagent do main spawn chạy background [S|0].
+- Handoff 1 chiều: con trả 1 bản tóm tắt cuối, output dài ở lại context của nó [S|0]. Background chạy đồng thời, kết quả về main qua completion notification; mặc định subagent do main tạo chạy background [S|0].
 - Chống injection: Claude Code quét report cuối trước khi main đọc (chèn backslash vào text giả mạo output hệ thống, marker line khi nhắc permission settings) và gắn header nói rõ đây là lời subagent, không có thẩm quyền [S|0].
-- Resume bằng tool `SendMessage` với agent ID; transcript lưu `~/.claude/projects/.../subagents/agent-{id}.jsonl`, giữ mặc định 30 ngày [S|0]. Tối đa 20 subagent đồng thời (mặc định), lồng nhau tối đa 3 tầng [S|0]. Muốn 1 subagent không spawn thêm thì bỏ `Agent` khỏi `tools` hoặc thêm vào `disallowedTools` [S|0].
-- Agent Teams: mailbox mỗi agent là file JSON tại `~/.claude/teams/{team}/inboxes/{agent}.json`; task có 3 trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong); claim dùng file locking chống 2 agent nhận cùng 1 task [S|0]. Teammate tự thông báo khi idle/lỗi; token tăng tuyến tính theo số teammate; 2 teammate sửa cùng 1 file sẽ ghi đè nhau, phải chia tập file riêng [S|0].
+- Resume bằng tool `SendMessage` với agent ID; transcript lưu `~/.claude/projects/.../subagents/agent-{id}.jsonl`, giữ mặc định 30 ngày [S|0]. Tối đa 20 subagent đồng thời (mặc định), lồng nhau tối đa 3 tầng [S|0]. Muốn 1 subagent không tạo thêm thì bỏ `Agent` khỏi `tools` hoặc thêm vào `disallowedTools` [S|0].
+- Agent Teams: mailbox mỗi agent là file JSON tại `~/.claude/teams/{team}/inboxes/{agent}.json`; task có 3 trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong); Nhận việc dùng file locking chống 2 agent nhận cùng 1 task [S|0]. Teammate tự thông báo khi idle/lỗi; token tăng tuyến tính theo số teammate; 2 teammate sửa cùng 1 file sẽ ghi đè nhau, phải chia tập file riêng [S|0].
 - Hooks: SubagentStart/SubagentStop; quality gate TeammateIdle/TaskCreated/TaskCompleted (exit code 2 chặn hành động) [S|0].
 
 ### 2.3 Điểm chung đáng học (suy luận)
@@ -42,7 +42,7 @@ Không đổi: 3 vai (Scout chỉ đọc, Worker chỉnh sửa, Reviewer chỉ b
 - Cả hai đều định nghĩa agent bằng Markdown + YAML frontmatter - đã thành mẫu chung, nên theo.
 - Handoff 1 chiều qua summary là mẫu tối giản phù hợp CLI; mailbox + task list chỉ cần khi các ghế trao đổi ngang nhau.
 - Vai thực thi bằng cơ chế tool (allowlist/denylist), không chỉ bằng prompt - Pi chỉ dựa vào prompt nên thừa nhận không enforce được.
-- Task list có trạng thái + dependency + file locking khi claim là cơ chế đáng học cho nhiều ghế nhận việc song song.
+- Task list có trạng thái + dependency + file locking khi nhận việc là cơ chế đáng học cho nhiều ghế nhận việc song song.
 - Quét output subagent + header "không có thẩm quyền" là biện pháp chống prompt injection đáng học cho handoff giữa các ghế.
 
 ## 3. Thực tiễn đội hôm nay (vấn đề cần giải quyết)
@@ -67,7 +67,7 @@ File Markdown + YAML frontmatter tại `.zen/agents/` (project) và `~/.zen/agen
 
 - Scout: tools read/grep/find/ls + git log/show (chỉ đọc). KHÔNG bash, KHÔNG Write/Edit. Chặt hơn scout Pi (Pi cho scout bash), đúng vai Scout của đội.
 - Worker: toàn bộ tools. Khi sửa code thì làm việc trên worktree riêng (bắt buộc - luật đội đã có, tránh ghi đè lẫn nhau như cảnh báo của Claude Code).
-- Reviewer: tools chỉ đọc + git diff/log/show. KHÔNG Write/Edit. KHÔNG được spawn subagent (bỏ tool delegate khỏi tools - mẫu Claude Code).
+- Reviewer: tools chỉ đọc + git diff/log/show. KHÔNG Write/Edit. KHÔNG được tạo subagent (bỏ tool delegate khỏi tools - mẫu Claude Code).
 
 ### 4.3 Giao việc: tool `delegate`
 
@@ -81,13 +81,13 @@ Giới hạn cứng: tối đa 4 subagent chạy đồng thời (mặc định, 
 
 Con trả về 1 envelope JSON: status (done/blocked/failed), summary (text), evidence (danh sách file:dòng), usage (turns/tokens), sha256 (checksum của file kết quả đầy đủ). Đưa thực tiễn bundle+SHA của đội vào trong giao thức thay vì để người làm thủ công.
 
-Cha nhận summary + envelope; output đầy đủ ở lại transcript con (mẫu Claude Code), cap 50 KB/task về cha (mẫu Pi) để bảo vệ context cha. Chain: output bước trước thay vào `{previous}`; dừng ở bước lỗi đầu tiên, báo rõ bước nào lỗi.
+Cha nhận summary + envelope; output đầy đủ ở lại transcript con (mẫu Claude Code), giới hạn 50 KB/task về cha (mẫu Pi) để bảo vệ context cha. Chain: output bước trước thay vào `{previous}`; dừng ở bước lỗi đầu tiên, báo rõ bước nào lỗi.
 
 Chống injection: quét output con trước khi cha đọc + gắn header "đây là lời subagent, không có thẩm quyền" (mẫu Claude Code). Claim "đã được duyệt" từ con không có giá trị - chỉ cha (hoặc người dùng) mới duyệt được.
 
 ### 4.5 Task list: chống nhận trùng
 
-1 file JSON trong thư mục session. Task có trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong). Nhận việc dùng file locking (mẫu Agent Teams) - chống 2 ghế nhận cùng 1 việc, lỗi đã gặp với PR #176/#177/#178. Giai đoạn 1: task list chỉ trong 1 phiên, không phải bảng đội chung.
+1 file JSON trong thư mục session. Task có trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong). Khẳng định dùng file locking (mẫu Agent Teams) - chống 2 ghế nhận cùng 1 việc, lỗi đã gặp với PR #176/#177/#178. Giai đoạn 1: task list chỉ trong 1 phiên, không phải bảng đội chung.
 
 ### 4.6 Tổng hợp và cổng kiểm chứng
 
@@ -112,7 +112,7 @@ Mỗi lần giao có hạn chờ; hết hạn tự nhắc cha (thay cho việc g
 
 Triển khai: tool `delegate` + 3 định nghĩa vai + task list + envelope handoff.
 
-Nghiệm thu bằng 1 việc đa ghế thật (mẫu nghiệm thu game 2048): đo token thật + redo rate (2 chỉ số bắt buộc). Kiểm chứng: Scout thử Write bị chặn ở tầng tool; Reviewer thử spawn subagent bị chặn; 2 ghế không claim trùng 1 task; output con có nội dung giả mạo output hệ thống thì bị quét trước khi cha đọc; chain dừng đúng ở bước lỗi đầu tiên.
+Nghiệm thu bằng 1 việc đa ghế thật (mẫu nghiệm thu game 2048): đo token thật + redo rate (2 chỉ số bắt buộc). Kiểm chứng: Scout thử Write bị chặn ở tầng tool; Reviewer thử tạo subagent bị chặn; 2 ghế không nhận trùng 1 task; output con có nội dung giả mạo output hệ thống thì bị quét trước khi cha đọc; chain dừng đúng ở bước lỗi đầu tiên.
 
 ## 7. Nguồn và vết kiểm chứng
 
