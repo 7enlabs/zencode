@@ -19,10 +19,10 @@ Không đổi: 3 vai (Scout chỉ đọc, Worker chỉnh sửa, Reviewer chỉ b
 
 - Core KHÔNG có điều phối đa agent: grep "subagent" trong `dist/bundle/cli.js` bằng 0, `pi --help` không có cờ delegate/subagent [M|0]. Điều phối nằm ở extension ví dụ `subagent` (file `index.ts` 1.036 dòng) đăng ký tool qua ExtensionAPI [S|0] - lựa chọn thiết kế có chủ ý, đẩy điều phối ra tầng extension.
 - Tool `subagent`, 3 mode: Single `{agent, task}`; Parallel `{tasks: [...]}`; Chain `{chain: [...]}` với placeholder `{previous}` cho bước sau [S|0].
-- Agent là file Markdown + YAML frontmatter (name, description, tools, model); thân file là system prompt [S|0]. Phát hiện fresh mỗi lần gọi từ `~/.pi/agent/agents` (user) và `.pi/agents` (project) [S|0].
-- Mỗi lần gọi spawn 1 process `pi` riêng (`pi --mode json -p --no-session`), system prompt ghi file tạm rồi xóa; `--no-session` khiến transcript con không lưu, không bẩn session cha [S|0].
-- Handoff qua stdout: extension parse từng dòng JSON event stream, trả về cho model cha là final assistant message của con dạng text [S|0]. Parallel nối các output thành 1 text, mỗi task cap 50 KB; không có tổng hợp tự động - việc gộp do model cha tự làm [I|0]. Chain dừng ở bước lỗi đầu tiên, báo rõ bước nào lỗi [S|0].
-- 4 agent mẫu: scout, planner, reviewer, worker [S|0]. Phân quyền bằng allowlist `tools` trong frontmatter + instruction trong prompt - ràng buộc mềm: chính reviewer.md thừa nhận "Assume tool permissions are not perfectly enforceable" [S|0]. Scout Pi vẫn có bash, không thuần chỉ đọc như Scout của đội [S|0].
+- Agent là file Markdown + YAML frontmatter (name, description, tools, model); thân file là system prompt [S|0]. Quét lại mỗi lần gọi từ `~/.pi/agent/agents` (user) và `.pi/agents` (project) [S|0].
+- Mỗi lần gọi tạo 1 process `pi` riêng (`pi --mode json -p --no-session`), system prompt ghi file tạm rồi xóa; `--no-session` khiến transcript con không lưu, không bẩn session cha [S|0].
+- Handoff qua stdout: extension đọc từng dòng JSON event stream, trả về cho model cha là thông điệp assistant cuối cùng của con dạng text [S|0]. Parallel nối các output thành 1 text, mỗi task giới hạn 50 KB; không có tổng hợp tự động - việc gộp do model cha tự làm [I|0]. Chain dừng ở bước lỗi đầu tiên, báo rõ bước nào lỗi [S|0].
+- 4 agent mẫu: scout, planner, reviewer, worker [S|0]. Phân quyền bằng allowlist `tools` trong frontmatter + instruction trong prompt - ràng buộc mềm: chính reviewer.md thừa nhận "Assume tool permissions are not perfectly enforceable" (tạm dịch: cứ cho rằng quyền của tool không thể thực thi hoàn hảo) [S|0]. Scout Pi vẫn có bash, không thuần chỉ đọc như Scout của đội [S|0].
 - Giới hạn: tối đa 8 task, tối đa 4 chạy đồng thời; không giới hạn độ sâu đệ quy, không chống vòng lặp, không timeout riêng cho từng subagent [M|0]. Workflow mẫu: `/implement` (scout - planner - worker), `/implement-and-review` (worker - reviewer - worker) [S|0].
 
 ### 2.2 Claude Code 2.1.304
@@ -87,7 +87,7 @@ Chống injection: quét output con trước khi cha đọc + gắn header "đâ
 
 ### 4.5 Task list: chống nhận trùng
 
-1 file JSON trong thư mục session. Task có trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong). Claim dùng file locking (mẫu Agent Teams) - chống 2 ghế nhận cùng 1 việc, lỗi đã gặp với PR #176/#177/#178. Giai đoạn 1: task list chỉ trong 1 phiên, không phải bảng đội chung.
+1 file JSON trong thư mục session. Task có trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong). Nhận việc dùng file locking (mẫu Agent Teams) - chống 2 ghế nhận cùng 1 việc, lỗi đã gặp với PR #176/#177/#178. Giai đoạn 1: task list chỉ trong 1 phiên, không phải bảng đội chung.
 
 ### 4.6 Tổng hợp và cổng kiểm chứng
 
