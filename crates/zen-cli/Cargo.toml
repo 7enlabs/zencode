@@ -26,6 +26,7 @@ async-trait.workspace = true
 chrono.workspace = true
 clap.workspace = true
 dirs.workspace = true
+dialoguer.workspace = true
 reqwest.workspace = true
 regex.workspace = true
 serde.workspace = true

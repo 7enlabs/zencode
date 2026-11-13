@@ -1060,6 +1060,97 @@ fn available_model_rows(home: Option<&Path>, base_url: &str) -> (Vec<ModelRow>, 
     (rows, None)
 }
 
+/// Whether a picker row is the current model: the stored id, or the gateway
+/// id the provider accepts for it. Same rule as format_model_list, so the
+/// list marker and the picker default never disagree.
+fn is_current_model(current: &str, row: &ModelRow) -> bool {
+    row.id == current || crate::models::gateway_model_id(&row.id) == current
+}
+
+/// Display labels for the /model picker: short name, provider, context
+/// window and probe latency, with the current model marked by a leading
+/// marker. Pure formatting so it is unit-testable without a terminal.
+fn model_picker_labels(current: &str, rows: &[ModelRow]) -> Vec<String> {
+    rows.iter()
+        .map(|row| {
+            let marker = if is_current_model(current, row) {
+                "▸ "
+            } else {
+                "  "
+            };
+            let latency = match row.latency_ms {
+                Some(ms) => format!("{ms}ms"),
+                None => "—".to_string(),
+            };
+            format!(
+                "{marker}{}  {:<10}  {} ctx  {}",
+                row.short,
+                row.provider,
+                humanise_context(row.context_window),
+                latency
+            )
+        })
+        .collect()
+}
+
+/// Index the picker opens on: the current model, or the first row when the
+/// current model is not in the list (unknown id, empty list).
+fn model_picker_default_index(current: &str, rows: &[ModelRow]) -> usize {
+    rows.iter()
+        .position(|row| is_current_model(current, row))
+        .unwrap_or(0)
+}
+
+/// Map a picker result to a model id: Some(i) picks row i, None
+/// (Esc / q) and an out-of-range index pick nothing, so a cancel never
+/// changes the model.
+fn resolve_picker_selection(selection: Option<usize>, rows: &[ModelRow]) -> Option<String> {
+    selection
+        .and_then(|i| rows.get(i))
+        .map(|row| row.id.clone())
+}
+
+/// Open the arrow-key /model picker on a terminal: FuzzySelect with the
+/// current model pre-selected, substring filtering while typing, arrow keys
+/// to move, Enter to pick, Esc to cancel. Returns the picked id, or None
+/// on cancel. The caller keeps the numbered list for piped input and as a
+/// fallback when the terminal interaction fails.
+fn run_model_picker(current: &str, rows: &[ModelRow]) -> Result<Option<String>, dialoguer::Error> {
+    let labels = model_picker_labels(current, rows);
+    let selection = dialoguer::FuzzySelect::new()
+        .with_prompt("Model — ↑↓ move, type to filter, Enter select, Esc cancel")
+        .items(&labels)
+        .default(model_picker_default_index(current, rows))
+        .interact_opt()?;
+    Ok(resolve_picker_selection(selection, rows))
+}
+
+/// Switch to a model the picker returned, on the same path as /model <name>.
+fn apply_picked_model(
+    id: &str,
+    cfg: &mut crate::settings::ResolvedConfig,
+    agent: &mut zen_agent::Agent,
+    repl: &mut ReplState<'_>,
+    home: Option<&Path>,
+    cwd: &Path,
+) {
+    match apply_model_switch(
+        cfg,
+        agent,
+        repl.recorder.as_ref(),
+        home,
+        &repl.home_api_key,
+        id,
+    ) {
+        Ok(msg) => {
+            // A pinned model turns auto off.
+            repl.auto_model = false;
+            report_model_switch(cwd, false, &cfg.model, &cfg.base_url, &msg);
+        }
+        Err(e) => eprintln!("{e}"),
+    }
+}
+
 /// Numbered model table for `/model`: short name, provider, context
 /// window and probe latency, with the current model marked by a leading
 /// `▸`. Pure formatting so it is unit-testable without a provider.
@@ -1086,7 +1177,7 @@ fn format_model_list(current: &str, rows: &[ModelRow], auto: bool) -> String {
         // The current model is stored as the gateway id the
         // provider accepts, so a catalog row also matches when its
         // gateway id is the current one.
-        let marker = if row.id == current || crate::models::gateway_model_id(&row.id) == current {
+        let marker = if is_current_model(current, row) {
             "▸ "
         } else {
             "  "
@@ -1316,10 +1407,31 @@ async fn handle_slash(
                 eprintln!("{w}");
             }
             if arg.is_empty() {
-                print!(
-                    "{}",
-                    format_model_list(&agent.config.model, &rows, repl.auto_model)
-                );
+                // Bare `/model` on a terminal opens the arrow-key
+                // picker (B2); piped input keeps the numbered list
+                // so a scripted `/model` never blocks on a prompt.
+                if std::io::IsTerminal::is_terminal(&std::io::stdin()) && !rows.is_empty() {
+                    match run_model_picker(&agent.config.model, &rows) {
+                        Ok(Some(id)) => {
+                            apply_picked_model(&id, cfg, agent, repl, home, cwd);
+                        }
+                        Ok(None) => {
+                            println!("model unchanged (still {})", agent.config.model);
+                        }
+                        Err(e) => {
+                            eprintln!("model picker failed ({e}); showing the list instead");
+                            print!(
+                                "{}",
+                                format_model_list(&agent.config.model, &rows, repl.auto_model)
+                            );
+                        }
+                    }
+                } else {
+                    print!(
+                        "{}",
+                        format_model_list(&agent.config.model, &rows, repl.auto_model)
+                    );
+                }
             } else if crate::models::is_auto_model(&arg) {
                 // Auto mode back on (Leader tin 7962): the current
                 // provider's best free model.
@@ -2617,6 +2729,60 @@ mod model_picker_tests {
         // Catalog rows (never probed) show — for latency.
         assert!(out.contains("—"));
         assert!(out.contains("/model 2, /model nemotron"));
+    }
+
+    #[test]
+    fn picker_default_index_points_at_the_current_model() {
+        assert_eq!(
+            model_picker_default_index("deepseek-v4.1-flash", &rows()),
+            0
+        );
+        assert_eq!(
+            model_picker_default_index("cohere/north-mini-code:free", &rows()),
+            1
+        );
+        assert_eq!(
+            model_picker_default_index("nvidia/nemotron-3-nano:free", &rows()),
+            2
+        );
+        // An unknown current model falls back to the first row.
+        assert_eq!(model_picker_default_index("unknown/model", &rows()), 0);
+        assert_eq!(model_picker_default_index("deepseek-v4.1-flash", &[]), 0);
+    }
+
+    #[test]
+    fn picker_selection_maps_index_to_id_and_cancel_to_none() {
+        assert_eq!(
+            resolve_picker_selection(Some(0), &rows()),
+            Some("deepseek-v4.1-flash".to_string())
+        );
+        assert_eq!(
+            resolve_picker_selection(Some(2), &rows()),
+            Some("nvidia/nemotron-3-nano:free".to_string())
+        );
+        // Esc cancels: nothing is picked, so the model never changes.
+        assert_eq!(resolve_picker_selection(None, &rows()), None);
+        // A stale out-of-range index picks nothing instead of panicking.
+        assert_eq!(resolve_picker_selection(Some(3), &rows()), None);
+        assert_eq!(resolve_picker_selection(Some(0), &[]), None);
+    }
+
+    #[test]
+    fn picker_labels_mark_the_current_row() {
+        let labels = model_picker_labels("cohere/north-mini-code:free", &rows());
+        assert_eq!(labels.len(), 3);
+        assert!(labels[0].contains("deepseek-v4.1-flash"));
+        assert!(labels[0].contains("experientiallabs"));
+        assert!(labels[0].contains("1M ctx"));
+        assert!(labels[0].contains("210ms"));
+        assert!(!labels[0].starts_with("▸"));
+        assert!(labels[1].starts_with("▸"));
+        assert!(labels[1].contains("north-mini-code:free"));
+        assert!(labels[1].contains("131K ctx"));
+        assert!(labels[1].contains("180ms"));
+        assert!(!labels[2].starts_with("▸"));
+        // A row that was never probed shows a dash for latency.
+        assert!(labels[2].contains("—"));
     }
 
     #[test]
