@@ -1882,7 +1882,7 @@ mod verify_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
+    #[allow(clippy::await_holding_lock)] // floor-guard: test holds the shared env lock across the await so the var cannot change under the timed command (C1)
     async fn run_verify_command_timeout() {
         // Hold the shared env lock across the await: the var must not
         // change under the command being timed (core-perfect C1).
