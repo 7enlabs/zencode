@@ -6,6 +6,50 @@ pub const DEFAULT_BASE_URL: &str = "https://api.experientiallabs.ai/api/v1";
 pub const DEFAULT_MODEL: &str = "deepseek-v4.1-flash";
 pub const DEFAULT_MAX_TURNS: usize = 50;
 
+/// Process-wide lock serializing tests that mutate process env vars.
+///
+/// `cargo test` runs the test threads of one test binary in parallel,
+/// and env vars are process-global: a test in `budget.rs` setting
+/// `ZEN_MAX_BUDGET_USD="not-a-number"` while a `model_picker` test
+/// resolves config can flake the other test. Every test in this crate
+/// that calls `set_var`/`remove_var` must hold this lock for the whole
+/// mutation + assertion window (core-perfect phase 1, C1). Each test
+/// binary has its own process, so this lock only serializes within
+/// one binary — which is where the shared vars live.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Fail fast when the resolved route needs an API key and none is
+/// configured (core-perfect phase 1, A1). Without this the session
+/// opens normally and the first prompt dies with a raw `HTTP 401`.
+/// Ollama and custom (unknown-provider) base URLs are exempt: a local
+/// gateway may not need a key at all, and the headless mock tests run
+/// keyless against a local server.
+pub fn require_api_key_for_route(cfg: &ResolvedConfig) -> anyhow::Result<()> {
+    if cfg.ollama || cfg.api_key().is_some() {
+        return Ok(());
+    }
+    let Some(provider) = crate::models::provider_for_base_url(&cfg.base_url) else {
+        return Ok(());
+    };
+    // A CodedError so the process exits AUTH (2), not the blanket
+    // GENERAL (1): a missing key is an auth failure (B2 table).
+    Err(crate::coded_error(
+        crate::exit_code::AUTH,
+        format!(
+            "No API key is configured for {provider} (model {model} at {base_url}). Set ZEN_API_KEY, then run `zen doctor` to check.",
+            provider = provider,
+            model = cfg.model,
+            base_url = cfg.base_url,
+        ),
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedConfig {
     pub model: String,
@@ -842,10 +886,9 @@ mod tests {
     use clap::Parser;
     use std::fs;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    // The shared process-wide env lock lives at module level
+    // (super::env_lock); the local one used to shadow it, so each
+    // test module serialized only against itself (core-perfect C1).
 
     fn base_cli() -> Cli {
         Cli::parse_from(["zen"])
@@ -910,6 +953,75 @@ mod tests {
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
         assert_eq!(cfg.max_turns, DEFAULT_MAX_TURNS);
         assert_eq!(cfg.permission_mode, PermissionMode::Default);
+    }
+
+    fn default_cfg_without_key() -> ResolvedConfig {
+        // Resolve the plain default config with no key in the env, so
+        // the route is the default ExperientialLabs gateway (A1).
+        let _env = env_lock();
+        let cli = base_cli();
+        let old_key = std::env::var("ZEN_API_KEY").ok();
+        let old_openai = std::env::var("OPENAI_API_KEY").ok();
+        let old_model = std::env::var("ZEN_MODEL").ok();
+        let old_base = std::env::var("ZEN_BASE_URL").ok();
+        unsafe { std::env::remove_var("ZEN_API_KEY") };
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        unsafe { std::env::remove_var("ZEN_MODEL") };
+        unsafe { std::env::remove_var("ZEN_BASE_URL") };
+        let dir = std::env::temp_dir().join(format!("zen_cfg_key_{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("zen_cfg_key_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        if let Some(o) = old_key {
+            unsafe { std::env::set_var("ZEN_API_KEY", o) };
+        }
+        if let Some(o) = old_openai {
+            unsafe { std::env::set_var("OPENAI_API_KEY", o) };
+        }
+        if let Some(o) = old_model {
+            unsafe { std::env::set_var("ZEN_MODEL", o) };
+        }
+        if let Some(o) = old_base {
+            unsafe { std::env::set_var("ZEN_BASE_URL", o) };
+        }
+        assert!(cfg.api_key().is_none(), "test setup leaked a key");
+        cfg
+    }
+
+    #[test]
+    fn require_api_key_fails_fast_without_key_on_default_route() {
+        let cfg = default_cfg_without_key();
+        assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
+        let err = require_api_key_for_route(&cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("No API key is configured"), "{msg}");
+        assert!(msg.contains("ZEN_API_KEY"), "{msg}");
+        assert!(msg.contains("zen doctor"), "{msg}");
+        // A missing key is an auth failure (B2 table), not general.
+        assert_eq!(crate::exit_code_for_error(&err), crate::exit_code::AUTH);
+    }
+
+    #[test]
+    fn require_api_key_passes_with_key_and_for_keyless_routes() {
+        let mut cfg = default_cfg_without_key();
+        cfg.api_key = Some("test-key".to_string());
+        require_api_key_for_route(&cfg).unwrap();
+
+        // Ollama needs no key.
+        let mut cfg = default_cfg_without_key();
+        cfg.ollama = true;
+        require_api_key_for_route(&cfg).unwrap();
+
+        // A custom base URL has no known provider, so a local gateway
+        // that needs no key must not be blocked.
+        let mut cfg = default_cfg_without_key();
+        cfg.base_url = "http://127.0.0.1:9/v1".to_string();
+        require_api_key_for_route(&cfg).unwrap();
     }
 
     #[test]

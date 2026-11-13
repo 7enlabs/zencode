@@ -323,6 +323,7 @@ mod tests {
     fn run_update_check_without_checkout_returns_zero() {
         // No ZENCODE_SRC_DIR override and no checkout under home:
         // --check reports nothing to do and exits 0.
+        let _env = crate::settings::env_lock();
         let old = std::env::var("ZENCODE_SRC_DIR").ok();
         unsafe { std::env::remove_var("ZENCODE_SRC_DIR") };
         let home =
@@ -342,6 +343,7 @@ mod tests {
     fn run_update_bails_on_uncommitted_changes() {
         // A checkout with an untracked file must refuse to update
         // (and never reach the network) - an error, not Ok(0).
+        let _env = crate::settings::env_lock();
         let old = std::env::var("ZENCODE_SRC_DIR").ok();
         unsafe { std::env::remove_var("ZENCODE_SRC_DIR") };
         let home = std::env::temp_dir().join(format!("zen_update_dirty_{}", std::process::id()));

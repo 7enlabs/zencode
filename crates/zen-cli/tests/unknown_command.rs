@@ -78,6 +78,25 @@ fn real_subcommand_doctor_is_not_blocked() {
 }
 
 #[test]
+fn doctor_without_key_exits_auth_with_warning() {
+    // Core-perfect phase 1 (A4): a missing key on a route that needs
+    // one is not "all green" — doctor warns and exits AUTH (2).
+    let home = TempDir::new("uc_home");
+    let cwd = TempDir::new("uc_cwd");
+    let (stdout, stderr, code) = ZenRun::new("uc12", &home, &cwd)
+        .env("ZEN_API_KEY", None)
+        .env("OPENAI_API_KEY", None)
+        .arg("doctor")
+        .run_output();
+    assert_eq!(code, 2, "stdout: {stdout} / stderr: {stderr}");
+    assert!(
+        stdout.contains("No API key is configured"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("ZEN_API_KEY"), "stdout: {stdout}");
+}
+
+#[test]
 fn piped_script_into_repl_still_exits_zero() {
     let home = TempDir::new("uc_home");
     let cwd = TempDir::new("uc_cwd");

@@ -672,6 +672,9 @@ mod tests {
 
     #[test]
     fn resolve_budget_prefers_flag_then_env() {
+        // Hold the shared env lock: this test flips the same var the
+        // budget tests read (core-perfect C1).
+        let _env = crate::settings::env_lock();
         assert_eq!(resolve_budget_usd(Some(2.0)), Some(2.0));
 
         unsafe { std::env::set_var("ZEN_MAX_BUDGET_USD", "3.25") };

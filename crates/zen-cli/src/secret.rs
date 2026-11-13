@@ -489,6 +489,9 @@ mod tests {
 
     #[test]
     fn secret_request_needs_a_seat() {
+        // Hold the shared env lock: this test clears ZEN_SEAT
+        // (core-perfect C1).
+        let _env = crate::settings::env_lock();
         let home = temp_home("noseat");
         seed_registry(&home);
         unsafe { std::env::remove_var("ZEN_SEAT") };

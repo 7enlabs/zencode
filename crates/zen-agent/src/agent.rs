@@ -154,7 +154,7 @@ async fn run_tool(
         if !eligible || !transient || attempt >= crate::retry::MAX_TOOL_RETRIES {
             return out;
         }
-        let backoff = crate::retry::retry_backoff_ms(attempt);
+        let backoff = crate::retry::retry_backoff_ms_for(&out.content, attempt);
         let snippet: String = out.content.chars().take(200).collect();
         eprintln!(
             "[retry] tool {} attempt {}/{} failed with transient error, retrying in {} ms: {}",

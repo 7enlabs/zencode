@@ -69,13 +69,11 @@ pub fn budget_line(policy: &BudgetPolicy, spent_usd: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn env_lock() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    // Shared process-wide env lock (crate::settings::ENV_LOCK): the
+    // local one used to serialize only this module, so a deep_research
+    // test flipping ZEN_MAX_BUDGET_USD could still race these tests
+    // (core-perfect C1).
+    use crate::settings::env_lock;
 
     fn unset_env() {
         unsafe { std::env::remove_var("ZEN_MAX_BUDGET_USD") };

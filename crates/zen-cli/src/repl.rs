@@ -225,6 +225,9 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
     // to its serving provider (gateway id, base URL, key) so the very
     // first prompt does not fail with the same HTTP 400.
     crate::settings::route_catalog_model(&mut cfg)?;
+    // Fail fast before the first prompt when the route needs a key
+    // and none is configured (core-perfect phase 1, A1).
+    crate::settings::require_api_key_for_route(&cfg)?;
     if cfg.ollama {
         crate::ollama::ensure_ollama_ready(&cfg.base_url, &cfg.model).await?;
     }
@@ -739,6 +742,12 @@ fn print_turn(result: Option<RunResult>) {
     if let Some(r) = result {
         if r.is_error {
             eprintln!("error: {}", r.result);
+            // Core-perfect phase 1 (A3): a raw provider error gets its
+            // next step right under it instead of leaving the user to
+            // guess what a 401 or a 429 means.
+            if let Some(hint) = crate::provider_error_hint(&r.result) {
+                eprintln!("  hint: {hint}");
+            }
         } else if !r.result.is_empty() {
             // Claude-Code-style marker: assistant text is prefixed with ●.
             println!("● {}", r.result);
@@ -2702,16 +2711,28 @@ mod model_picker_tests {
         }
     }
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Shared process-wide env lock (crate::settings::ENV_LOCK): the
+    // local one used to serialize only this module, so a budget test
+    // flipping ZEN_MAX_BUDGET_USD could still race config resolution
+    // here (core-perfect C1).
+    use crate::settings::ENV_LOCK;
 
     fn test_cfg() -> crate::settings::ResolvedConfig {
         use clap::Parser;
-        // Caller holds ENV_LOCK; isolate from ambient model/base-url env
-        // so the resolved config is the plain default one.
+        // Caller holds ENV_LOCK; isolate from ambient model/base-url/key
+        // env so the resolved config is the plain default one. A key in
+        // the ambient env would otherwise survive into the resolved
+        // config, and a later route (which resets the key to the home
+        // key, None here) would look like a key change and rebuild the
+        // client (core-perfect C1: box runs with ZEN_API_KEY set).
         let old_model = std::env::var("ZEN_MODEL").ok();
         let old_base = std::env::var("ZEN_BASE_URL").ok();
+        let old_key = std::env::var("ZEN_API_KEY").ok();
+        let old_openai_key = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::remove_var("ZEN_MODEL") };
         unsafe { std::env::remove_var("ZEN_BASE_URL") };
+        unsafe { std::env::remove_var("ZEN_API_KEY") };
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
         let cli = crate::cli::Cli::parse_from(["zen"]);
         let dir = std::env::temp_dir().join(format!("zen_model400_cfg_{}", uuid::Uuid::new_v4()));
         let home = std::env::temp_dir().join(format!("zen_model400_home_{}", uuid::Uuid::new_v4()));
@@ -2727,6 +2748,14 @@ mod model_picker_tests {
         match old_base {
             Some(v) => unsafe { std::env::set_var("ZEN_BASE_URL", v) },
             None => unsafe { std::env::remove_var("ZEN_BASE_URL") },
+        }
+        match old_key {
+            Some(v) => unsafe { std::env::set_var("ZEN_API_KEY", v) },
+            None => unsafe { std::env::remove_var("ZEN_API_KEY") },
+        }
+        match old_openai_key {
+            Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
         }
         cfg
     }

@@ -22,6 +22,13 @@ pub const MAX_TOOL_RETRIES: u32 = 2;
 /// Base backoff in milliseconds; retry n sleeps base times 2 to the n.
 pub const TOOL_RETRY_BACKOFF_BASE_MS: u64 = 100;
 
+/// Base backoff for rate-limit errors, in milliseconds: a 429 means
+/// the pool is exhausted, so retrying after 100 ms just hits the same
+/// wall again. Rate-limit retries wait seconds instead (core-perfect
+/// phase 1, C7); the LLM client layer still owns the real 429 policy
+/// (Retry-After, budget delay).
+pub const RATE_LIMIT_BACKOFF_BASE_MS: u64 = 2000;
+
 /// Transient error substrings, matched case-insensitively against the
 /// FIRST line of the error content only.
 const TRANSIENT_SUBSTRINGS: &[&str] = &[
@@ -65,6 +72,14 @@ pub fn is_internal_timeout(content: &str) -> bool {
     first.contains("timed out after") && first.contains("and was stopped")
 }
 
+/// Whether the error is a rate-limit failure: the first line mentions
+/// "rate limit". Such errors need a seconds-scale backoff, not the
+/// millisecond backoff other transient errors get.
+pub fn is_rate_limit_error(content: &str) -> bool {
+    let first = content.lines().next().unwrap_or("").to_lowercase();
+    first.contains("rate limit")
+}
+
 /// Whether an error output looks transient: allowlist match,
 /// case-insensitive, against the first line only, excluding the
 /// agent internal timeout.
@@ -80,6 +95,16 @@ pub fn is_transient_error(content: &str) -> bool {
 /// retry sleeps base, the second retry sleeps base times 2).
 pub fn retry_backoff_ms(attempt: u32) -> u64 {
     TOOL_RETRY_BACKOFF_BASE_MS.saturating_mul(1 << attempt.min(10))
+}
+
+/// Backoff for a concrete error: rate-limit errors wait seconds
+/// (2s, then 4s), everything else uses the millisecond backoff.
+pub fn retry_backoff_ms_for(content: &str, attempt: u32) -> u64 {
+    if is_rate_limit_error(content) {
+        RATE_LIMIT_BACKOFF_BASE_MS.saturating_mul(1 << attempt.min(10))
+    } else {
+        retry_backoff_ms(attempt)
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +171,28 @@ mod tests {
     fn backoff_grows() {
         assert_eq!(retry_backoff_ms(0), 100);
         assert_eq!(retry_backoff_ms(1), 200);
+    }
+
+    #[test]
+    fn rate_limit_backoff_waits_seconds() {
+        // Core-perfect phase 1 (C7): a 429 must wait seconds, not the
+        // 100/200 ms of ordinary transient errors.
+        assert_eq!(retry_backoff_ms_for("Error: rate limit exceeded", 0), 2000);
+        assert_eq!(retry_backoff_ms_for("Error: rate limit exceeded", 1), 4000);
+        assert_eq!(retry_backoff_ms_for("HTTP 429: rate limit", 0), 2000);
+        // Ordinary transient errors keep the millisecond backoff.
+        assert_eq!(retry_backoff_ms_for("Error: connection reset", 0), 100);
+        assert_eq!(retry_backoff_ms_for("Error: connection reset", 1), 200);
+        assert_eq!(retry_backoff_ms_for("", 0), 100);
+    }
+
+    #[test]
+    fn rate_limit_detection_is_first_line_only() {
+        assert!(is_rate_limit_error("Rate Limit exceeded"));
+        assert!(is_rate_limit_error("error 429: RATE LIMIT"));
+        // "rate limit" on a later line does not count: the classifier
+        // only reads the first line.
+        assert!(!is_rate_limit_error("Error: timeout\nrate limit hit"));
+        assert!(!is_rate_limit_error("Error: timeout"));
     }
 }

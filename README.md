@@ -34,39 +34,43 @@ More: [`docs/positioning.md`](docs/positioning.md) · [`docs/faq.md`](docs/faq.m
 
 ## Install
 
-No binary release exists yet, so the one-command install builds from
-source. You need Git and a Rust toolchain (`cargo`) first. The build
-takes a few minutes.
-
-Linux and macOS:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/7enlabs/zencore/main/install.sh | sh
-```
-
-Windows, in PowerShell:
+Windows: the one-command install downloads the prebuilt v0.1.0
+binary, verifies its SHA-256, and copies it to
+`%LOCALAPPDATA%\Programs\ZenCode`. No toolchain, no compile step:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/7enlabs/zencore/main/install.ps1 | iex"
 ```
 
-The scripts clone this repo, build `zen-cli` in release mode, and copy
-the binary to `~/.local/bin/zen` on Linux and macOS, or
-`%USERPROFILE%\.local\bin\zen.exe` on Windows. No sudo or administrator
-rights are needed. Inspect the script before running it if you want to.
-
-Update a source install with:
+Linux and macOS still install from source for now (no prebuilt binary
+in v0.1.0). You need Git and a Rust toolchain (`cargo`) first; the
+build takes a few minutes:
 
 ```sh
-zen update          # fetch, rebuild, and replace the binary you are running
-zen update --check  # only report whether an update is available
+curl -fsSL https://raw.githubusercontent.com/7enlabs/zencore/main/install.sh | sh
 ```
 
-Installed the prebuilt binary instead? Re-run the one-command
-install above to get the newest release build.
+The install scripts need no sudo or administrator rights. Inspect a
+script before running it if you want to.
 
-Full install, update, uninstall, and troubleshooting details:
-[`INSTALL.md`](INSTALL.md).
+Update depends on how you installed: re-run the one-command install
+for a prebuilt binary; `zen update` only applies to source installs
+(it rebuilds from source). See [`INSTALL.md`](INSTALL.md) for the full
+install, update, uninstall, and troubleshooting details.
+
+## API key
+
+Before your first prompt, set the key for your provider:
+
+```sh
+export ZEN_API_KEY=<your key>   # default gateway (ExperientialLabs)
+```
+
+Or use the provider's own variable (`OPENROUTER_API_KEY`,
+`DEEPSEEK_API_KEY`, ...). Run `zen doctor` to verify the setup: it
+warns and exits non-zero when the route needs a key and none is set.
+Without a key, zen stops before the first prompt instead of failing
+with a raw `HTTP 401`. Ollama needs no key at all.
 
 ## Build
 
@@ -81,23 +85,23 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ```bash
 # defaults: base URL https://api.experientiallabs.ai/api/v1, model deepseek-v4.1-flash
-./target/release/zen                                   # interactive REPL
-./target/release/zen -p "list files and summarize README" --output-format json
-echo "explain this log" | ./target/release/zen -p --output-format text
-./target/release/zen -p "continue" --continue          # resume the latest session here
+zen                                   # interactive REPL
+zen -p "list files and summarize README" --output-format json
+echo "explain this log" | zen -p --output-format text
+zen -p "continue" --continue          # resume the latest session here
 
 # any OpenAI-compatible endpoint + free model
 ZEN_BASE_URL=https://openrouter.ai/api/v1 ZEN_API_KEY=... \
-  ./target/release/zen -p "hi" --model nvidia/nemotron-3-super-120b-a12b:free
+  zen -p "hi" --model nvidia/nemotron-3-super-120b-a12b:free
 
 # cost dashboard: per-session token usage and estimated cost
-./target/release/zen cost                        # latest session
-./target/release/zen cost --session <id>         # a past session
-./target/release/zen cost --output-format json   # machine-readable
+zen cost                        # latest session
+zen cost --session <id>         # a past session
+zen cost --output-format json   # machine-readable
 
 # spend cap: hard-stop the session before a model call would breach it
-./target/release/zen -p "refactor everything" --max-budget-usd 2.00
-ZEN_MAX_BUDGET_USD=5 ./target/release/zen        # same via env
+zen -p "refactor everything" --max-budget-usd 2.00
+ZEN_MAX_BUDGET_USD=5 zen        # same via env
 # config file: { "maxBudgetUsd": 5, "budgetWarnAt": 0.8 } in ~/.zen/settings.json
 # precedence: --max-budget-usd > ZEN_MAX_BUDGET_USD > maxBudgetUsd
 # --budget-warn-at 0.5 warns once at 50% (default 0.8). Free models never trip the cap.
@@ -132,8 +136,8 @@ limits, no data leaving your machine:
 
 ```bash
 ollama pull qwen3-coder:30b
-./target/release/zen --model ollama/qwen3-coder:30b
-# or: ./target/release/zen --provider ollama --model llama3.1
+zen --model ollama/qwen3-coder:30b
+# or: zen --provider ollama --model llama3.1
 ```
 
 The `ollama/` prefix (or `--provider ollama`) routes to the local instance
@@ -154,9 +158,9 @@ endpoint. An explicit `--base-url` / `ZEN_BASE_URL` / settings `baseUrl`
 always wins over the provider default.
 
 ```bash
-ZAI_API_KEY=<key> ./target/release/zen -p "hi" --model zai/glm-5.2
-MOONSHOT_API_KEY=<key> ./target/release/zen -p "hi" --model moonshot/kimi-k2.7
-DEEPSEEK_API_KEY=<key> ./target/release/zen -p "hi" --model deepseek/deepseek-v4-flash
+ZAI_API_KEY=<key> zen -p "hi" --model zai/glm-5.2
+MOONSHOT_API_KEY=<key> zen -p "hi" --model moonshot/kimi-k2.7
+DEEPSEEK_API_KEY=<key> zen -p "hi" --model deepseek/deepseek-v4-flash
 ```
 
 | Provider | Key env var | Models (examples) | Pricing/1M in/out |
@@ -235,8 +239,8 @@ directory, nothing under `~/.zen` - everything stays in memory and is discarded 
 A startup banner (`EPHEMERAL MODE - nothing will be saved`) confirms the mode is active.
 
 ```bash
-./target/release/zen --ephemeral                      # interactive REPL, zero trace
-./target/release/zen -p "review this" --ephemeral     # headless, zero trace
+zen --ephemeral                      # interactive REPL, zero trace
+zen -p "review this" --ephemeral     # headless, zero trace
 ```
 
 Notes:
@@ -288,9 +292,9 @@ Free-model catalogs rotate constantly, so `zen models` probes the configured
 provider and tells you which free model actually works *right now*:
 
 ```bash
-./target/release/zen models              # list candidates (uses cache when fresh)
-./target/release/zen models --refresh    # re-probe every candidate free model
-./target/release/zen models --best       # print just the recommended model id
+zen models              # list candidates (uses cache when fresh)
+zen models --refresh    # re-probe every candidate free model
+zen models --best       # print just the recommended model id
 ```
 
 Probing runs 3 tiny micro-tasks per model (instruction following, arithmetic,
@@ -301,7 +305,7 @@ provider changes). A model is only recommended when *every* probe succeeded.
 
 ```bash
 # use the recommended model for a run
-./target/release/zen -p "hi" --model $(./target/release/zen models --best)
+zen -p "hi" --model $(zen models --best)
 ```
 ### Context debugger
 
@@ -310,9 +314,9 @@ view of what the model saw. Token totals come from the API's reported usage when
 available, otherwise from a `chars/4` estimate (the output says which).
 
 ```bash
-./target/release/zen context                        # latest session for this directory
-./target/release/zen context --session <id>         # a specific session
-./target/release/zen context --output-format json   # machine-readable for UIs
+zen context                        # latest session for this directory
+zen context --session <id>         # a specific session
+zen context --output-format json   # machine-readable for UIs
 ```
 
 Example output:
@@ -461,8 +465,8 @@ on step 2 of a 15-step run is re-billed ~13 more times. Zen prunes it:
   being sent whole. The session journal keeps the raw output.
 
 ```bash
-./target/release/zen -p "refactor the auth module" --prune-after 3
-./target/release/zen -p "refactor the auth module" --no-prune   # disable
+zen -p "refactor the auth module" --prune-after 3
+zen -p "refactor the auth module" --no-prune   # disable
 ```
 
 Pruning emits a `system`/`prune` stream-json event (`pruned`, `tokens_saved`) and
@@ -527,11 +531,11 @@ See [docs/session-format.md](docs/session-format.md) for the format spec.
 ### Code review
 
 ```bash
-./target/release/zen review                  # review uncommitted changes (staged + unstaged + untracked)
-./target/release/zen review --uncommitted     # same, explicit
-./target/release/zen review --base main       # review the diff against a base ref
-./target/release/zen review --commit abc123   # review a specific commit
-./target/release/zen review --fail-on medium --output-format json
+zen review                  # review uncommitted changes (staged + unstaged + untracked)
+zen review --uncommitted     # same, explicit
+zen review --base main       # review the diff against a base ref
+zen review --commit abc123   # review a specific commit
+zen review --fail-on medium --output-format json
 ```
 
 `zen review` runs the model with a **mechanically enforced read-only tool set**

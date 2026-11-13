@@ -1017,7 +1017,16 @@ pub async fn models_command(
             SwitchOutcome::UseOld(old_results) => old_results,
         }
     } else {
-        let cache = cached.expect("cache entry is present: cache_usable is true in this branch");
+        // cache_usable is true here, so the cache must be present —
+        // but that invariant lives only in a comment, so fail with a
+        // clear error instead of panicking if a later refactor breaks
+        // it (core-perfect phase 1, C4). There is no static-catalog
+        // fallback for probe results; re-probing is the recovery path.
+        let Some(cache) = cached else {
+            anyhow::bail!(
+                "models cache is missing even though it was usable; run `zen models --refresh` to re-probe"
+            );
+        };
         if cache_is_stale(&cache) {
             let age = cache_age_secs(&cache).unwrap_or(-1);
             eprintln!(
