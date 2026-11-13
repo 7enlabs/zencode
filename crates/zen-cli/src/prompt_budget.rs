@@ -114,6 +114,7 @@ mod tests {
             "Glob",
             "Grep",
             "WebFetch",
+            "WebSearch",
             "TodoWrite",
             "JobOutput",
             "JobKill",

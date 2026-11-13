@@ -18,9 +18,10 @@ mod tests_p0;
 mod tests_p0b;
 
 pub use builtin::{
-    BashTool, EditTool, GlobTool, GrepTool, MultiEditTool, ReadTool, TodoWriteTool, WebFetchTool,
-    WriteTool, builtin_tools, canonicalize_lenient, expand_tilde, html_to_text, render_todos,
-    resolve_path, search_builtin, spill_output, truncate_middle,
+    BashTool, DuckDuckGoHtml, EditTool, GlobTool, GrepTool, MultiEditTool, ReadTool,
+    SearchProvider, SearchResult, TodoWriteTool, WebFetchTool, WebSearchTool, WriteTool,
+    builtin_tools, canonicalize_lenient, expand_tilde, html_to_text, render_todos, resolve_path,
+    search_builtin, spill_output, truncate_middle,
 };
 pub use jobs::{JobKillTool, JobOutputTool};
 pub use tool_docs::tool_long_docs;

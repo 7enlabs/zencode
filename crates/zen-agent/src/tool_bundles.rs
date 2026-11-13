@@ -46,7 +46,7 @@ impl ToolPhase {
 pub fn tool_phase(name: &str) -> Option<ToolPhase> {
     match name {
         "TodoWrite" => Some(ToolPhase::Core),
-        "Read" | "Glob" | "Grep" | "WebFetch" => Some(ToolPhase::Read),
+        "Read" | "Glob" | "Grep" | "WebFetch" | "WebSearch" => Some(ToolPhase::Read),
         "Write" | "Edit" | "MultiEdit" => Some(ToolPhase::Write),
         "Bash" | "JobOutput" | "JobKill" => Some(ToolPhase::Exec),
         _ => None,

@@ -1542,6 +1542,305 @@ impl Tool for WebFetchTool {
     }
 }
 
+pub const WEBSEARCH_MAX_RESULTS: usize = 10;
+
+pub const WEBSEARCH_SNIPPET_MAX_CHARS: usize = 500;
+
+const WEBSEARCH_MAX_BYTES: usize = 1024 * 1024;
+
+/// One web search hit: title, URL and a short snippet. The page itself is
+/// never fetched; use `WebFetch` for that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+/// A search backend: it only knows its own endpoint and page layout. The
+/// tool owns the HTTP client, timeout, redirects and the SSRF guard, so
+/// swapping backends does not touch the tool.
+pub trait SearchProvider: Send + Sync {
+    fn search_url(&self, query: &str) -> Result<String, String>;
+    fn parse_results(&self, html: &str, max_results: usize) -> Result<Vec<SearchResult>, String>;
+}
+
+/// Keyless DuckDuckGo HTML backend (`https://html.duckduckgo.com/html/`).
+/// No API key, no account. The endpoint is unofficial: it may rate-limit or
+/// change layout, and it answers bare-bones requests with a bot-check
+/// ("anomaly") page, so the tool sends browser-like headers (see
+/// `search_with_provider`).
+pub struct DuckDuckGoHtml;
+
+impl SearchProvider for DuckDuckGoHtml {
+    fn search_url(&self, query: &str) -> Result<String, String> {
+        let mut url = reqwest::Url::parse("https://html.duckduckgo.com/html/")
+            .map_err(|e| format!("Error: cannot build search URL: {}", e))?;
+        url.query_pairs_mut().append_pair("q", query);
+        Ok(url.to_string())
+    }
+
+    fn parse_results(&self, html: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
+        parse_ddg_html(html, max_results)
+    }
+}
+
+pub struct WebSearchTool;
+
+#[async_trait]
+impl Tool for WebSearchTool {
+    fn name(&self) -> &str {
+        "WebSearch"
+    }
+    fn description(&self) -> &str {
+        "Search the web and return titles, URLs and short snippets (keyless DuckDuckGo HTML, max 10 results, 10s timeout)."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "count": {"type": "integer", "description": "Max results to return (default 10, max 10)."}
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        })
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
+    async fn call(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        search_with_provider(&DuckDuckGoHtml, args, ctx).await
+    }
+}
+
+fn normalize_search_count(raw: Option<u64>) -> usize {
+    match raw {
+        None | Some(0) => WEBSEARCH_MAX_RESULTS,
+        Some(n) => (n as usize).min(WEBSEARCH_MAX_RESULTS),
+    }
+}
+
+async fn search_with_provider(
+    provider: &dyn SearchProvider,
+    args: Value,
+    ctx: &ToolContext,
+) -> ToolOutput {
+    let Some(query) = arg_str(&args, "query")
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    else {
+        return ToolOutput::err("Error: 'query' must not be empty".to_string());
+    };
+    // `query` borrows `args`; copy it before the await points below.
+    let query = query.to_string();
+    let count = normalize_search_count(args.get("count").and_then(|v| v.as_u64()));
+    let url = match provider.search_url(&query) {
+        Ok(u) => u,
+        Err(e) => return ToolOutput::err(e),
+    };
+    if !url.starts_with("https://") {
+        return ToolOutput::err(format!("Error: search URL must be https: {}", url));
+    }
+    let allow_private = ctx.allow_private_network;
+
+    let client = match with_extra_roots(reqwest::Client::builder())
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return ToolOutput::err(format!("Error: could not build HTTP client: {}", e)),
+    };
+
+    let mut url = url;
+    let mut hops = 0u32;
+    let resp = loop {
+        if let Err(e) = check_fetch_target(&url, allow_private).await {
+            return ToolOutput::err(e);
+        }
+        let r = match client
+            .get(&url)
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+            .header(reqwest::header::REFERER, "https://duckduckgo.com/")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::err(format!("Error searching: {}", e)),
+        };
+        if !r.status().is_redirection() {
+            break r;
+        }
+        hops += 1;
+        if hops > 10 {
+            return ToolOutput::err("Error: too many redirects searching".to_string());
+        }
+        let loc = r
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if loc.is_empty() {
+            break r;
+        }
+        url = match join_redirect_url(&url, &loc) {
+            Ok(u) => u,
+            Err(e) => return ToolOutput::err(e),
+        };
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        return ToolOutput::err(format!(
+            "Error: search provider returned HTTP {}",
+            status.as_u16()
+        ));
+    }
+    let bytes = match read_capped(resp, WEBSEARCH_MAX_BYTES).await {
+        Ok(b) => b,
+        Err(e) => return ToolOutput::err(format!("Error reading search results: {}", e)),
+    };
+    let html = String::from_utf8_lossy(&bytes).to_string();
+    let results = match provider.parse_results(&html, count) {
+        Ok(r) => r,
+        Err(e) => return ToolOutput::err(e),
+    };
+    if results.is_empty() {
+        return ToolOutput::err(
+            "Error: search returned no results; the provider may have blocked the request, try again later"
+                .to_string(),
+        );
+    }
+    let mut out = String::new();
+    for (i, r) in results.iter().enumerate() {
+        out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url));
+        if !r.snippet.is_empty() {
+            out.push_str(&format!("   {}\n", r.snippet));
+        }
+    }
+    ToolOutput::ok(out.trim_end().to_string())
+}
+
+/// Parse a DuckDuckGo HTML results page into at most `max_results` hits.
+/// Titles and snippets are paired by document order (the page emits one
+/// snippet per result, in the same order as the titles).
+fn parse_ddg_html(html: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
+    if html.contains("anomaly-modal") {
+        return Err(
+            "Error: the search provider served a bot-check page; try again later".to_string(),
+        );
+    }
+    let titles = extract_ddg_anchors(html, "result__a");
+    let snippets = extract_ddg_anchors(html, "result__snippet");
+    let mut out = Vec::new();
+    for (i, (href, title)) in titles.into_iter().enumerate() {
+        if out.len() >= max_results {
+            break;
+        }
+        let url = ddg_target_url(&href);
+        let snippet = snippets
+            .get(i)
+            .map(|(_, s)| cap_snippet(s))
+            .unwrap_or_default();
+        out.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
+    }
+    Ok(out)
+}
+
+/// Extract (href, inner text) pairs for `<a ... class="<class>" ...>` anchors,
+/// in document order.
+fn extract_ddg_anchors(html: &str, class: &str) -> Vec<(String, String)> {
+    let anchor = Regex::new(r#"(?is)<a\b([^>]*)>(.*?)</a>"#).expect("ddg anchor regex");
+    let href = Regex::new(r#"(?i)\bhref="([^"]*)""#).expect("ddg href regex");
+    let needle = format!("class=\"{}\"", class);
+    let mut out = Vec::new();
+    for cap in anchor.captures_iter(html) {
+        let attrs = &cap[1];
+        if !attrs.contains(&needle) {
+            continue;
+        }
+        let Some(href) = href
+            .captures(attrs)
+            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+        else {
+            continue;
+        };
+        out.push((decode_entities(&href), ddg_text(&cap[2])));
+    }
+    out
+}
+
+/// Strip inner tags, decode entities and collapse whitespace in a DDG title
+/// or snippet fragment.
+fn ddg_text(fragment: &str) -> String {
+    let tags = Regex::new(r"(?s)<[^>]*>").expect("ddg tag regex");
+    let stripped = tags.replace_all(fragment, " ").to_string();
+    let decoded = decode_numeric_entities(&decode_entities(&stripped));
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Decode numeric character references (`&#39;`, `&#x27;`) that
+/// `decode_entities` does not cover.
+fn decode_numeric_entities(s: &str) -> String {
+    let re = Regex::new(r"&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));").expect("numeric entity regex");
+    re.replace_all(s, |cap: &regex::Captures| {
+        let num = cap
+            .get(1)
+            .map(|m| (m.as_str(), 16))
+            .or_else(|| cap.get(2).map(|m| (m.as_str(), 10)));
+        match num
+            .and_then(|(digits, radix)| u32::from_str_radix(digits, radix).ok())
+            .and_then(char::from_u32)
+        {
+            Some(c) => c.to_string(),
+            None => cap
+                .get(0)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default(),
+        }
+    })
+    .to_string()
+}
+
+/// Resolve a DDG result link to the real target URL: result links point at
+/// `duckduckgo.com/l/?uddg=<url-encoded target>`.
+fn ddg_target_url(href: &str) -> String {
+    let absolute = if let Some(rest) = href.strip_prefix("//") {
+        format!("https://{}", rest)
+    } else if href.starts_with("http://") || href.starts_with("https://") {
+        href.to_string()
+    } else {
+        return href.to_string();
+    };
+    let Ok(url) = reqwest::Url::parse(&absolute) else {
+        return href.to_string();
+    };
+    for (k, v) in url.query_pairs() {
+        if k == "uddg" {
+            return v.into_owned();
+        }
+    }
+    absolute
+}
+
+fn cap_snippet(s: &str) -> String {
+    let mut out: String = s.chars().take(WEBSEARCH_SNIPPET_MAX_CHARS).collect();
+    if s.chars().count() > WEBSEARCH_SNIPPET_MAX_CHARS {
+        out.push('…');
+    }
+    out
+}
+
 pub const WEBFETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 pub const WEBFETCH_MAX_CHARS: usize = 100_000;
@@ -1864,6 +2163,7 @@ pub fn builtin_tools() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(GlobTool),
         std::sync::Arc::new(GrepTool),
         std::sync::Arc::new(WebFetchTool),
+        std::sync::Arc::new(WebSearchTool),
         std::sync::Arc::new(TodoWriteTool),
     ]
 }
@@ -2326,6 +2626,7 @@ mod tests {
                 "Glob",
                 "Grep",
                 "WebFetch",
+                "WebSearch",
                 "TodoWrite"
             ]
         );
@@ -2342,7 +2643,104 @@ mod tests {
                 && !readonly("MultiEdit")
                 && !readonly("Bash")
                 && !readonly("WebFetch")
+                && !readonly("WebSearch")
         );
+    }
+
+    const DDG_SAMPLE: &str = r#"<html><body>
+<div class="result">
+<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ffirst&amp;rut=aaa">First &amp; Title</a>
+<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ffirst&amp;rut=aaa">First snippet with &#x27;quotes&#x27; inside.</a>
+</div>
+<div class="result">
+<a rel="nofollow" class="result__a" href="https://example.test/second">Second Title</a>
+<a class="result__snippet" href="https://example.test/second">Second snippet.</a>
+</div>
+<div class="result">
+<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fthird">Third Title</a>
+</div>
+</body></html>"#;
+
+    #[test]
+    fn websearch_parses_ddg_html_results() {
+        let results = parse_ddg_html(DDG_SAMPLE, 10).expect("parse sample");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].title, "First & Title");
+        assert_eq!(results[0].url, "https://example.com/first");
+        assert_eq!(results[0].snippet, "First snippet with 'quotes' inside.");
+        assert_eq!(results[1].url, "https://example.test/second");
+        assert_eq!(results[1].snippet, "Second snippet.");
+        assert_eq!(results[2].title, "Third Title");
+        assert_eq!(results[2].url, "https://example.com/third");
+        assert!(results[2].snippet.is_empty());
+    }
+
+    #[test]
+    fn websearch_caps_results_and_snippets() {
+        let mut html = String::from("<html><body>");
+        for i in 0..12 {
+            html.push_str(&format!(
+                "<div class=\"result\"><a class=\"result__a\" href=\"https://example.test/{i}\">Title {i}</a>\
+                 <a class=\"result__snippet\" href=\"https://example.test/{i}\">{}</a></div>",
+                "s".repeat(600)
+            ));
+        }
+        html.push_str("</body></html>");
+        let results = parse_ddg_html(&html, 10).expect("parse many");
+        assert_eq!(results.len(), 10);
+        assert_eq!(results[0].title, "Title 0");
+        assert_eq!(results[9].title, "Title 9");
+        assert_eq!(results[0].snippet.chars().count(), 501);
+        assert!(results[0].snippet.ends_with('…'));
+    }
+
+    #[test]
+    fn websearch_rejects_anomaly_page() {
+        let html = "<html><body><div class=\"anomaly-modal__check\">prove you are human</div></body></html>";
+        assert!(parse_ddg_html(html, 10).is_err());
+        assert!(
+            parse_ddg_html("<html><body>no results here</body></html>", 10)
+                .expect("empty page parses")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn websearch_count_normalization() {
+        assert_eq!(normalize_search_count(None), 10);
+        assert_eq!(normalize_search_count(Some(0)), 10);
+        assert_eq!(normalize_search_count(Some(3)), 3);
+        assert_eq!(normalize_search_count(Some(99)), 10);
+    }
+
+    #[tokio::test]
+    async fn websearch_rejects_empty_query_without_network() {
+        let dir = tmpdir("websearch-empty");
+        let ctx = ctx_for(&dir);
+        let out = WebSearchTool.call(json!({"query": "  "}), &ctx).await;
+        assert!(out.is_error, "{}", out.content);
+        let missing = WebSearchTool.call(json!({}), &ctx).await;
+        assert!(missing.is_error, "{}", missing.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Live check against the real DuckDuckGo HTML endpoint. Ignored by
+    /// default: CI has no network. Run with
+    /// `ZEN_LIVE_WEBSEARCH=1 cargo test -p zen-tools -- --ignored websearch_live`.
+    #[tokio::test]
+    #[ignore]
+    async fn websearch_live_returns_results() {
+        if std::env::var("ZEN_LIVE_WEBSEARCH").as_deref() != Ok("1") {
+            return;
+        }
+        let dir = tmpdir("websearch-live");
+        let ctx = ctx_for(&dir);
+        let out = WebSearchTool
+            .call(json!({"query": "Rust programming language"}), &ctx)
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("http"), "{}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

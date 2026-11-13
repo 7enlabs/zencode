@@ -111,7 +111,7 @@ model researches with read-only tools and its final answer is the plan.
 ## 3. Tools (`zen-tools`)
 
 `builtin_tools()` returns `Read`, `Write`, `Edit`, `MultiEdit`, `Bash`, `Glob`, `Grep`, `WebFetch`,
-`TodoWrite`. Design points worth reading in `builtin.rs`:
+`WebSearch`, `TodoWrite`. Design points worth reading in `builtin.rs`:
 
 * **Read-before-write, and not stale.** `ToolContext::read_files` maps each canonical path to a hash
   of the content zen last saw (Read, or its own Write/Edit). `Write`/`Edit`/`MultiEdit` refuse a file

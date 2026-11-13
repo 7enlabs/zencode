@@ -1132,6 +1132,7 @@ mod tests {
             "MultiEdit",
             "Bash",
             "WebFetch",
+            "WebSearch",
             "TodoWrite",
         ] {
             assert!(r.get(n).is_none(), "write tool {n} must not be registered");
