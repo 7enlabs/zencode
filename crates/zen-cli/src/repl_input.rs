@@ -539,6 +539,45 @@ mod tests {
     }
 
     #[test]
+    fn model_hint_is_none_when_cursor_is_mid_line() {
+        // The ghost must only offer the remainder past the cursor at the
+        // end of the line: with the cursor mid-line the `||` guard returns
+        // None, while `&&` would keep ghosting (mutant repl_input.rs:116).
+        let models = vec![(
+            "flash".to_string(),
+            "deploy".to_string(),
+            "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+        )];
+        let line = "/model deepseek-ai/deep";
+        assert_eq!(model_hint(line, 7, &models), None);
+    }
+
+    #[test]
+    fn slash_helper_complete_offers_model_rows() {
+        // Killing the whole-body mutant (repl_input.rs:154): Tab on a
+        // `/model` argument must return the model rows at start 7, not an
+        // empty list.
+        use rustyline::history::DefaultHistory;
+        let helper = SlashHelper {
+            prompt_sgr: None,
+            models: vec![(
+                "flash".to_string(),
+                "deploy".to_string(),
+                "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+            )],
+        };
+        let history = DefaultHistory::new();
+        let ctx = Context::new(&history);
+        let (start, candidates) = helper.complete("/model deep", 11, &ctx).expect("complete");
+        assert_eq!(start, 7);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].replacement,
+            "deepseek-ai/deepseek-v4.1-flash-1017"
+        );
+    }
+
+    #[test]
     fn plain_reader_does_not_edit() {
         let mut r = LineReader::plain();
         assert!(!r.is_editing());
