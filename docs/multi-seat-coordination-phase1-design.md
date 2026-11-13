@@ -1,122 +1,122 @@
-# Thiết kế giai đoạn 1: Điều phối đa ghế (Scout/Worker/Reviewer) cho zencode CLI
+# Phase 1 design: Multi-seat coordination (Scout/Worker/Reviewer) for the zencode CLI
 
-- Trạng thái: Leader đã duyệt thiết kế (tin 10525, 12/11/2026). Giai đoạn 1 chỉ thiết kế, chưa triển khai code. Giai đoạn 2 đang triển khai: PR đầu là tool `delegate` (nhánh `feature/multi-seat-coord`).
-- Nhánh: `feature/multi-seat-coord`, base main `2e7beaf` (rebase từ `1786049` ngày 12/11/2026).
-- Ngày: 12/11/2026. Ghế: ZC Developer. Lệnh: P0, theo lệnh Zen.
-- Nghiệm thu giai đoạn 1: tài liệu này. Leader duyệt thiết kế rồi mới triển khai giai đoạn 2.
+- Status: Leader approved the design (message 10525, 12/11/2026). Phase 1 is design only, no code implementation. Phase 2 is in progress: the first PR is the `delegate` tool (branch `feature/multi-seat-coord`).
+- Branch: `feature/multi-seat-coord`, base main `2e7beaf` (rebased from `1786049` on 12/11/2026).
+- Date: 12/11/2026. Seat: ZC Developer. Order: P0, per Zen's order.
+- Phase 1 acceptance: this document. Leader approves the design before phase 2 implementation starts.
 
-## 1. Mục tiêu và phạm vi
+## 1. Goals and scope
 
-Mục tiêu: CLI có cơ chế giao việc và handoff giữa các ghế trong cùng 1 phiên, thay cho điều phối bằng tay qua Telegram hiện nay.
+Goal: the CLI has a mechanism for tasking and handoff between seats within the same session, replacing today's manual coordination over Telegram.
 
-Phạm vi giai đoạn 1: giao thức điều phối (giao việc cho subagent, handoff kết quả, tổng hợp) + định nghĩa 3 vai. Không triển khai code, không mailbox ngang hàng, không trạng thái liên phiên.
+Phase 1 scope: the coordination protocol (tasking subagents, result handoff, synthesis) + definitions of the 3 roles. No code implementation, no peer mailbox, no cross-session state.
 
-Không đổi: 3 vai (Scout chỉ đọc, Worker chỉnh sửa, Reviewer chỉ báo cáo); free-only; kiểm chứng trước khi báo xong; cổng critic độc lập trước tổng hợp.
+Unchanged: 3 roles (Scout read-only, Worker edits, Reviewer reports only); free-only; verify before reporting done; independent critic gate before synthesis.
 
-## 2. Nghiên cứu: Pi và Claude Code làm điều phối ra sao
+## 2. Research: how Pi and Claude Code do coordination
 
 ### 2.1 Pi 1.5.0 (@earendil-works/pi-coding-agent)
 
-- Core KHÔNG có điều phối đa agent: grep "subagent" trong `dist/bundle/cli.js` bằng 0, `pi --help` không có cờ delegate/subagent [M|0]. Điều phối nằm ở extension ví dụ `subagent` (file `index.ts` 1.036 dòng) đăng ký tool qua ExtensionAPI [S|0] - lựa chọn thiết kế có chủ ý, đẩy điều phối ra tầng extension.
-- Tool `subagent`, 3 mode: Single `{agent, task}`; Parallel `{tasks: [...]}`; Chain `{chain: [...]}` với placeholder `{previous}` cho bước sau [S|0].
-- Agent là file Markdown + YAML frontmatter (name, description, tools, model); thân file là system prompt [S|0]. Quét lại mỗi lần gọi từ `~/.pi/agent/agents` (user) và `.pi/agents` (project) [S|0].
-- Mỗi lần gọi tạo 1 process `pi` riêng (`pi --mode json -p --no-session`), system prompt ghi file tạm rồi xóa; `--no-session` khiến transcript con không lưu, không bẩn session cha [S|0].
-- Handoff qua stdout: extension đọc từng dòng JSON event stream, trả về cho model cha là thông điệp assistant cuối cùng của con dạng text [S|0]. Parallel nối các output thành 1 text, mỗi task giới hạn 50 KB; không có tổng hợp tự động - việc gộp do model cha tự làm [I|0]. Chain dừng ở bước lỗi đầu tiên, báo rõ bước nào lỗi [S|0].
-- 4 agent mẫu: scout, planner, reviewer, worker [S|0]. Phân quyền bằng allowlist `tools` trong frontmatter + instruction trong prompt - ràng buộc mềm: chính reviewer.md thừa nhận "Assume tool permissions are not perfectly enforceable" (tạm dịch: cứ cho rằng quyền của tool không thể thực thi hoàn hảo) [S|0]. Scout Pi vẫn có bash, không thuần chỉ đọc như Scout của đội [S|0].
-- Giới hạn: tối đa 8 task, tối đa 4 chạy đồng thời; không giới hạn độ sâu đệ quy, không chống vòng lặp, không timeout riêng cho từng subagent [M|0]. Workflow mẫu: `/implement` (scout - planner - worker), `/implement-and-review` (worker - reviewer - worker) [S|0].
+- Core has NO multi-agent coordination: grep "subagent" in `dist/bundle/cli.js` returns 0, `pi --help` has no delegate/subagent flag [M|0]. Coordination lives in the example `subagent` extension (`index.ts`, 1,036 lines) which registers tools via ExtensionAPI [S|0] - a deliberate design choice, pushing coordination to the extension layer.
+- Tool `subagent`, 3 modes: Single `{agent, task}`; Parallel `{tasks: [...]}`; Chain `{chain: [...]}` with placeholder `{previous}` for the next step [S|0].
+- An agent is a Markdown file + YAML frontmatter (name, description, tools, model); the file body is the system prompt [S|0]. Re-scanned on every call from `~/.pi/agent/agents` (user) and `.pi/agents` (project) [S|0].
+- Each call spawns a separate `pi` process (`pi --mode json -p --no-session`), the system prompt is written to a temp file then deleted; `--no-session` means the child transcript is not saved and does not pollute the parent session [S|0].
+- Handoff via stdout: the extension reads each line of the JSON event stream and returns to the parent model the child's final assistant message as text [S|0]. Parallel joins the outputs into 1 text, each task capped at 50 KB; no automatic synthesis - merging is the parent model's job [I|0]. Chain stops at the first failing step and reports which step failed [S|0].
+- 4 sample agents: scout, planner, reviewer, worker [S|0]. Permissions via the `tools` allowlist in frontmatter + instructions in the prompt - a soft constraint: reviewer.md itself admits "Assume tool permissions are not perfectly enforceable" [S|0]. Pi's scout still has bash, not purely read-only like the team's Scout [S|0].
+- Limits: max 8 tasks, max 4 running concurrently; no recursion depth limit, no loop protection, no per-subagent timeout [M|0]. Sample workflows: `/implement` (scout - planner - worker), `/implement-and-review` (worker - reviewer - worker) [S|0].
 
 ### 2.2 Claude Code 2.1.304
 
-- 2 tầng điều phối riêng biệt [S|0]: Subagent (trong 1 session, main quản lý toàn bộ, handoff 1 chiều qua summary) và Agent Teams (nhiều instance độc lập, lead + teammate nhắn trực tiếp, task list chung, mailbox JSON; tắt mặc định, cần interactive session, không chạy ở chế độ `-p`).
-- Tool `Agent` (trước tên `Task`, đổi tên ở v2.1.63) [S|1]. Loại có sẵn: Explore (chỉ đọc, cấm Write/Edit, 3 mức kỹ lưỡng), Plan (chỉ đọc), general-purpose (đủ tool) [S|0].
-- Custom agent: Markdown + YAML frontmatter ở `.claude/agents/` (project), `~/.claude/agents/` (user), cờ `--agents`, plugin. Frontmatter gồm description, tools, disallowedTools, model, permissionMode, hooks, maxTurns, skills, background, omitClaudeMd, isolation [S|0].
-- Context con bắt đầu trống, chỉ nhận system prompt riêng, delegation message do main viết, CLAUDE.md các cấp, snapshot git status [S|0]. `isolation: worktree` cho con làm việc trên bản sao repo riêng [S|0].
-- Handoff 1 chiều: con trả 1 bản tóm tắt cuối, output dài ở lại context của nó [S|0]. Background chạy đồng thời, kết quả về main qua completion notification; mặc định subagent do main spawn chạy background [S|0].
-- Chống injection: Claude Code quét report cuối trước khi main đọc (chèn backslash vào text giả mạo output hệ thống, marker line khi nhắc permission settings) và gắn header nói rõ đây là lời subagent, không có thẩm quyền [S|0].
-- Resume bằng tool `SendMessage` với agent ID; transcript lưu `~/.claude/projects/.../subagents/agent-{id}.jsonl`, giữ mặc định 30 ngày [S|0]. Tối đa 20 subagent đồng thời (mặc định), lồng nhau tối đa 3 tầng [S|0]. Muốn 1 subagent không spawn thêm thì bỏ `Agent` khỏi `tools` hoặc thêm vào `disallowedTools` [S|0].
-- Agent Teams: mailbox mỗi agent là file JSON tại `~/.claude/teams/{team}/inboxes/{agent}.json`; task có 3 trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong); claim dùng file locking chống 2 agent nhận cùng 1 task [S|0]. Teammate tự thông báo khi idle/lỗi; token tăng tuyến tính theo số teammate; 2 teammate sửa cùng 1 file sẽ ghi đè nhau, phải chia tập file riêng [S|0].
-- Hooks: SubagentStart/SubagentStop; quality gate TeammateIdle/TaskCreated/TaskCompleted (exit code 2 chặn hành động) [S|0].
+- 2 separate coordination layers [S|0]: Subagent (within 1 session, main manages everything, one-way handoff via summary) and Agent Teams (multiple independent instances, lead + teammates messaging directly, shared task list, JSON mailbox; off by default, needs an interactive session, does not run in `-p` mode).
+- Tool `Agent` (formerly `Task`, renamed in v2.1.63) [S|1]. Built-in types: Explore (read-only, no Write/Edit, 3 thoroughness levels), Plan (read-only), general-purpose (full tools) [S|0].
+- Custom agent: Markdown + YAML frontmatter in `.claude/agents/` (project), `~/.claude/agents/` (user), `--agents` flag, plugin. Frontmatter includes description, tools, disallowedTools, model, permissionMode, hooks, maxTurns, skills, background, omitClaudeMd, isolation [S|0].
+- Child context starts empty, receiving only its own system prompt, the delegation message written by main, CLAUDE.md at each level, and a git status snapshot [S|0]. `isolation: worktree` lets the child work on a separate copy of the repo [S|0].
+- One-way handoff: the child returns a final summary, long output stays in its context [S|0]. Background runs concurrently, results reach main via completion notification; by default subagents spawned by main run in the background [S|0].
+- Anti-injection: Claude Code scans the final report before main reads it (inserting backslashes into text that fakes system output, a marker line when permission settings are mentioned) and attaches a header stating this is a subagent's words, with no authority [S|0].
+- Resume via the `SendMessage` tool with the agent ID; transcripts saved at `~/.claude/projects/.../subagents/agent-{id}.jsonl`, kept 30 days by default [S|0]. Max 20 concurrent subagents (default), nested up to 3 levels [S|0]. To stop a subagent from spawning more, remove `Agent` from `tools` or add it to `disallowedTools` [S|0].
+- Agent Teams: each agent's mailbox is a JSON file at `~/.claude/teams/{team}/inboxes/{agent}.json`; tasks have 3 states pending / in progress / completed + dependency (blocked until the dependency finishes); claiming uses file locking to stop 2 agents claiming the same task [S|0]. Teammates notify on their own when idle or on error; tokens grow linearly with teammate count; 2 teammates editing the same file overwrite each other, so split the file set [S|0].
+- Hooks: SubagentStart/SubagentStop; quality gates TeammateIdle/TaskCreated/TaskCompleted (exit code 2 blocks the action) [S|0].
 
-### 2.3 Điểm chung đáng học (suy luận)
+### 2.3 Common patterns worth learning (inference)
 
-- Cả hai đều định nghĩa agent bằng Markdown + YAML frontmatter - đã thành mẫu chung, nên theo.
-- Handoff 1 chiều qua summary là mẫu tối giản phù hợp CLI; mailbox + task list chỉ cần khi các ghế trao đổi ngang nhau.
-- Vai thực thi bằng cơ chế tool (allowlist/denylist), không chỉ bằng prompt - Pi chỉ dựa vào prompt nên thừa nhận không enforce được.
-- Task list có trạng thái + dependency + file locking khi claim là cơ chế đáng học cho nhiều ghế nhận việc song song.
-- Quét output subagent + header "không có thẩm quyền" là biện pháp chống prompt injection đáng học cho handoff giữa các ghế.
+- Both define agents with Markdown + YAML frontmatter - already the common pattern, follow it.
+- One-way handoff via summary is the minimal pattern that fits a CLI; mailbox + task list are only needed when seats talk to each other directly.
+- Enforce roles via tool mechanisms (allowlist/denylist), not just prompts - Pi relies on prompts alone and admits it cannot enforce them.
+- A task list with status + dependency + file locking on claim is a mechanism worth learning for many seats claiming work in parallel.
+- Scanning subagent output + a "no authority" header is an anti-prompt-injection measure worth learning for handoffs between seats.
 
-## 3. Thực tiễn đội hôm nay (vấn đề cần giải quyết)
+## 3. Team practice today (problems to solve)
 
-Luồng 5 bước bằng tay: giao việc (tin Telegram, Reply ĐÃ NHẬN trong 30 phút) - fan-out song song (mỗi Scout một miền, file riêng) - làm việc (Worker sửa trên worktree riêng, nhánh dev/<tên>) - handoff (bundle git + sha256; file báo cáo + SHA; tin ĐÃ NHẬN/XONG/CHẶN; Notion làm bản ghi) - kiểm chứng + báo cáo (ghế chính kiểm chứng trực tiếp trước khi báo xong).
+Manual 5-step flow: tasking (Telegram message, reply ACK within 30 minutes) - parallel fan-out (each Scout one domain, separate file) - work (Worker edits on a separate worktree, branch dev/<name>) - handoff (git bundle + sha256; report file + SHA; ACK/DONE/BLOCKED messages; Notion as the record) - verification + reporting (the lead seat verifies directly before reporting done).
 
-Điểm yếu đã đo trong thực tế: chờ đợi không hẹn giờ tự động (câu hỏi regression test gửi 08:54 ngày 12/11, tới 11:28 chưa trả lời, phải kiểm tra thủ công); tin peek bị cắt ở 200 ký tự (phần sau tin Leader 10394 bị cắt, phải hỏi lại qua Notion); trùng lặp (cùng file gửi 2 lần; PR #176/#177/#178 mở trùng #170/#171/#172, phải đóng không merge); báo cáo worker cũ/sai (3 lần trong ngày 11/11); việc mồ côi (worker PR #158 báo "DỪNG DO HẾT GIỜ, CHƯA XONG" nhưng không nằm trong DOING bàn giao); kiểm chứng hoàn toàn thủ công; 3 kênh Telegram/Notion/ztask lệch nhau.
+Weaknesses measured in practice: waiting with no automatic deadline (regression test question sent 08:54 on 12/11, still unanswered at 11:28, had to check manually); message peek cut at 200 characters (the tail of Leader message 10394 was cut, had to ask again via Notion); duplicates (same file sent twice; PR #176/#177/#178 duplicated #170/#171/#172, had to close without merging); stale/wrong worker reports (3 times on 11/11); orphaned work (worker PR #158 reported "STOPPED - OUT OF TIME, NOT DONE" but was not in the DOING handoff); verification fully manual; 3 channels Telegram/Notion/ztask out of sync.
 
-## 4. Giao thức đề xuất
+## 4. Proposed protocol
 
-### 4.1 Kiến trúc: hub-and-spoke trong 1 phiên
+### 4.1 Architecture: hub-and-spoke within 1 session
 
-1 ghế điều phối (cha) + N subagent (con) trong cùng 1 phiên. Con chỉ trả kết quả về cha, không nhắn ngang nhau - chưa có mailbox ở giai đoạn 1. Lý do: khớp luồng đội (ghế chính điều phối, các ghế báo về); rẻ token (chỉ summary về cha); chạy được ở chế độ `-p` (Agent Teams của Claude Code không chạy được ở `-p`).
+1 coordinator seat (parent) + N subagents (children) in the same session. Children only return results to the parent, no peer messaging - no mailbox in phase 1. Rationale: matches the team flow (lead seat coordinates, seats report back); cheap on tokens (only the summary goes to the parent); works in `-p` mode (Claude Code Agent Teams does not run in `-p`).
 
-Mỗi subagent là 1 process riêng, JSON mode (mẫu Pi): cách ly context thật, đơn giản nhất để triển khai; transcript con lưu riêng trong thư mục session, không bẩn session cha.
+Each subagent is a separate process, JSON mode (Pi pattern): real context isolation, simplest to implement; child transcripts saved separately in the session folder, not polluting the parent session.
 
-### 4.2 Định nghĩa ghế
+### 4.2 Seat definitions
 
-File Markdown + YAML frontmatter tại `.zen/agents/` (project) và `~/.zen/agents/` (user). Frontmatter: name, description, tools (allowlist), model, maxTurns.
+Markdown files + YAML frontmatter at `.zen/agents/` (project) and `~/.zen/agents/` (user). Frontmatter: name, description, tools (allowlist), model, maxTurns.
 
-3 vai chuẩn, phân quyền thực thi ở tầng tool/permission của CLI (dùng sẵn cơ chế `--permission-mode` / `--allowedTools`), không chỉ dựa vào prompt:
+3 standard roles, permissions enforced at the CLI tool/permission layer (using the existing `--permission-mode` / `--allowedTools` mechanisms), not just by prompt:
 
-- Scout: tools read/grep/find/ls + git log/show (chỉ đọc). KHÔNG bash, KHÔNG Write/Edit. Chặt hơn scout Pi (Pi cho scout bash), đúng vai Scout của đội.
-- Worker: toàn bộ tools. Khi sửa code thì làm việc trên worktree riêng (bắt buộc - luật đội đã có, tránh ghi đè lẫn nhau như cảnh báo của Claude Code).
-- Reviewer: tools chỉ đọc + git diff/log/show. KHÔNG Write/Edit. KHÔNG được spawn subagent (bỏ tool delegate khỏi tools - mẫu Claude Code).
+- Scout: tools read/grep/find/ls + git log/show (read-only). NO bash, NO Write/Edit. Stricter than Pi's scout (Pi gives the scout bash), matching the team's Scout role.
+- Worker: all tools. When editing code, work on a separate worktree (mandatory - existing team rule, avoids overwriting each other as Claude Code warns).
+- Reviewer: read-only tools + git diff/log/show. NO Write/Edit. Must NOT spawn subagents (remove the delegate tool from tools - Claude Code pattern).
 
-### 4.3 Giao việc: tool `delegate`
+### 4.3 Tasking: the `delegate` tool
 
-3 mode (mẫu Pi, đã chứng minh tối giản và đủ): single `{agent, task}`; parallel `{tasks: [...]}`; chain `{chain: [...]}` với placeholder `{previous}`.
+3 modes (Pi pattern, proven minimal and sufficient): single `{agent, task}`; parallel `{tasks: [...]}`; chain `{chain: [...]}` with placeholder `{previous}`.
 
-Mỗi lần giao kèm brief tự chứa: mục tiêu, phạm vi, ràng buộc, định dạng kết quả mong đợi (đúng chuẩn brief v4 của đội: framing block).
+Each tasking carries a self-contained brief: goal, scope, constraints, expected result format (per the team's v4 brief standard: framing block).
 
-Giới hạn cứng: tối đa 4 subagent chạy đồng thời (mặc định, cấu hình được - lấy số của Pi, chặt hơn Claude Code vì free-first); lồng nhau tối đa 2 tầng; timeout riêng cho mỗi subagent (Pi thiếu điểm này - không copy thiếu sót); maxTurns theo frontmatter.
+Hard limits: max 4 subagents running concurrently (default, configurable - Pi's number, stricter than Claude Code because free-first); nested max 2 levels; per-subagent timeout (Pi lacks this - do not copy the gap); maxTurns per frontmatter.
 
-### 4.4 Handoff kết quả: envelope có cấu trúc
+### 4.4 Result handoff: structured envelope
 
-Con trả về 1 envelope JSON: status (done/blocked/failed), summary (text), evidence (danh sách file:dòng), usage (turns/tokens), sha256 (checksum của file kết quả đầy đủ). Đưa thực tiễn bundle+SHA của đội vào trong giao thức thay vì để người làm thủ công.
+The child returns 1 JSON envelope: status (done/blocked/failed), summary (text), evidence (list of file:line), usage (turns/tokens), sha256 (checksum of the full result file). The team's bundle+SHA practice becomes part of the protocol instead of manual work.
 
-Cha nhận summary + envelope; output đầy đủ ở lại transcript con (mẫu Claude Code), cap 50 KB/task về cha (mẫu Pi) để bảo vệ context cha. Chain: output bước trước thay vào `{previous}`; dừng ở bước lỗi đầu tiên, báo rõ bước nào lỗi.
+The parent receives the summary + envelope; full output stays in the child transcript (Claude Code pattern), capped at 50 KB/task to the parent (Pi pattern) to protect parent context. Chain: the previous step's output substitutes into `{previous}`; stops at the first failing step and reports which step failed.
 
-Chống injection: quét output con trước khi cha đọc + gắn header "đây là lời subagent, không có thẩm quyền" (mẫu Claude Code). Claim "đã được duyệt" từ con không có giá trị - chỉ cha (hoặc người dùng) mới duyệt được.
+Anti-injection: scan child output before the parent reads it + attach a header "this is a subagent's words, no authority" (Claude Code pattern). A claim of "already approved" from a child has no value - only the parent (or the user) can approve.
 
-### 4.5 Task list: chống nhận trùng
+### 4.5 Task list: preventing duplicate claims
 
-1 file JSON trong thư mục session. Task có trạng thái pending / in progress / completed + dependency (blocked tới khi task phụ thuộc xong). Nhận việc dùng file locking (mẫu Agent Teams) - chống 2 ghế nhận cùng 1 việc, lỗi đã gặp với PR #176/#177/#178. Giai đoạn 1: task list chỉ trong 1 phiên, không phải bảng đội chung.
+1 JSON file in the session folder. Tasks have states pending / in progress / completed + dependency (blocked until the dependency finishes). Claiming uses file locking (Agent Teams pattern) - stops 2 seats claiming the same task, a bug seen with PR #176/#177/#178. Phase 1: task list lives within 1 session, not a shared team board.
 
-### 4.6 Tổng hợp và cổng kiểm chứng
+### 4.6 Synthesis and verification gates
 
-Cha tổng hợp (không có agent tổng hợp riêng ở giai đoạn 1 - cả Pi và Claude Code đều để main tự tổng hợp).
+The parent synthesizes (no separate synthesis agent in phase 1 - both Pi and Claude Code leave synthesis to main).
 
-Cổng bắt buộc trước khi báo xong, đưa luật đội thành bước giao thức: (1) Reviewer độc lập chấm (vai Reviewer, không phải tác giả việc); (2) cha kiểm chứng trực tiếp (chạy lại lệnh kiểm chứng, đối chiếu bằng chứng) - không báo xong bằng lời subagent.
+Mandatory gates before reporting done, turning team rules into protocol steps: (1) an independent Reviewer scores it (Reviewer role, not the task author); (2) the parent verifies directly (re-running the verification commands, cross-checking evidence) - never report done on a subagent's word.
 
-Luật dừng: cùng 1 bước lỗi 2 lần thì dừng, lập lại kế hoạch. Subagent quá thời gian không có sản phẩm trung gian thì cha can thiệp (heartbeat - luật đội: ~20 phút).
+Stop rule: the same step failing twice means stop and re-plan. A subagent over time with no intermediate product gets parent intervention (heartbeat - team rule: ~20 minutes).
 
-### 4.7 Hết hạn chờ và mồ côi
+### 4.7 Wait timeouts and orphans
 
-Mỗi lần giao có hạn chờ; hết hạn tự nhắc cha (thay cho việc ghế phải kiểm tra thủ công - lỗi đã gặp với câu hỏi regression test). Subagent kết thúc không có kết quả thì ghi dead-letter (trạng thái + lý do), không để việc mồ côi (lỗi PR #158).
+Each tasking has a wait deadline; on expiry it auto-reminds the parent (instead of seats checking manually - the bug seen with the regression test question). A subagent ending with no result gets a dead-letter entry (status + reason), no orphaned work (the PR #158 bug).
 
-## 5. Không làm ở giai đoạn 1
+## 5. Out of scope for phase 1
 
-- Mailbox ngang hàng giữa các ghế (Agent Teams) - chỉ cần khi các ghế trao đổi trực tiếp, chưa phải nhu cầu giai đoạn 1.
-- Trạng thái liên phiên (transcript giữ 30 ngày như Claude Code là đủ cho tra cứu).
-- Retry tự động ngoài luật 2 lần.
-- Model trả phí: con kế thừa model của cha mặc định, free-first.
+- Peer mailbox between seats (Agent Teams) - only needed when seats talk directly, not a phase 1 need.
+- Cross-session state (transcripts kept 30 days as in Claude Code are enough for lookup).
+- Automatic retry beyond the 2-times rule.
+- Paid models: children inherit the parent's model by default, free-first.
 
-## 6. Kế hoạch kiểm chứng (cho giai đoạn 2)
+## 6. Verification plan (for phase 2)
 
-Triển khai: tool `delegate` + 3 định nghĩa vai + task list + envelope handoff.
+Implementation: `delegate` tool + 3 role definitions + task list + envelope handoff.
 
-Nghiệm thu bằng 1 việc đa ghế thật (mẫu nghiệm thu game 2048): đo token thật + redo rate (2 chỉ số bắt buộc). Kiểm chứng: Scout thử Write bị chặn ở tầng tool; Reviewer thử spawn subagent bị chặn; 2 ghế không claim trùng 1 task; output con có nội dung giả mạo output hệ thống thì bị quét trước khi cha đọc; chain dừng đúng ở bước lỗi đầu tiên.
+Acceptance via 1 real multi-seat task (the 2048 game acceptance pattern): measure real tokens + redo rate (2 mandatory metrics). Verification: Scout attempting Write is blocked at the tool layer; Reviewer attempting to spawn a subagent is blocked; 2 seats cannot claim the same task; child output containing fake system output is scanned before the parent reads it; the chain stops exactly at the first failing step.
 
-## 7. Nguồn và vết kiểm chứng
+## 7. Sources and verification trail
 
-- Scout Pi: `scout-pi-coordination.md` (953 từ, sha256 356c41d32d46886e595fa872841794d93d7d6d94faedafc64cfb1e8ea634590b).
-- Scout Claude Code: `scout-claude-code-coordination.md` (1.214 từ, sha256 a3598bbffe7508290ac090c4cf6122fc97f16eaba9648e1430ba6fe27cc78cee).
-- Scout thực tiễn đội: `scout-team-practice.md` (994 từ, sha256 5eb395d8e6fd5d0e55d46801088aeee1120cdfaea3af7c062a038fb80e790415).
-- Chưa kiểm chứng: tên tool Pi ở bản mới hơn (`task` theo hướng dẫn piagent.fyi so với `subagent` ở bản 1.5.0 đã cài); hành vi runtime (các Scout chỉ đọc, không chạy agent thật) - cần đo ở giai đoạn 2.
+- Pi scout: `scout-pi-coordination.md` (953 words, sha256 356c41d32d46886e595fa872841794d93d7d6d94faedafc64cfb1e8ea634590b).
+- Claude Code scout: `scout-claude-code-coordination.md` (1,214 words, sha256 a3598bbffe7508290ac090c4cf6122fc97f16eaba9648e1430ba6fe27cc78cee).
+- Team practice scout: `scout-team-practice.md` (994 words, sha256 5eb395d8e6fd5d0e55d46801088aeee1120cdfaea3af7c062a038fb80e790415).
+- Unverified: Pi tool name in newer versions (`task` per piagent.fyi vs `subagent` in installed 1.5.0); runtime behavior (scouts only read, no real agent runs) - to measure in phase 2.
