@@ -478,7 +478,7 @@ stubs (the model knows they exist, at ~50 tokens instead of ~150-300).
 |---|---|
 | `all` (default) | everything (today's behavior) |
 | `core` | TodoWrite |
-| `read` | TodoWrite, Read, Glob, Grep, WebFetch |
+| `read` | TodoWrite, Read, Glob, Grep, WebFetch, WebSearch |
 | `write` | TodoWrite, Write, Edit, MultiEdit |
 | `exec` | TodoWrite, Bash, JobOutput, JobKill |
 
@@ -600,7 +600,7 @@ zen skill search tdd --curated    # curated (maintainer-reviewed) only
 |---|---|
 | `zen-core` | shared types and traits |
 | `zen-agent` | HTTP client, agent loop, compaction, sub-agent runner |
-| `zen-tools` | Read/Write/Edit/Bash/Glob/Grep/WebFetch/TodoWrite + permission rules |
+| `zen-tools` | Read/Write/Edit/Bash/Glob/Grep/WebFetch/WebSearch/TodoWrite + permission rules |
 | `zen-ext` | settings layering, ZEN.md memory, skills, hooks |
 | `zen-mcp` | MCP client, sub-agent definitions, Task tool |
 | `zen-cli` | the `zen` binary: CLI, REPL, slash commands, output formats, sessions |

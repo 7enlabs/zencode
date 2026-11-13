@@ -1542,6 +1542,319 @@ impl Tool for WebFetchTool {
     }
 }
 
+pub const WEBSEARCH_MAX_RESULTS: usize = 10;
+
+pub const WEBSEARCH_SNIPPET_MAX_CHARS: usize = 500;
+
+const WEBSEARCH_MAX_BYTES: usize = 1024 * 1024;
+
+/// One web search hit: title, URL and a short snippet. The page itself is
+/// never fetched; use `WebFetch` for that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+/// A search backend: it only knows its own endpoint and page layout. The
+/// tool owns the HTTP client, timeout, redirects and the SSRF guard, so
+/// swapping backends does not touch the tool.
+pub trait SearchProvider: Send + Sync {
+    fn search_url(&self, query: &str) -> Result<String, String>;
+    fn parse_results(&self, html: &str, max_results: usize) -> Result<Vec<SearchResult>, String>;
+}
+
+/// Keyless DuckDuckGo HTML backend (`https://html.duckduckgo.com/html/`).
+/// No API key, no account. The endpoint is unofficial: it may rate-limit or
+/// change layout, and it answers bare-bones requests with a bot-check
+/// ("anomaly") page, so the tool sends browser-like headers (see
+/// `search_with_provider`).
+pub struct DuckDuckGoHtml;
+
+impl SearchProvider for DuckDuckGoHtml {
+    fn search_url(&self, query: &str) -> Result<String, String> {
+        let mut url = reqwest::Url::parse("https://html.duckduckgo.com/html/")
+            .map_err(|e| format!("Error: cannot build search URL: {}", e))?;
+        url.query_pairs_mut().append_pair("q", query);
+        Ok(url.to_string())
+    }
+
+    fn parse_results(&self, html: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
+        parse_ddg_html(html, max_results)
+    }
+}
+
+pub struct WebSearchTool;
+
+#[async_trait]
+impl Tool for WebSearchTool {
+    fn name(&self) -> &str {
+        "WebSearch"
+    }
+    fn description(&self) -> &str {
+        "Search the web and return titles, URLs and short snippets (keyless DuckDuckGo HTML, max 10 results, 10s timeout)."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "count": {"type": "integer", "description": "Max results to return (default 10, max 10)."}
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        })
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
+    async fn call(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        search_with_provider(&DuckDuckGoHtml, args, ctx).await
+    }
+}
+
+fn normalize_search_count(raw: Option<u64>) -> usize {
+    match raw {
+        None | Some(0) => WEBSEARCH_MAX_RESULTS,
+        Some(n) => (n as usize).min(WEBSEARCH_MAX_RESULTS),
+    }
+}
+
+async fn search_with_provider(
+    provider: &dyn SearchProvider,
+    args: Value,
+    ctx: &ToolContext,
+) -> ToolOutput {
+    let Some(query) = arg_str(&args, "query")
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    else {
+        return ToolOutput::err("Error: 'query' must not be empty".to_string());
+    };
+    // `query` borrows `args`; copy it before the await points below.
+    let query = query.to_string();
+    let count = normalize_search_count(args.get("count").and_then(|v| v.as_u64()));
+    let url = match provider.search_url(&query) {
+        Ok(u) => u,
+        Err(e) => return ToolOutput::err(e),
+    };
+    if !url.starts_with("https://") {
+        return ToolOutput::err(format!("Error: search URL must be https: {}", url));
+    }
+    let allow_private = ctx.allow_private_network;
+
+    let client = match with_extra_roots(reqwest::Client::builder())
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return ToolOutput::err(format!("Error: could not build HTTP client: {}", e)),
+    };
+
+    let resp = match fetch_with_redirects(&client, url, allow_private).await {
+        Ok(r) => r,
+        Err(e) => return ToolOutput::err(e),
+    };
+    let bytes = match read_capped(resp, WEBSEARCH_MAX_BYTES).await {
+        Ok(b) => b,
+        Err(e) => return ToolOutput::err(format!("Error reading search results: {}", e)),
+    };
+    let html = String::from_utf8_lossy(&bytes).to_string();
+    let results = match provider.parse_results(&html, count) {
+        Ok(r) => r,
+        Err(e) => return ToolOutput::err(e),
+    };
+    if results.is_empty() {
+        return ToolOutput::err(
+            "Error: search returned no results; the provider may have blocked the request, try again later"
+                .to_string(),
+        );
+    }
+    ToolOutput::ok(format_search_results(&results))
+}
+
+/// Fetch one URL, following at most 10 redirects, and fail on a non-success
+/// status. The caller owns the https check and the provider parsing; this
+/// only does the fetch loop so the redirect cap is testable against a local
+/// server. `allow_private` is the tool context's SSRF setting, checked on
+/// every hop.
+async fn fetch_with_redirects(
+    client: &reqwest::Client,
+    mut url: String,
+    allow_private: bool,
+) -> Result<reqwest::Response, String> {
+    let mut hops = 0u32;
+    let resp = loop {
+        check_fetch_target(&url, allow_private).await?;
+        let r = client
+            .get(&url)
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+            .header(reqwest::header::REFERER, "https://duckduckgo.com/")
+            .send()
+            .await
+            .map_err(|e| format!("Error searching: {}", e))?;
+        if !r.status().is_redirection() {
+            break r;
+        }
+        hops += 1;
+        if hops > 10 {
+            return Err("Error: too many redirects searching".to_string());
+        }
+        let loc = r
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if loc.is_empty() {
+            break r;
+        }
+        url = join_redirect_url(&url, &loc)?;
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Error: search provider returned HTTP {}",
+            status.as_u16()
+        ));
+    }
+    Ok(resp)
+}
+
+/// Render search hits as numbered lines; a hit with no snippet prints no
+/// snippet line.
+fn format_search_results(results: &[SearchResult]) -> String {
+    let mut out = String::new();
+    for (i, r) in results.iter().enumerate() {
+        out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url));
+        if !r.snippet.is_empty() {
+            out.push_str(&format!("   {}\n", r.snippet));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Parse a DuckDuckGo HTML results page into at most `max_results` hits.
+/// Titles and snippets are paired by document order (the page emits one
+/// snippet per result, in the same order as the titles).
+fn parse_ddg_html(html: &str, max_results: usize) -> Result<Vec<SearchResult>, String> {
+    if html.contains("anomaly-modal") {
+        return Err(
+            "Error: the search provider served a bot-check page; try again later".to_string(),
+        );
+    }
+    let titles = extract_ddg_anchors(html, "result__a");
+    let snippets = extract_ddg_anchors(html, "result__snippet");
+    let mut out = Vec::new();
+    for (i, (href, title)) in titles.into_iter().enumerate() {
+        if out.len() >= max_results {
+            break;
+        }
+        let url = ddg_target_url(&href);
+        let snippet = snippets
+            .get(i)
+            .map(|(_, s)| cap_snippet(s))
+            .unwrap_or_default();
+        out.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
+    }
+    Ok(out)
+}
+
+/// Extract (href, inner text) pairs for `<a ... class="<class>" ...>` anchors,
+/// in document order.
+fn extract_ddg_anchors(html: &str, class: &str) -> Vec<(String, String)> {
+    let anchor = Regex::new(r#"(?is)<a\b([^>]*)>(.*?)</a>"#).expect("ddg anchor regex");
+    let href = Regex::new(r#"(?i)\bhref="([^"]*)""#).expect("ddg href regex");
+    let needle = format!("class=\"{}\"", class);
+    let mut out = Vec::new();
+    for cap in anchor.captures_iter(html) {
+        let attrs = &cap[1];
+        if !attrs.contains(&needle) {
+            continue;
+        }
+        let Some(href) = href
+            .captures(attrs)
+            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+        else {
+            continue;
+        };
+        out.push((decode_entities(&href), ddg_text(&cap[2])));
+    }
+    out
+}
+
+/// Strip inner tags, decode entities and collapse whitespace in a DDG title
+/// or snippet fragment.
+fn ddg_text(fragment: &str) -> String {
+    let tags = Regex::new(r"(?s)<[^>]*>").expect("ddg tag regex");
+    let stripped = tags.replace_all(fragment, " ").to_string();
+    let decoded = decode_numeric_entities(&decode_entities(&stripped));
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Decode numeric character references (`&#39;`, `&#x27;`) that
+/// `decode_entities` does not cover.
+fn decode_numeric_entities(s: &str) -> String {
+    let re = Regex::new(r"&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));").expect("numeric entity regex");
+    re.replace_all(s, |cap: &regex::Captures| {
+        let num = cap
+            .get(1)
+            .map(|m| (m.as_str(), 16))
+            .or_else(|| cap.get(2).map(|m| (m.as_str(), 10)));
+        match num
+            .and_then(|(digits, radix)| u32::from_str_radix(digits, radix).ok())
+            .and_then(char::from_u32)
+        {
+            Some(c) => c.to_string(),
+            None => cap
+                .get(0)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default(),
+        }
+    })
+    .to_string()
+}
+
+/// Resolve a DDG result link to the real target URL: result links point at
+/// `duckduckgo.com/l/?uddg=<url-encoded target>`.
+fn ddg_target_url(href: &str) -> String {
+    let absolute = if let Some(rest) = href.strip_prefix("//") {
+        format!("https://{}", rest)
+    } else if href.starts_with("http://") || href.starts_with("https://") {
+        href.to_string()
+    } else {
+        return href.to_string();
+    };
+    let Ok(url) = reqwest::Url::parse(&absolute) else {
+        return href.to_string();
+    };
+    for (k, v) in url.query_pairs() {
+        if k == "uddg" {
+            return v.into_owned();
+        }
+    }
+    absolute
+}
+
+fn cap_snippet(s: &str) -> String {
+    let mut out: String = s.chars().take(WEBSEARCH_SNIPPET_MAX_CHARS).collect();
+    if s.chars().count() > WEBSEARCH_SNIPPET_MAX_CHARS {
+        out.push('…');
+    }
+    out
+}
+
 pub const WEBFETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 pub const WEBFETCH_MAX_CHARS: usize = 100_000;
@@ -1864,6 +2177,7 @@ pub fn builtin_tools() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(GlobTool),
         std::sync::Arc::new(GrepTool),
         std::sync::Arc::new(WebFetchTool),
+        std::sync::Arc::new(WebSearchTool),
         std::sync::Arc::new(TodoWriteTool),
     ]
 }
@@ -1889,6 +2203,10 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+    use std::io::{BufRead, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn tmpdir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -2326,6 +2644,7 @@ mod tests {
                 "Glob",
                 "Grep",
                 "WebFetch",
+                "WebSearch",
                 "TodoWrite"
             ]
         );
@@ -2342,7 +2661,361 @@ mod tests {
                 && !readonly("MultiEdit")
                 && !readonly("Bash")
                 && !readonly("WebFetch")
+                && !readonly("WebSearch")
         );
+    }
+
+    const DDG_SAMPLE: &str = r#"<html><body>
+<div class="result">
+<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ffirst&amp;rut=aaa">First &amp; Title</a>
+<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ffirst&amp;rut=aaa">First snippet with &#x27;quotes&#x27; inside.</a>
+</div>
+<div class="result">
+<a rel="nofollow" class="result__a" href="https://example.test/second">Second Title</a>
+<a class="result__snippet" href="https://example.test/second">Second snippet.</a>
+</div>
+<div class="result">
+<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fthird">Third Title</a>
+</div>
+</body></html>"#;
+
+    #[test]
+    fn websearch_parses_ddg_html_results() {
+        let results = parse_ddg_html(DDG_SAMPLE, 10).expect("parse sample");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].title, "First & Title");
+        assert_eq!(results[0].url, "https://example.com/first");
+        assert_eq!(results[0].snippet, "First snippet with 'quotes' inside.");
+        assert_eq!(results[1].url, "https://example.test/second");
+        assert_eq!(results[1].snippet, "Second snippet.");
+        assert_eq!(results[2].title, "Third Title");
+        assert_eq!(results[2].url, "https://example.com/third");
+        assert!(results[2].snippet.is_empty());
+    }
+
+    #[test]
+    fn websearch_caps_results_and_snippets() {
+        let mut html = String::from("<html><body>");
+        for i in 0..12 {
+            html.push_str(&format!(
+                "<div class=\"result\"><a class=\"result__a\" href=\"https://example.test/{i}\">Title {i}</a>\
+                 <a class=\"result__snippet\" href=\"https://example.test/{i}\">{}</a></div>",
+                "s".repeat(600)
+            ));
+        }
+        html.push_str("</body></html>");
+        let results = parse_ddg_html(&html, 10).expect("parse many");
+        assert_eq!(results.len(), 10);
+        assert_eq!(results[0].title, "Title 0");
+        assert_eq!(results[9].title, "Title 9");
+        assert_eq!(results[0].snippet.chars().count(), 501);
+        assert!(results[0].snippet.ends_with('…'));
+    }
+
+    #[test]
+    fn websearch_rejects_anomaly_page() {
+        let html = "<html><body><div class=\"anomaly-modal__check\">prove you are human</div></body></html>";
+        assert!(parse_ddg_html(html, 10).is_err());
+        assert!(
+            parse_ddg_html("<html><body>no results here</body></html>", 10)
+                .expect("empty page parses")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn websearch_count_normalization() {
+        assert_eq!(normalize_search_count(None), 10);
+        assert_eq!(normalize_search_count(Some(0)), 10);
+        assert_eq!(normalize_search_count(Some(3)), 3);
+        assert_eq!(normalize_search_count(Some(99)), 10);
+    }
+
+    #[tokio::test]
+    async fn websearch_rejects_empty_query_without_network() {
+        let dir = tmpdir("websearch-empty");
+        let ctx = ctx_for(&dir);
+        let out = WebSearchTool.call(json!({"query": "  "}), &ctx).await;
+        assert!(out.is_error, "{}", out.content);
+        let missing = WebSearchTool.call(json!({}), &ctx).await;
+        assert!(missing.is_error, "{}", missing.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn websearch_max_bytes_is_one_mebibyte() {
+        assert_eq!(WEBSEARCH_MAX_BYTES, 1_048_576);
+    }
+
+    #[test]
+    fn websearch_search_url_encodes_query() {
+        assert_eq!(
+            DuckDuckGoHtml.search_url("hello world").unwrap(),
+            "https://html.duckduckgo.com/html/?q=hello+world"
+        );
+    }
+
+    #[test]
+    fn websearch_trait_parse_results_returns_hits() {
+        let results = DuckDuckGoHtml
+            .parse_results(DDG_SAMPLE, 10)
+            .expect("parse sample via trait");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].title, "First & Title");
+        assert_eq!(results[0].url, "https://example.com/first");
+    }
+
+    #[test]
+    fn websearch_description_is_exact() {
+        assert_eq!(
+            WebSearchTool.description(),
+            "Search the web and return titles, URLs and short snippets (keyless DuckDuckGo HTML, max 10 results, 10s timeout)."
+        );
+    }
+
+    /// Stub backend whose search URL is whatever the test sets, so the
+    /// https guard in `search_with_provider` is reachable without network.
+    struct StubSearchProvider {
+        url: String,
+    }
+
+    impl SearchProvider for StubSearchProvider {
+        fn search_url(&self, _query: &str) -> Result<String, String> {
+            Ok(self.url.clone())
+        }
+        fn parse_results(
+            &self,
+            _html: &str,
+            _max_results: usize,
+        ) -> Result<Vec<SearchResult>, String> {
+            Ok(vec![SearchResult {
+                title: "Stub".to_string(),
+                url: "https://example.test/stub".to_string(),
+                snippet: "Stub snippet.".to_string(),
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn websearch_rejects_http_search_url() {
+        let dir = tmpdir("websearch-http");
+        let ctx = ctx_for(&dir);
+        let stub = StubSearchProvider {
+            url: "http://127.0.0.1:9/search?q=x".to_string(),
+        };
+        let out = search_with_provider(&stub, json!({"query": "hello"}), &ctx).await;
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("must be https"), "{}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn websearch_results_omit_empty_snippet_lines() {
+        let results = vec![
+            SearchResult {
+                title: "First".to_string(),
+                url: "https://example.test/first".to_string(),
+                snippet: "First snippet.".to_string(),
+            },
+            SearchResult {
+                title: "Second".to_string(),
+                url: "https://example.test/second".to_string(),
+                snippet: String::new(),
+            },
+        ];
+        assert_eq!(
+            format_search_results(&results),
+            "1. First\n   https://example.test/first\n   First snippet.\n2. Second\n   https://example.test/second"
+        );
+    }
+
+    #[test]
+    fn websearch_parses_absolute_uddg_link() {
+        let html = r#"<html><body><div class="result">
+<a rel="nofollow" class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fabs">Abs Title</a>
+</div></body></html>"#;
+        let results = parse_ddg_html(html, 10).expect("parse absolute uddg");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com/abs");
+    }
+
+    #[test]
+    fn websearch_snippet_exactly_at_cap_has_no_ellipsis() {
+        let snippet = "s".repeat(500);
+        let html = format!(
+            "<html><body><div class=\"result\"><a class=\"result__a\" href=\"https://example.test/x\">T</a>\
+             <a class=\"result__snippet\" href=\"https://example.test/x\">{}</a></div></body></html>",
+            snippet
+        );
+        let results = parse_ddg_html(&html, 10).expect("parse exact cap");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].snippet.chars().count(), 500);
+        assert!(!results[0].snippet.ends_with('…'));
+    }
+
+    /// One canned HTTP response served by the local test server.
+    struct CannedResponse {
+        status: u16,
+        reason: &'static str,
+        headers: Vec<(&'static str, String)>,
+        body: &'static [u8],
+    }
+
+    fn redirect_response(location: &str) -> CannedResponse {
+        CannedResponse {
+            status: 302,
+            reason: "Found",
+            headers: vec![("Location", location.to_string())],
+            body: b"",
+        }
+    }
+
+    fn ok_response(body: &'static [u8]) -> CannedResponse {
+        CannedResponse {
+            status: 200,
+            reason: "OK",
+            headers: vec![("Content-Type", "text/html".to_string())],
+            body,
+        }
+    }
+
+    /// Serve the scripted responses in order (the last one repeats) on a
+    /// loopback port, one request per connection. Returns the address and
+    /// the request count. The serving thread is detached; it stops once the
+    /// test process exits.
+    fn spawn_canned_server(
+        script: Vec<CannedResponse>,
+    ) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("test server addr");
+        let count = Arc::new(AtomicUsize::new(0));
+        let served = Arc::clone(&count);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(64) {
+                let Ok(stream) = stream else { break };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if line == "\r\n" {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                    if line.len() > 8192 {
+                        break;
+                    }
+                }
+                let n = served.fetch_add(1, Ordering::SeqCst);
+                let resp = script.get(n).or_else(|| script.last()).expect("script");
+                let mut out = format!(
+                    "HTTP/1.1 {} {}\r\nConnection: close\r\n",
+                    resp.status, resp.reason
+                );
+                for (k, v) in &resp.headers {
+                    out.push_str(&format!("{}: {}\r\n", k, v));
+                }
+                out.push_str(&format!("Content-Length: {}\r\n\r\n", resp.body.len()));
+                let mut stream = reader.into_inner();
+                let _ = stream.write_all(out.as_bytes());
+                let _ = stream.write_all(resp.body);
+                let _ = stream.flush();
+            }
+        });
+        (addr, count)
+    }
+
+    fn fetch_test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("test client")
+    }
+
+    #[tokio::test]
+    async fn websearch_fetch_direct_200_needs_no_redirect() {
+        let (addr, count) = spawn_canned_server(vec![ok_response(b"<html></html>")]);
+        let client = fetch_test_client();
+        let resp = fetch_with_redirects(&client, format!("http://{}/", addr), true)
+            .await
+            .expect("direct 200");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn websearch_fetch_rejects_non_success_status() {
+        let (addr, count) = spawn_canned_server(vec![CannedResponse {
+            status: 404,
+            reason: "Not Found",
+            headers: vec![],
+            body: b"nope",
+        }]);
+        let client = fetch_test_client();
+        let err = fetch_with_redirects(&client, format!("http://{}/", addr), true)
+            .await
+            .expect_err("404 must fail");
+        assert!(err.contains("returned HTTP 404"), "{}", err);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn websearch_fetch_follows_one_redirect() {
+        let (addr, count) = spawn_canned_server(vec![
+            redirect_response("/final"),
+            ok_response(b"<html></html>"),
+        ]);
+        let client = fetch_test_client();
+        let resp = fetch_with_redirects(&client, format!("http://{}/start", addr), true)
+            .await
+            .expect("follow redirect");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn websearch_fetch_stops_after_ten_redirects() {
+        // The server redirects for the first 15 requests, then answers 200,
+        // so a mutant that never trips the cap still terminates.
+        let mut script = Vec::new();
+        for _ in 0..15 {
+            script.push(redirect_response("/loop"));
+        }
+        script.push(ok_response(b"<html></html>"));
+        let (addr, count) = spawn_canned_server(script);
+        let client = fetch_test_client();
+        let err = fetch_with_redirects(&client, format!("http://{}/loop", addr), true)
+            .await
+            .expect_err("endless redirects must fail");
+        assert!(err.contains("too many redirects"), "{}", err);
+        assert_eq!(count.load(Ordering::SeqCst), 11);
+    }
+
+    /// Live check against the real DuckDuckGo HTML endpoint. Ignored by
+    /// default: CI has no network. Run with
+    /// `ZEN_LIVE_WEBSEARCH=1 cargo test -p zen-tools -- --ignored websearch_live`.
+    #[tokio::test]
+    // floor-guard: live test cần mạng DuckDuckGo, chạy tay bằng ZEN_LIVE_WEBSEARCH=1
+    #[ignore]
+    async fn websearch_live_returns_results() {
+        if std::env::var("ZEN_LIVE_WEBSEARCH").as_deref() != Ok("1") {
+            return;
+        }
+        let dir = tmpdir("websearch-live");
+        let ctx = ctx_for(&dir);
+        let out = WebSearchTool
+            .call(json!({"query": "Rust programming language"}), &ctx)
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("http"), "{}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

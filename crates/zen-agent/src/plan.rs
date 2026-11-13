@@ -18,6 +18,7 @@ const PLAN_MODE_DENIED_TOOLS: &[&str] = &[
     "JobOutput",
     "JobKill",
     "WebFetch",
+    "WebSearch",
     "Task",
 ];
 

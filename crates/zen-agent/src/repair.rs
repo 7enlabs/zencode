@@ -143,6 +143,7 @@ fn alias_target(key: &str) -> Option<&'static str> {
             &["todo", "todos", "updatetodos", "writetodos", "todolist"],
         ),
         ("WebFetch", &["fetch", "fetchurl", "httpget", "browse"]),
+        ("WebSearch", &["websearch", "web_search", "search"]),
     ];
     TABLE
         .iter()

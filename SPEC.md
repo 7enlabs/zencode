@@ -83,17 +83,18 @@ Stdin: when `-p` and stdin is not a TTY, read stdin (cap 10 MB, error if larger)
 | `Glob` | `pattern`, `path?` | Glob match (`**/*.rs`), respects .gitignore, results sorted by mtime desc, capped at 1000. |
 | `Grep` | `pattern` (regex), `path?`, `glob?`, `type?`, `output_mode` (`files_with_matches` default \| `content` \| `count`), `-i?`, `-n?`, `-A/-B/-C?`, `head_limit?` | Uses `rg` if on PATH else built-in regex walker (respect .gitignore). |
 | `WebFetch` | `url`, `prompt?` | HTTP GET (follow redirects, 10 s timeout, 5 MB cap), HTML → readable text/markdown; optionally summarize with the model against `prompt`. Upgrades http→https. |
+| `WebSearch` | `query`, `count?` (default 10, max 10) | Keyless web search (DuckDuckGo HTML, 10 s timeout); returns title + URL + short snippet per result, max 10; does not fetch page content (use WebFetch). |
 | `TodoWrite` | `todos: [{content, status: pending\|in_progress\|completed, activeForm?}]` | Replaces the session todo list; rendered in REPL; stored in session. At most one `in_progress` recommended. |
 | `Task` | `description`, `prompt`, `subagent_type?` | Runs a sub-agent (§9) with its own fresh context and returns its final text only. |
 | `delegate` | `agent?`, `task?` \\| `tasks?` \\| `chain?`, `timeout_secs?`, `max_concurrent?` | Multi-seat delegation (§9): single / parallel (max 4 concurrent) / chain (`{previous}`, stops at first failed step). Each sub-agent returns a JSON handoff envelope (status/summary/evidence/usage/sha256, summary capped at 50 KB). |
 | (MCP) `mcp__<server>__<tool>` | per server schema | §8. |
 | `Skill` (optional) | `name` | Loads the named skill body into context (§7). |
 
-Read-only tools (no permission needed in `default`): Read, Glob, Grep, TodoWrite, Task(launch), delegate(launch), Skill. Mutating: Write, Edit, MultiEdit, Bash, WebFetch, MCP tools.
+Read-only tools (no permission needed in `default`): Read, Glob, Grep, TodoWrite, Task(launch), delegate(launch), Skill. Mutating: Write, Edit, MultiEdit, Bash, WebFetch, WebSearch, MCP tools.
 
 ## 5. Permissions
 **Modes**
-- `default`: read-only tools run; Write/Edit/Bash/WebFetch/MCP ask (REPL) - in `-p` with no way to ask → denied, reason returned to the model.
+- `default`: read-only tools run; Write/Edit/Bash/WebFetch/WebSearch/MCP ask (REPL) - in `-p` with no way to ask → denied, reason returned to the model.
 - `acceptEdits`: Write/Edit auto-allowed (within working dirs); simple fs commands (`mkdir`, `touch`, `mv`, `cp`) auto-allowed; other Bash still asks.
 - `plan`: no mutating tool runs; the model is told to research and present a plan; an `ExitPlanMode`-style tool (`ExitPlan{plan}`) ends plan mode after user approval.
 - `bypassPermissions`: everything allowed (still subject to `deny` rules? → No: bypass skips checks, but `deny` rules still win - zen choice for safety).

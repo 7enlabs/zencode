@@ -11,7 +11,8 @@ Fetch a URL over HTTP(S) and return it as readable text.
 - Redirects are followed; requests time out after 10 seconds; responses are
   capped at 5 MB.
 - HTML is converted to readable text (scripts and styles stripped).
-- Read-only: no permission prompt in `default` mode.
+- Mutating tool (same group as `Write`/`Bash`): asks for permission in
+  `default` mode; denied in `-p` when it cannot ask. See SPEC.md §4-5.
 
 ## Phase bundle
 

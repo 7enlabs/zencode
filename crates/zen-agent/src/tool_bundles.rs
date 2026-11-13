@@ -46,7 +46,7 @@ impl ToolPhase {
 pub fn tool_phase(name: &str) -> Option<ToolPhase> {
     match name {
         "TodoWrite" => Some(ToolPhase::Core),
-        "Read" | "Glob" | "Grep" | "WebFetch" => Some(ToolPhase::Read),
+        "Read" | "Glob" | "Grep" | "WebFetch" | "WebSearch" => Some(ToolPhase::Read),
         "Write" | "Edit" | "MultiEdit" => Some(ToolPhase::Write),
         "Bash" | "JobOutput" | "JobKill" => Some(ToolPhase::Exec),
         _ => None,
@@ -231,6 +231,23 @@ mod tests {
             }));
         }
         r
+    }
+
+    #[test]
+    fn tool_phase_classifies_every_known_tool() {
+        assert_eq!(tool_phase("TodoWrite"), Some(ToolPhase::Core));
+        assert_eq!(tool_phase("Read"), Some(ToolPhase::Read));
+        assert_eq!(tool_phase("Glob"), Some(ToolPhase::Read));
+        assert_eq!(tool_phase("Grep"), Some(ToolPhase::Read));
+        assert_eq!(tool_phase("WebFetch"), Some(ToolPhase::Read));
+        assert_eq!(tool_phase("WebSearch"), Some(ToolPhase::Read));
+        assert_eq!(tool_phase("Write"), Some(ToolPhase::Write));
+        assert_eq!(tool_phase("Edit"), Some(ToolPhase::Write));
+        assert_eq!(tool_phase("MultiEdit"), Some(ToolPhase::Write));
+        assert_eq!(tool_phase("Bash"), Some(ToolPhase::Exec));
+        assert_eq!(tool_phase("JobOutput"), Some(ToolPhase::Exec));
+        assert_eq!(tool_phase("JobKill"), Some(ToolPhase::Exec));
+        assert_eq!(tool_phase("Nope"), None);
     }
 
     #[test]

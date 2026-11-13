@@ -1191,6 +1191,7 @@ fn canonical_tool_name(t: &str) -> String {
         "glob" => "Glob".to_string(),
         "grep" => "Grep".to_string(),
         "webfetch" | "web_fetch" => "WebFetch".to_string(),
+        "websearch" | "web_search" => "WebSearch".to_string(),
         "todowrite" | "todo_write" => "TodoWrite".to_string(),
         "skill" => "Skill".to_string(),
         other => {
