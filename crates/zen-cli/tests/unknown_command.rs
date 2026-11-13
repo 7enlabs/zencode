@@ -234,3 +234,20 @@ fn skill_search_curated_json_carries_score() {
         );
     }
 }
+
+#[test]
+fn clap_usage_error_exits_4_and_names_exit_code_table() {
+    // Core-perfect phase 2 (B3): usage errors exit 4 (VALIDATION),
+    // not clap's default 2 - 2 is auth - and the failure names the
+    // mapping on stderr so wrapper scripts see it without opening docs.
+    let home = TempDir::new("uc_home2");
+    let cwd = TempDir::new("uc_cwd2");
+    let (_stdout, stderr, code) = ZenRun::new("uc2", &home, &cwd)
+        .arg("--bad-flag")
+        .run_output();
+    assert_eq!(code, 4, "stderr: {stderr}");
+    assert!(
+        stderr.contains("exit code 4 = validation"),
+        "usage error must name the exit-code mapping; stderr: {stderr}"
+    );
+}

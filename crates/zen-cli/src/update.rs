@@ -100,6 +100,27 @@ fn built_binary_name() -> &'static str {
     if cfg!(windows) { "zen.exe" } else { "zen" }
 }
 
+/// Whether `exe` runs from the prebuilt release layout:
+/// `%LOCALAPPDATA%\Programs\ZenCode` (Windows). A binary running from
+/// there is a prebuilt install, not a source checkout build.
+fn is_prebuilt_install_dir(exe: &Path) -> bool {
+    let Some(parent) = exe.parent() else {
+        return false;
+    };
+    let mut parts = parent.components().rev();
+    let is_dir = |c: Option<std::path::Component<'_>>, want: &str| matches!(c, Some(std::path::Component::Normal(n)) if n == want);
+    is_dir(parts.next(), "ZenCode") && is_dir(parts.next(), "Programs")
+}
+
+/// Whether the running binary is a prebuilt install: a `.zen-prebuilt`
+/// marker next to it (written by install.ps1) or the release layout.
+fn running_prebuilt_install() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    exe.with_file_name(".zen-prebuilt").is_file() || is_prebuilt_install_dir(&exe)
+}
+
 pub fn run_update(
     check: bool,
     home: Option<&Path>,
@@ -107,6 +128,28 @@ pub fn run_update(
     json: bool,
     raw: bool,
 ) -> Result<i32> {
+    // Core-perfect phase 2 (B5): a prebuilt install has no source
+    // checkout to build from - `zen update` would clone the repo and
+    // fail on missing cargo, or replace the prebuilt binary with a
+    // source build. Refuse with the installer path instead.
+    if running_prebuilt_install() {
+        if check {
+            if json {
+                let v = serde_json::json!({"status": "prebuilt"});
+                if raw {
+                    println!("{}", serde_json::to_string(&v)?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
+            } else if !quiet {
+                println!("prebuilt install: re-run the installer from INSTALL.md to update");
+            }
+            return Ok(0);
+        }
+        anyhow::bail!(
+            "this is a prebuilt install; `zen update` works on a source checkout. Re-run the installer one-command from INSTALL.md to update instead."
+        );
+    }
     let Some(src_dir) = default_src_dir(home) else {
         anyhow::bail!("cannot determine home directory; set ZENCODE_SRC_DIR");
     };
@@ -368,6 +411,49 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("ZENCODE_SRC_DIR", v) },
             None => unsafe { std::env::remove_var("ZENCODE_SRC_DIR") },
         }
+    }
+
+    #[test]
+    fn is_prebuilt_install_dir_matches_release_layout() {
+        assert!(is_prebuilt_install_dir(Path::new(
+            "C:/Users/u/AppData/Local/Programs/ZenCode/zen.exe"
+        )));
+        assert!(!is_prebuilt_install_dir(Path::new(
+            "/home/u/.local/share/zencode/target/release/zen"
+        )));
+        assert!(!is_prebuilt_install_dir(Path::new(
+            "/home/u/.local/bin/zen"
+        )));
+        assert!(!is_prebuilt_install_dir(Path::new(
+            "/home/u/.local/share/Programs/ZenCode"
+        )));
+        // Exactly one half matching must not count as prebuilt (mutant
+        // :112 `&&` -> `||`): a ZenCode dir under a non-Programs parent.
+        assert!(!is_prebuilt_install_dir(Path::new(
+            "/x/Other/ZenCode/zen.exe"
+        )));
+    }
+
+    #[test]
+    fn running_prebuilt_install_sees_marker_next_to_exe() {
+        // The whole-body `-> false` mutant (:118) and the `||` -> `&&`
+        // mutant (:121) are only visible when a marker exists next to
+        // the running binary: point the marker at this test binary's own
+        // directory for the duration of the call. The release-layout half
+        // is false here (deps/ is not Programs/ZenCode), so :121 needs
+        // the marker half alone to be true.
+        let exe = std::env::current_exe().expect("current_exe");
+        let marker = exe.with_file_name(".zen-prebuilt");
+        let _ = std::fs::remove_file(&marker);
+        struct RemoveOnDrop<'a>(&'a std::path::Path);
+        impl Drop for RemoveOnDrop<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0);
+            }
+        }
+        let _guard = RemoveOnDrop(&marker);
+        std::fs::write(&marker, "").unwrap();
+        assert!(running_prebuilt_install());
     }
 
     #[test]

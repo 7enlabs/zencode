@@ -163,9 +163,14 @@ async fn pre_tool_use_other_exit_logs_but_allows() {
     ]).await;
 
     let (stdout, stderr, code) = tokio::time::timeout(TEST_TIMEOUT, async {
+        // Core-perfect phase 2 (A6): a denied Write in headless Default
+        // mode exits 1, so allow it here - this test is about the hook's
+        // exit 3 being logged but not blocking the run.
         ZenRun::new("hook_pre3", &home, &cwd)
             .args([
                 "-p",
+                "--permission-mode",
+                "bypassPermissions",
                 "--output-format",
                 "json",
                 "--setting-sources",

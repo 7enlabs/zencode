@@ -91,3 +91,88 @@ async fn headless_exit_code_success_200() {
     assert_eq!(result["is_error"], false, "{stdout}");
     assert_eq!(code, 0, "success must exit 0:\n{stdout}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn headless_denied_edit_exits_1_with_hint() {
+    // Core-perfect phase 2 (A6): in Default mode a mutating tool call
+    // has no prompter to ask, so it is denied - and the run must not
+    // exit 0 as if the requested work had happened.
+    let home = TempDir::new("exit_codes_home");
+    let cwd = TempDir::new("exit_codes_cwd");
+    let write_call = Reply::with_tool_calls(
+        "",
+        Some(serde_json::json!([{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "Write", "arguments": "{\"file_path\":\"out.txt\",\"content\":\"hi\"}"}
+        }])),
+    );
+    let server = MockServer::start(vec![write_call, Reply::text("done")]).await;
+    let (_stdout, stderr, code) = ZenRun::new("exit_codes", &home, &cwd)
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--session-id",
+            SESSION,
+            "--bare",
+            "--setting-sources",
+            "",
+        ])
+        .mock("mock-model", &server)
+        .timeout(TEST_TIMEOUT)
+        .arg("write a file")
+        .run_output();
+    assert_eq!(
+        code, 1,
+        "denied edit in headless mode must not exit 0; stderr: {stderr}"
+    );
+    assert!(
+        !cwd.path().join("out.txt").exists(),
+        "denied write must not create the file"
+    );
+    assert!(
+        stderr.contains("bypassPermissions"),
+        "hint must name the flag that allows it; stderr: {stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn headless_bypass_permissions_allows_edit() {
+    // Core-perfect phase 2 (A6): the same write with
+    // --permission-mode bypassPermissions runs and exits 0.
+    let home = TempDir::new("exit_codes_home");
+    let cwd = TempDir::new("exit_codes_cwd");
+    let write_call = Reply::with_tool_calls(
+        "",
+        Some(serde_json::json!([{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "Write", "arguments": "{\"file_path\":\"out.txt\",\"content\":\"hi\"}"}
+        }])),
+    );
+    let server = MockServer::start(vec![write_call, Reply::text("done")]).await;
+    let (_stdout, stderr, code) = ZenRun::new("exit_codes", &home, &cwd)
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--session-id",
+            SESSION,
+            "--bare",
+            "--setting-sources",
+            "",
+            "--permission-mode",
+            "bypassPermissions",
+        ])
+        .mock("mock-model", &server)
+        .timeout(TEST_TIMEOUT)
+        .arg("write a file")
+        .run_output();
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(cwd.path().join("out.txt")).unwrap_or_default(),
+        "hi",
+        "stderr: {stderr}"
+    );
+}

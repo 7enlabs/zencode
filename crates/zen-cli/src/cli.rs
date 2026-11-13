@@ -105,9 +105,9 @@ fn parse_session_uuid(s: &str) -> Result<String, String> {
     about = "Run an AI coding agent in your terminal",
     after_help = "Examples:
   zen                             Start an interactive session
-  zen -p \"fix the failing test\"   Run one prompt and print the result
+  zen -p --permission-mode bypassPermissions \"fix the failing test\"   Run one prompt and print the result
   zen doctor                      Show configuration and environment diagnostics
-  zen --output-format json doctor Print diagnostics as JSON"
+  zen --output-format json doctor Print diagnostics as JSON\n  Exit codes: 0 ok, 2 auth, 4 validation - see docs/exit-codes.md"
 )]
 pub struct Cli {
     /// Run one prompt non-interactively and print the result

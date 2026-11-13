@@ -29,6 +29,9 @@ pub struct LineReader {
     editor: Option<Editor<SlashHelper, DefaultHistory>>,
     history: Option<PathBuf>,
     prompt_sgr: Option<u8>,
+    /// Model rows for /model Tab completion (B2). The helper is
+    /// re-installed on every read, so the rows live here.
+    models: Vec<(String, String, String)>,
 }
 
 /// Where the REPL history lives, under the user's home.
@@ -49,13 +52,17 @@ pub fn split_prompt(prompt: &str) -> (&str, &str) {
 /// match with its one-line description, the best match is ghosted after the
 /// cursor as a hint, and Esc cancels the list; both keys are named in the
 /// REPL banner.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct SlashHelper {
     /// SGR code that paints the trailing "> " of the prompt, or None
     /// for no styling. Taken from the active theme on every read; the
     /// prompt string itself is always handed to rustyline unstyled
     /// (see `editor_prompt`).
     pub prompt_sgr: Option<u8>,
+
+    /// Model rows for `/model` argument completion (B2): (short,
+    /// provider, id). Empty when /model has never listed models.
+    pub models: Vec<(String, String, String)>,
 }
 
 /// The word being completed is a slash command when the text before the
@@ -82,6 +89,41 @@ pub fn slash_candidates(prefix: &str) -> Vec<Pair> {
         .collect()
 }
 
+/// Completion candidates for a `/model` argument: rows are (short,
+/// provider, id). Matches a case-insensitive prefix of the short name
+/// or the full model id; an empty prefix lists every row. The
+/// replacement is the full id, which `pick_model` accepts.
+pub fn model_candidates(prefix: &str, models: &[(String, String, String)]) -> Vec<Pair> {
+    let lower = prefix.to_lowercase();
+    models
+        .iter()
+        .filter(|(short, _, id)| {
+            short.to_lowercase().starts_with(&lower) || id.to_lowercase().starts_with(&lower)
+        })
+        .map(|(short, provider, id)| Pair {
+            display: format!("{short}  {provider}"),
+            replacement: id.clone(),
+        })
+        .collect()
+}
+
+/// Ghost text for a `/model` argument: the remainder of the first
+/// model id that extends what is already typed. Only id prefixes
+/// ghost - the ghost must match what Tab inserts (the id); a short
+/// name the user typed is still completed by Tab, just not ghosted.
+pub fn model_hint(line: &str, pos: usize, models: &[(String, String, String)]) -> Option<String> {
+    let arg = line.strip_prefix("/model ")?;
+    if pos != line.len() || arg.contains(char::is_whitespace) {
+        return None;
+    }
+    let lower = arg.to_lowercase();
+    models
+        .iter()
+        .map(|(_, _, id)| id)
+        .find(|id| id.len() > arg.len() && id.to_lowercase().starts_with(&lower))
+        .map(|id| id[arg.len()..].to_string())
+}
+
 /// Ghost text for the line being typed: the remainder of the first catalog
 /// command that extends what is already typed.
 pub fn slash_hint(line: &str, pos: usize) -> Option<String> {
@@ -105,6 +147,16 @@ impl Completer for SlashHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // Core-perfect phase 2 (B2): Tab completes the /model argument
+        // from the rows /model listed. No arrow-key menu: rustyline
+        // 18 has no completion-list navigation and the repo has no
+        // menu library - that still needs a dependency decision.
+        if line.starts_with("/model ") && pos >= 7 {
+            let arg = &line[7..pos];
+            if !arg.contains(char::is_whitespace) {
+                return Ok((7, model_candidates(arg, &self.models)));
+            }
+        }
         match slash_prefix(line, pos) {
             Some(prefix) => Ok((0, slash_candidates(prefix))),
             None => Ok((pos, Vec::new())),
@@ -116,7 +168,7 @@ impl Hinter for SlashHelper {
     type Hint = String;
 
     fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        slash_hint(line, pos)
+        slash_hint(line, pos).or_else(|| model_hint(line, pos, &self.models))
     }
 }
 
@@ -231,6 +283,7 @@ impl LineReader {
             editor: Some(editor),
             history,
             prompt_sgr: None,
+            models: Vec::new(),
         }
     }
 
@@ -239,6 +292,7 @@ impl LineReader {
             editor: None,
             history: None,
             prompt_sgr: None,
+            models: Vec::new(),
         }
     }
 
@@ -251,6 +305,12 @@ impl LineReader {
     /// the theme can change mid-session.
     pub fn set_prompt_style(&mut self, theme: crate::repl_polish::Theme) {
         self.prompt_sgr = theme.prompt_sgr();
+    }
+
+    /// Record the model rows `/model` listed, for Tab completion of
+    /// the next `/model` argument.
+    pub fn set_model_rows(&mut self, rows: &[(String, String, String)]) {
+        self.models = rows.to_vec();
     }
 
     pub fn set_vi(&mut self, on: bool) {
@@ -277,7 +337,10 @@ impl LineReader {
                     print!("{before}");
                     std::io::stdout().flush().ok();
                 }
-                editor.set_helper(Some(SlashHelper { prompt_sgr }));
+                editor.set_helper(Some(SlashHelper {
+                    prompt_sgr,
+                    models: self.models.clone(),
+                }));
                 match editor.readline(&editor_prompt(last)) {
                     Ok(line) => ReadOutcome::Line(line),
                     Err(ReadlineError::Interrupted) => ReadOutcome::Interrupted,
@@ -400,6 +463,7 @@ mod tests {
     fn highlight_prompt_paints_only_trailing_marker() {
         let h = SlashHelper {
             prompt_sgr: Some(36),
+            models: vec![],
         };
         assert_eq!(h.highlight_prompt("> ", true).as_ref(), "\x1b[36m> \x1b[0m");
         assert_eq!(
@@ -407,7 +471,10 @@ mod tests {
             "[PLAN] \x1b[36m> \x1b[0m"
         );
         assert_eq!(h.highlight_prompt("... ", true).as_ref(), "... ");
-        let plain = SlashHelper { prompt_sgr: None };
+        let plain = SlashHelper {
+            prompt_sgr: None,
+            models: vec![],
+        };
         assert_eq!(plain.highlight_prompt("> ", true).as_ref(), "> ");
     }
 
@@ -420,6 +487,148 @@ mod tests {
         // config ever changes, the banner promise in repl.rs ("Esc
         // cancels") breaks with it.
         assert_eq!(editor_config().completion_type(), CompletionType::List);
+    }
+
+    #[test]
+    fn model_candidates_match_short_or_id_prefix() {
+        let models = vec![
+            (
+                "nemo".to_string(),
+                "openrouter".to_string(),
+                "nvidia/nemotron-nano-9b-v2:free".to_string(),
+            ),
+            (
+                "flash".to_string(),
+                "deploy".to_string(),
+                "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+            ),
+        ];
+        let all = model_candidates("", &models);
+        assert_eq!(all.len(), 2);
+        let by_short = model_candidates("nem", &models);
+        assert_eq!(by_short.len(), 1);
+        assert_eq!(by_short[0].replacement, "nvidia/nemotron-nano-9b-v2:free");
+        let by_id = model_candidates("deepseek-ai/", &models);
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].replacement, "deepseek-ai/deepseek-v4.1-flash-1017");
+        assert!(model_candidates("zzz", &models).is_empty());
+    }
+
+    #[test]
+    fn model_hint_completes_id_prefix_only() {
+        let models = vec![(
+            "flash".to_string(),
+            "deploy".to_string(),
+            "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+        )];
+        let line = "/model deepseek-ai/deep";
+        assert_eq!(
+            model_hint(line, line.len(), &models).as_deref(),
+            Some("seek-v4.1-flash-1017")
+        );
+        let full = "/model deepseek-ai/deepseek-v4.1-flash-1017";
+        assert_eq!(model_hint(full, full.len(), &models), None);
+        let empty = "/model ";
+        assert_eq!(
+            model_hint(empty, empty.len(), &models).as_deref(),
+            Some("deepseek-ai/deepseek-v4.1-flash-1017")
+        );
+        // A short-name prefix is completed by Tab, not ghosted.
+        let short = "/model flash";
+        assert_eq!(model_hint(short, short.len(), &models), None);
+    }
+
+    #[test]
+    fn model_hint_is_none_when_cursor_is_mid_line() {
+        // The ghost must only offer the remainder past the cursor at the
+        // end of the line: with the cursor mid-line the `||` guard returns
+        // None, while `&&` would keep ghosting (mutant repl_input.rs:116).
+        let models = vec![(
+            "flash".to_string(),
+            "deploy".to_string(),
+            "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+        )];
+        let line = "/model deepseek-ai/deep";
+        assert_eq!(model_hint(line, 7, &models), None);
+    }
+
+    #[test]
+    fn slash_helper_complete_offers_model_rows() {
+        // Killing the whole-body mutant (repl_input.rs:154): Tab on a
+        // `/model` argument must return the model rows at start 7, not an
+        // empty list.
+        use rustyline::history::DefaultHistory;
+        let helper = SlashHelper {
+            prompt_sgr: None,
+            models: vec![(
+                "flash".to_string(),
+                "deploy".to_string(),
+                "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+            )],
+        };
+        let history = DefaultHistory::new();
+        let ctx = Context::new(&history);
+        let (start, candidates) = helper.complete("/model deep", 11, &ctx).expect("complete");
+        assert_eq!(start, 7);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].replacement,
+            "deepseek-ai/deepseek-v4.1-flash-1017"
+        );
+    }
+
+    #[test]
+    fn complete_modelx_arg_does_not_enter_model_branch() {
+        // `&&` -> `||` at complete :154: "/modelx" is not a "/model "
+        // argument and pos 7 is past the word, so the original answers
+        // from the slash catalogue (no match) at start 0; the mutant
+        // enters the model branch and returns every model row from 7.
+        let helper = SlashHelper {
+            prompt_sgr: None,
+            models: vec![(
+                "flash".to_string(),
+                "deploy".to_string(),
+                "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+            )],
+        };
+        let (start, candidates) = helper
+            .complete("/modelx", 7, &Context::new(&DefaultHistory::new()))
+            .unwrap();
+        assert_eq!(start, 0);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn hint_returns_model_ghost_text_for_model_arg() {
+        // Whole-body `hint` -> None / Some("") / Some("xyzzy") at :171:
+        // the ghost text for a partially typed model name must be the
+        // exact remainder of the first matching model id.
+        let helper = SlashHelper {
+            prompt_sgr: None,
+            models: vec![(
+                "flash".to_string(),
+                "deploy".to_string(),
+                "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+            )],
+        };
+        let hint = helper
+            .hint("/model deep", 11, &Context::new(&DefaultHistory::new()))
+            .expect("hint");
+        assert_eq!(hint, "seek-ai/deepseek-v4.1-flash-1017");
+    }
+
+    #[test]
+    fn line_reader_set_model_rows_sticks() {
+        // `set_model_rows` -> () at :313: the rows must be recorded on
+        // the reader for the next `/model` completion.
+        let mut r = LineReader::plain();
+        let rows = vec![(
+            "flash".to_string(),
+            "deploy".to_string(),
+            "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+        )];
+        r.set_model_rows(&rows);
+        assert_eq!(r.models, rows);
     }
 
     #[test]

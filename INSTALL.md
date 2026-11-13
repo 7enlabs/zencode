@@ -113,10 +113,13 @@ directory from the user PATH if you no longer want it there.
 ## Troubleshooting
 
 - The binary does not start right after installing: some machines
-  block freshly downloaded executables (Software Restriction
-  Policies, SmartScreen). The installer verifies the installed copy
-  by hash, so a completed install is intact; check your machine's
-  execution policy if `zen` still will not run.
+  block freshly downloaded executables (Smart App Control (SAC),
+  SmartScreen, Software Restriction Policies). The installer verifies
+  the installed copy by hash and smoke-tests it with `zen --version`,
+  so a completed install is intact but a blocked binary is reported
+  at install time; unblock it (file Properties > Unblock, SmartScreen
+  "Run anyway", or Windows Security > App & browser control) if `zen`
+  still will not run.
 - `cargo not found` (source builds only): install Rust first, for
   example from https://rustup.rs, then rerun the build.
 - `git not found`: install Git first, then rerun.
