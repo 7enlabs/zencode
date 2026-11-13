@@ -740,12 +740,23 @@ async fn run_headless(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<i32>
     // Fail fast before the first prompt when the route needs a key
     // and none is configured (core-perfect phase 1, A1).
     settings::require_api_key_for_route(&cfg)?;
+    // Core-perfect phase 2 (B4): a headless run must not proceed with
+    // project config silently skipped - the hooks, MCP servers and
+    // permission rules the user expects would not apply, and the run
+    // would do different work than asked for. Fail fast and say how
+    // to trust the folder.
+    if !cfg.trust_skipped.is_empty() {
+        return Err(coded_error(
+            exit_code::VALIDATION,
+            format!(
+                "folder not trusted; skipped project config: {}. Re-run with --trust-folder or set ZEN_TRUST_FOLDER=1 to load it.",
+                cfg.trust_skipped.join("; ")
+            ),
+        ));
+    }
     crate::telemetry::maybe_ping(home, cfg.telemetry.as_deref());
     if cfg.ollama {
         crate::ollama::ensure_ollama_ready(&cfg.base_url, &cfg.model).await?;
-    }
-    if !cfg.trust_skipped.is_empty() {
-        eprintln!("{}", untrusted_notice(&cfg.trust_skipped));
     }
     if cli.ephemeral {
         eprintln!("EPHEMERAL MODE - nothing will be saved");

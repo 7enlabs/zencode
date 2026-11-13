@@ -628,6 +628,24 @@ pub async fn run_agent_headless(
     {
         eprintln!("  hint: {hint}");
     }
+    // Core-perfect phase 2 (A6): a turn that ends "ok" while every
+    // mutating tool was denied for lack of a prompter did no work -
+    // it must not exit 0 with a "couldn't do it" answer. Say so on
+    // stderr (stdout keeps the result contract) and point at the flag
+    // that allows it.
+    let mut code = code;
+    if code == crate::exit_code::OK && !result.permission_denials.is_empty() {
+        let tools = result
+            .permission_denials
+            .iter()
+            .map(|d| d.tool_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "  hint: permission denied for {tools} in non-interactive mode; nothing was changed. Re-run with --permission-mode bypassPermissions or add an allow rule."
+        );
+        code = crate::exit_code::GENERAL;
+    }
     Ok(code)
 }
 

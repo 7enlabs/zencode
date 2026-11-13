@@ -37,7 +37,8 @@ async fn default_headless_denies_write_tool() {
     .await
     .expect("timed out");
 
-    assert_eq!(code, 0, "stderr: {}", stderr);
+    // Core-perfect phase 2 (A6): a denied tool in headless Default mode exits 1.
+    assert_eq!(code, 1, "stderr: {}", stderr);
     let v = last_result(&stdout);
     assert_eq!(v["is_error"], false);
     let denials = v["permission_denials"]
@@ -353,7 +354,8 @@ async fn settings_deny_beats_cli_allow() {
     .await
     .expect("timed out");
 
-    assert_eq!(code, 0, "stderr: {}", stderr);
+    // Core-perfect phase 2 (A6): a denied tool in headless Default mode exits 1.
+    assert_eq!(code, 1, "stderr: {}", stderr);
     let v = last_result(&stdout);
     let denials = v["permission_denials"]
         .as_array()
@@ -497,7 +499,13 @@ async fn c2_13_hook_allow_does_not_override_ask_rule() {
         })
         .await
         .expect("timed out");
-        assert_eq!(code, 0, "stderr: {}", stderr);
+        // Core-perfect phase 2 (A6): denied in the ask_rule=true case -> exit 1.
+        assert_eq!(
+            code,
+            if expect_written { 0 } else { 1 },
+            "stderr: {}",
+            stderr
+        );
         let v = last_result(&stdout);
         let denials = v["permission_denials"]
             .as_array()
@@ -553,7 +561,8 @@ async fn c2_4_compound_bash_needs_every_part_allowed() {
     })
     .await
     .expect("timed out");
-    assert_eq!(code, 0, "stderr: {}", stderr);
+    // Core-perfect phase 2 (A6): a denied tool in headless Default mode exits 1.
+    assert_eq!(code, 1, "stderr: {}", stderr);
     let v = last_result(&stdout);
     assert_eq!(
         v["permission_denials"].as_array().map(|a| a.len()),

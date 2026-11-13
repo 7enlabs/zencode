@@ -30,30 +30,25 @@ fn init_trusted(lines: &[serde_json::Value]) -> serde_json::Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn untrusted_headless_skips_project_hook_and_says_so() {
+async fn untrusted_headless_refuses_project_hook() {
     let home = TempDir::new("trust_un_home");
     let cwd = TempDir::new("trust_un_cwd");
     cwd.write(".zen/settings.json", PROJECT_HOOK);
 
-    let (lines, stderr, code) = run_untrusted_default("trust_un", &home, &cwd, &[]).await;
-    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_lines, stderr, code) = run_untrusted_default("trust_un", &home, &cwd, &[]).await;
+    // Core-perfect phase 2 (B4): a headless run must fail fast instead
+    // of silently skipping project config - the hook would never run
+    // and the run would do different work than asked for.
+    assert_eq!(code, 4, "stderr: {stderr}");
     assert!(
         !cwd.path().join("PWNED").exists(),
         "project hook ran in an untrusted folder"
     );
-    assert_eq!(init_trusted(&lines), false);
-    let notice: Vec<&str> = stderr
-        .lines()
-        .filter(|l| l.contains("folder not trusted"))
-        .collect();
-    assert_eq!(
-        notice.len(),
-        1,
-        "one-line notice expected, stderr: {}",
-        stderr
-    );
     assert!(
-        notice[0].contains(".zen/settings.json: hooks") && notice[0].contains("--trust-folder")
+        stderr.contains("folder not trusted")
+            && stderr.contains(".zen/settings.json: hooks")
+            && stderr.contains("--trust-folder"),
+        "error must name the skipped config and how to trust it; stderr: {stderr}"
     );
 }
 
@@ -116,7 +111,7 @@ async fn untrusted_folder_still_loads_user_hook() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn untrusted_folder_ignores_project_allow_rule() {
+async fn untrusted_folder_refuses_project_allow_rule() {
     let home = TempDir::new("trust_allow_home");
     let cwd = TempDir::new("trust_allow_cwd");
     cwd.write(
@@ -143,11 +138,20 @@ async fn untrusted_folder_ignores_project_allow_rule() {
         if trust {
             run = run.arg("--trust-folder");
         }
-        let (_stdout, stderr, _code) = tokio::time::timeout(TEST_TIMEOUT, async {
+        let (_stdout, stderr, code) = tokio::time::timeout(TEST_TIMEOUT, async {
             run.mock("mock-model", &server).arg("write").run_output()
         })
         .await
         .expect("timed out");
+        // Core-perfect phase 2 (B4): untrusted means fail fast (4),
+        // not a run with the project allow rule silently ignored.
+        assert_eq!(
+            code,
+            if trust { 0 } else { 4 },
+            "trusted={} stderr: {}",
+            trust,
+            stderr
+        );
         assert_eq!(
             cwd.path().join("out.txt").exists(),
             expect_written,
@@ -168,17 +172,17 @@ async fn untrusted_folder_does_not_start_project_mcp_server() {
         r#"{"mcpServers": {"evil": {"command": "sh", "args": ["-c", "echo x > PWNED_MCP"]}}}"#,
     );
 
-    let (lines, stderr, _code) = run_untrusted_default("trust_mcp", &home, &cwd, &[]).await;
+    let (_lines, stderr, code) = run_untrusted_default("trust_mcp", &home, &cwd, &[]).await;
+    // Core-perfect phase 2 (B4): fail fast instead of running with
+    // the project MCP server silently skipped.
+    assert_eq!(code, 4, "stderr: {stderr}");
     assert!(
         !cwd.path().join("PWNED_MCP").exists(),
         "project MCP server started untrusted"
     );
-    let init = find_line(&lines, "system", Some("init")).expect("init");
-    assert_eq!(init["mcp_servers"], serde_json::json!([]));
     assert!(
-        stderr.contains(".mcp.json"),
-        "notice should name .mcp.json: {}",
-        stderr
+        stderr.contains("folder not trusted") && stderr.contains(".mcp.json"),
+        "error must name the skipped config; stderr: {stderr}"
     );
 
     let (_lines, stderr, _code) =
@@ -213,7 +217,13 @@ async fn run_base_url_case(tag: &str, trust: bool) -> (usize, usize, String) {
         tokio::time::timeout(TEST_TIMEOUT, async { run.arg("hi").run_output() })
             .await
             .expect("timed out");
-    assert_eq!(code, 0, "stderr: {}", stderr);
+    // Core-perfect phase 2 (B4): untrusted fails fast (4) before any
+    // provider call; trusted runs (0) with the project baseUrl.
+    assert_eq!(
+        code,
+        if trust { 0 } else { 4 },
+        "trust={trust} stderr: {stderr}"
+    );
     let (u, p) = (user_srv.finish().await.len(), proj_srv.finish().await.len());
     (u, p, stderr)
 }
@@ -222,7 +232,10 @@ async fn run_base_url_case(tag: &str, trust: bool) -> (usize, usize, String) {
 async fn untrusted_ignores_project_base_url() {
     let (user_reqs, proj_reqs, stderr) = run_base_url_case("trust_burl_un", false).await;
     assert_eq!(proj_reqs, 0, "project baseUrl used in an untrusted folder");
-    assert_eq!(user_reqs, 1, "user baseUrl expected; stderr: {}", stderr);
+    assert_eq!(
+        user_reqs, 0,
+        "fail-fast must not call any provider; stderr: {stderr}"
+    );
     let notice = stderr
         .lines()
         .find(|l| l.contains("folder not trusted"))

@@ -154,6 +154,35 @@ impl Checkpoints {
         st.done.last().cloned()
     }
 
+    /// What `undo` would do to the last turn, without doing it. Same
+    /// classification as `undo` (entries whose write never landed -
+    /// `after` is none - are skipped), so the preview the user
+    /// confirms is the undo that actually runs.
+    pub fn preview_last_turn(&self) -> Option<UndoReport> {
+        let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
+        Self::close_current(&mut st);
+        let turn = st.done.last()?;
+        let mut report = UndoReport {
+            turn_id: turn.id,
+            label: turn.label.clone(),
+            ..Default::default()
+        };
+        for e in turn.entries.iter().rev() {
+            if e.after.is_none() {
+                continue;
+            }
+            match &e.before {
+                Before::Saved(_) => report.restored.push(e.path.clone()),
+                Before::Missing => report.removed.push(e.path.clone()),
+                Before::Skipped(why) => report.skipped.push((e.path.clone(), why.clone())),
+            }
+        }
+        report.restored.reverse();
+        report.removed.reverse();
+        report.skipped.reverse();
+        Some(report)
+    }
+
     pub fn depth(&self) -> usize {
         let mut st = self.state.lock().expect("checkpoint state lock poisoned: critical sections only touch in-memory turn bookkeeping and invariant-checked Options");
         Self::close_current(&mut st);
@@ -620,5 +649,29 @@ mod tests {
             file_diff("f", Some(b"gone\n"), None)
                 .contains("+++ /dev/null\n@@ -1,1 +0,0 @@\n-gone\n")
         );
+    }
+
+    #[test]
+    fn preview_last_turn_matches_undo_without_doing_it() {
+        let d = tmp("preview");
+        let (a, b) = (d.join("a.txt"), d.join("b.txt"));
+        std::fs::write(&a, "old\n").unwrap();
+        let c = Checkpoints::new(d.join(".ck"));
+        c.start_turn("edit a, create b");
+        write(&c, &a, "new\n");
+        write(&c, &b, "fresh\n");
+        c.start_turn("just chatting");
+        let preview = c.preview_last_turn().expect("preview");
+        assert_eq!(preview.restored, vec![a.clone()]);
+        assert_eq!(preview.removed, vec![b.clone()]);
+        assert_eq!(preview.label, "edit a, create b");
+        // Preview must not consume the turn or touch the files.
+        assert_eq!(c.depth(), 1);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "new\n");
+        assert!(b.exists());
+        let r = c.undo(false).unwrap();
+        assert_eq!(r.restored, preview.restored);
+        assert_eq!(r.removed, preview.removed);
+        assert_eq!(c.preview_last_turn(), None);
     }
 }

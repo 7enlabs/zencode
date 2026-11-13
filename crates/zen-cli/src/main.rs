@@ -36,6 +36,15 @@ async fn real_main() {
                 _ => zen_cli::exit_code::VALIDATION,
             };
             let _ = err.print();
+            // Core-perfect phase 2 (B3): usage errors exit 4
+            // (VALIDATION) by the fixed B2 table, not clap's default
+            // 2 - 2 is auth. Name the mapping where the failure
+            // happens so wrapper scripts see it without opening docs.
+            if code != 0 {
+                eprintln!(
+                    "note: exit code 4 = validation (usage error); 2 = auth. See docs/exit-codes.md."
+                );
+            }
             std::process::exit(code);
         }
     };

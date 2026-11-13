@@ -16,15 +16,6 @@ Remove an entry when it is fixed, and say so in the PR.
 - **Why:** release v0.1.0 exists and the Windows installer downloads the prebuilt binary and verifies it by SHA-256, but `install.sh` (Linux/macOS) still clones the repo and builds from source, so it needs a Rust toolchain. There is no `SHA256SUMS.txt` file or signed binary yet.
 - **What to do:** on Windows, use `install.ps1` (prebuilt, no toolchain needed). On Linux/macOS, install a Rust toolchain and rerun, until `install.sh` gains a prebuilt path. The release checklist in CONTRIBUTING.md requires checksums and a stated signing status.
 
-## KI-2: Project hooks, MCP servers or `permissions.allow` are ignored in headless runs
-
-- **Where:** `zen -p ...` in CI or scripts, inside a repo that has `.zen/settings*.json`, `.mcp.json` or `.zen/mcp.json`.
-- **What you see:** one line on stderr naming the skipped project config; stream-json `system/init` shows `folder_trusted: false`; the hook or MCP tool you expected never runs.
-- **What is not affected:** everything under `~/.zen/`, and project deny rules, always apply.
-- **Tip:** `zen doctor` shows the folder-trust state.
-- **Why:** folder trust. Project config that can run commands, widen permissions or redirect provider requests loads only in a folder you trust, and headless mode never asks.
-- **What to do:** if you trust the repo, pass `--trust-folder` or set `ZEN_TRUST_FOLDER=1`. Do not set it for repos you have not reviewed.
-
 ## KI-3: A script that checks for exit code 2 on usage errors stops matching
 
 - **Where:** any wrapper script around `zen` that reads the exit code.
@@ -32,7 +23,7 @@ Remove an entry when it is fixed, and say so in the PR.
 - **What is not affected:** exit 0 (ok) and exit 1 (general error).
 - **Tip:** `docs/exit-codes.md` has the full table and the list of what each code covers today.
 - **Why:** the team exit-code table was fixed (0 ok, 1 general, 2 auth, 3 not found, 4 validation, 5 forbidden, 6 rate limit, 7 conflict). Usage errors moved from clap's default 2 to 4 on 2026-11-05.
-- **What to do:** update the script to the table. Some paths still fall back to 1; those are listed in `docs/exit-codes.md`.
+- **What to do:** update the script to the table. Usage errors now print the mapping on stderr next to the error ("exit code 4 = validation (usage error); 2 = auth"), and `--help` lists it too. Some paths still fall back to 1; those are listed in `docs/exit-codes.md`.
 
 ## KI-4: Windows test `session::tests::latest_session_picks_newest` failed once on `main`
 

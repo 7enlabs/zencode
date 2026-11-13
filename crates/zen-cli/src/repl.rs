@@ -367,6 +367,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         scope_seeded: false,
         checkpoints,
         progress: progress_sink.clone(),
+        model_rows: Vec::new(),
     };
 
     // Honour -c/-r and a positional prompt: resume first, then run the
@@ -439,6 +440,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
         };
         reader.set_vi(repl.vim_mode);
         reader.set_prompt_style(repl.theme);
+        reader.set_model_rows(&repl.model_rows);
 
         let line = match reader.read(&prompt) {
             crate::repl_input::ReadOutcome::Line(l) => {
@@ -538,6 +540,10 @@ struct ReplState<'a> {
     checkpoints: Arc<zen_tools::checkpoint::Checkpoints>,
 
     progress: Arc<crate::repl_progress::ReplProgressSink>,
+
+    // Model rows for /model Tab completion (B2): (short, provider,
+    // id), refreshed whenever /model lists them.
+    model_rows: Vec<(String, String, String)>,
 }
 
 struct ReplInterrupts {
@@ -1113,7 +1119,7 @@ fn format_model_list(current: &str, rows: &[ModelRow], auto: bool) -> String {
         out.push_str(&line);
         out.push('\n');
     }
-    out.push_str("Enter a number, name, or unique part — /model 2, /model nemotron\n");
+    out.push_str("Enter a number, name, or unique part - /model 2, /model nemotron - or press Tab to complete a name\n");
     out
 }
 
@@ -1245,6 +1251,19 @@ async fn handle_slash(
             }
         }
         "/clear" => {
+            // Core-perfect phase 2 (B6): clearing drops the in-memory
+            // conversation. Ask first on a terminal; piped input keeps
+            // the old behaviour (a scripted /clear must not eat the
+            // next scripted line as its answer).
+            if !agent.messages().is_empty()
+                && std::io::IsTerminal::is_terminal(&std::io::stdin())
+                && !prompt_yes_no(
+                    "Clear the conversation and start a new session? The transcript stays on disk and can be resumed with /resume.",
+                )
+            {
+                println!("Kept the current conversation.");
+                return Ok(LineAction::Continue);
+            }
             crate::agent_run::run_session_end(&agent.hooks, session_id, cwd, cfg, "clear").await;
             agent.set_messages(vec![]);
 
@@ -1287,6 +1306,12 @@ async fn handle_slash(
         }
         "/model" => {
             let (rows, stale_warning) = available_model_rows(home, &cfg.base_url);
+            // Core-perfect phase 2 (B2): keep the listed rows for
+            // Tab completion of the /model argument.
+            repl.model_rows = rows
+                .iter()
+                .map(|r| (r.short.clone(), r.provider.clone(), r.id.clone()))
+                .collect();
             if let Some(w) = &stale_warning {
                 eprintln!("{w}");
             }
@@ -2328,6 +2353,36 @@ fn run_shell_passthrough(
 
 fn undo_last_turn(repl: &mut ReplState<'_>, agent: &mut zen_agent::Agent, force: bool) {
     use zen_tools::checkpoint::UndoError;
+    // Core-perfect phase 2 (B7): /undo deletes files the turn created,
+    // so show what it is about to do and ask first on a terminal.
+    // Piped input keeps the old behaviour (a scripted /undo must not
+    // eat the next scripted line as its answer).
+    if std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && let Some(preview) = repl.checkpoints.preview_last_turn()
+        && (!preview.restored.is_empty()
+            || !preview.removed.is_empty()
+            || !preview.skipped.is_empty())
+    {
+        let head = if preview.label.is_empty() {
+            format!("Undo turn {}", preview.turn_id)
+        } else {
+            format!("Undo turn {} \"{}\"", preview.turn_id, preview.label)
+        };
+        println!("{head} will:");
+        for p in &preview.restored {
+            println!("  restore {}", p.display());
+        }
+        for p in &preview.removed {
+            println!("  delete {} (created in that turn)", p.display());
+        }
+        for (p, why) in &preview.skipped {
+            println!("  NOT restore {} ({})", p.display(), why);
+        }
+        if !prompt_yes_no("Undo this turn?") {
+            println!("Kept the files as they are.");
+            return;
+        }
+    }
     match repl.checkpoints.undo(force) {
         Ok(r) => {
             let mut lines = Vec::new();
@@ -3006,6 +3061,7 @@ mod model_picker_tests {
                 dir.join("checkpoints"),
             )),
             progress: std::sync::Arc::new(crate::repl_progress::ReplProgressSink::new()),
+            model_rows: Vec::new(),
         };
         // The env lock only guards setup; drop it before the await
         // (clippy::await_holding_lock), as the sibling async test does.
