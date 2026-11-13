@@ -1450,4 +1450,22 @@ mod tests {
         assert_eq!(provider_error_hint("HTTP 500: internal error"), None);
         assert_eq!(provider_error_hint(""), None);
     }
+
+    #[test]
+    fn provider_error_hint_each_auth_phrase_alone_and_bad_model_needs_400() {
+        // Mutants job on PR #185: the `||` before "no auth credentials"
+        // (line 191) and before "invalid api key" (line 192) survived,
+        // because no test exercised those phrases without a 401 status;
+        // the `&&` in the 400 + "invalid model name" check (line 202)
+        // survived because no test split the two halves. Each phrase
+        // alone must map to the auth hint, and each half of the 400
+        // check alone must map to nothing.
+        for phrase in ["no auth credentials", "invalid api key"] {
+            let hint = provider_error_hint(phrase)
+                .unwrap_or_else(|| panic!("{phrase} alone must map to the auth hint"));
+            assert!(hint.contains("ZEN_API_KEY"), "{hint}");
+        }
+        assert_eq!(provider_error_hint("invalid model name"), None);
+        assert_eq!(provider_error_hint("HTTP 400: bad request"), None);
+    }
 }
