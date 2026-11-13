@@ -427,6 +427,33 @@ mod tests {
         assert!(!is_prebuilt_install_dir(Path::new(
             "/home/u/.local/share/Programs/ZenCode"
         )));
+        // Exactly one half matching must not count as prebuilt (mutant
+        // :112 `&&` -> `||`): a ZenCode dir under a non-Programs parent.
+        assert!(!is_prebuilt_install_dir(Path::new(
+            "/x/Other/ZenCode/zen.exe"
+        )));
+    }
+
+    #[test]
+    fn running_prebuilt_install_sees_marker_next_to_exe() {
+        // The whole-body `-> false` mutant (:118) and the `||` -> `&&`
+        // mutant (:121) are only visible when a marker exists next to
+        // the running binary: point the marker at this test binary's own
+        // directory for the duration of the call. The release-layout half
+        // is false here (deps/ is not Programs/ZenCode), so :121 needs
+        // the marker half alone to be true.
+        let exe = std::env::current_exe().expect("current_exe");
+        let marker = exe.with_file_name(".zen-prebuilt");
+        let _ = std::fs::remove_file(&marker);
+        struct RemoveOnDrop<'a>(&'a std::path::Path);
+        impl Drop for RemoveOnDrop<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0);
+            }
+        }
+        let _guard = RemoveOnDrop(&marker);
+        std::fs::write(&marker, "").unwrap();
+        assert!(running_prebuilt_install());
     }
 
     #[test]

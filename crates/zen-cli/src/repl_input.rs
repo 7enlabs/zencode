@@ -578,6 +578,60 @@ mod tests {
     }
 
     #[test]
+    fn complete_modelx_arg_does_not_enter_model_branch() {
+        // `&&` -> `||` at complete :154: "/modelx" is not a "/model "
+        // argument and pos 7 is past the word, so the original answers
+        // from the slash catalogue (no match) at start 0; the mutant
+        // enters the model branch and returns every model row from 7.
+        let helper = SlashHelper {
+            prompt_sgr: None,
+            models: vec![(
+                "flash".to_string(),
+                "deploy".to_string(),
+                "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+            )],
+        };
+        let (start, candidates) = helper
+            .complete("/modelx", 7, &Context::new(&DefaultHistory::new()))
+            .unwrap();
+        assert_eq!(start, 0);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn hint_returns_model_ghost_text_for_model_arg() {
+        // Whole-body `hint` -> None / Some("") / Some("xyzzy") at :171:
+        // the ghost text for a partially typed model name must be the
+        // exact remainder of the first matching model id.
+        let helper = SlashHelper {
+            prompt_sgr: None,
+            models: vec![(
+                "flash".to_string(),
+                "deploy".to_string(),
+                "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+            )],
+        };
+        let hint = helper
+            .hint("/model deep", 11, &Context::new(&DefaultHistory::new()))
+            .expect("hint");
+        assert_eq!(hint, "seek-ai/deepseek-v4.1-flash-1017");
+    }
+
+    #[test]
+    fn line_reader_set_model_rows_sticks() {
+        // `set_model_rows` -> () at :313: the rows must be recorded on
+        // the reader for the next `/model` completion.
+        let mut r = LineReader::plain();
+        let rows = vec![(
+            "flash".to_string(),
+            "deploy".to_string(),
+            "deepseek-ai/deepseek-v4.1-flash-1017".to_string(),
+        )];
+        r.set_model_rows(&rows);
+        assert_eq!(r.models, rows);
+    }
+
+    #[test]
     fn plain_reader_does_not_edit() {
         let mut r = LineReader::plain();
         assert!(!r.is_editing());

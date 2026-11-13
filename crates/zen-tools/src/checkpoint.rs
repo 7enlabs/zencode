@@ -662,6 +662,7 @@ mod tests {
         write(&c, &b, "fresh\n");
         c.start_turn("just chatting");
         let preview = c.preview_last_turn().expect("preview");
+        assert_eq!(preview.turn_id, 1);
         assert_eq!(preview.restored, vec![a.clone()]);
         assert_eq!(preview.removed, vec![b.clone()]);
         assert_eq!(preview.label, "edit a, create b");
