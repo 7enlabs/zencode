@@ -371,6 +371,9 @@ pub enum Commands {
     #[command(after_help = "Examples:\n  zen doctor\n  zen --json doctor")]
     Doctor,
 
+    /// Manage anonymous usage counting: turn it off, on, or show its status
+    Telemetry(TelemetryArgs),
+
     /// List available models
     Models(ModelsArgs),
 
@@ -424,6 +427,25 @@ pub enum Commands {
 
     /// Check for and install zen updates
     Update(UpdateArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Examples:\n  zen telemetry off      Stop anonymous usage counting\n  zen telemetry on       Resume anonymous usage counting\n  zen telemetry status   Show whether counting is on and why"
+)]
+pub struct TelemetryArgs {
+    #[command(subcommand)]
+    pub action: TelemetryAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum TelemetryAction {
+    /// Turn anonymous usage counting off (writes "telemetry": "off" to ~/.zen/settings.json)
+    Off,
+    /// Turn anonymous usage counting back on
+    On,
+    /// Show whether counting is on and what decided it
+    Status,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1037,8 +1059,18 @@ mod tests {
         use clap::CommandFactory;
         let cmd = Cli::command();
         for name in [
-            "doctor", "models", "cost", "context", "sessions", "eval", "update", "mcp", "skill",
-            "export", "import",
+            "doctor",
+            "models",
+            "cost",
+            "context",
+            "sessions",
+            "eval",
+            "update",
+            "mcp",
+            "skill",
+            "export",
+            "import",
+            "telemetry",
         ] {
             let sub = cmd
                 .get_subcommands()
@@ -1106,6 +1138,28 @@ mod tests {
         assert_eq!(cli.effective_output_format(), OutputFormat::Json);
         let cli = parse(&["doctor"]);
         assert_eq!(cli.effective_output_format(), OutputFormat::Text);
+    }
+
+    #[test]
+    fn parse_telemetry_subcommand() {
+        let cli = parse(&["telemetry", "off"]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Telemetry(ref t)) if matches!(t.action, TelemetryAction::Off)
+        ));
+        let cli = parse(&["telemetry", "on"]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Telemetry(ref t)) if matches!(t.action, TelemetryAction::On)
+        ));
+        let cli = parse(&["telemetry", "status"]);
+        assert!(matches!(
+            cli.subcommand,
+            Some(Commands::Telemetry(ref t)) if matches!(t.action, TelemetryAction::Status)
+        ));
+        // An action is required: bare `zen telemetry` is a usage error.
+        assert!(Cli::try_parse_from(["zen", "telemetry"]).is_err());
+        assert!(Cli::try_parse_from(["zen", "telemetry", "maybe"]).is_err());
     }
 
     #[test]

@@ -42,7 +42,7 @@ pub mod update;
 pub use cli::{
     Cli, Commands, CostArgs, EvalArgs, ExportArgs, ImportArgs, InputFormat, McpArgs, McpSubcommand,
     ModelsArgs, OutputFormat, PermissionMode, ReviewArgs, SessionSubcommand, SessionsArgs,
-    UpdateArgs,
+    TelemetryAction, TelemetryArgs, UpdateArgs,
 };
 pub use settings::{ResolvedConfig, resolve_config};
 pub use system_prompt::build_system_prompt;
@@ -405,6 +405,38 @@ async fn run_subcommand(cli: &Cli, cwd: &Path, home: Option<&Path>, sub: &Comman
         Commands::Mcp(mcp) => {
             commands::mcp_command(cli, cwd, home, mcp).await?;
             Ok(0)
+        }
+        Commands::Telemetry(args) => {
+            let Some(home) = home else {
+                return Err(coded_error(
+                    exit_code::VALIDATION,
+                    "cannot locate a home directory; set HOME to manage telemetry",
+                ));
+            };
+            match args.action {
+                TelemetryAction::Off => {
+                    let path = telemetry::set_telemetry(home, "off")
+                        .map_err(|e| coded_error(exit_code::VALIDATION, e))?;
+                    println!("Telemetry off: anonymous usage counting is disabled.");
+                    println!("Settings: {}", path.display());
+                    Ok(0)
+                }
+                TelemetryAction::On => {
+                    let path = telemetry::set_telemetry(home, "on")
+                        .map_err(|e| coded_error(exit_code::VALIDATION, e))?;
+                    println!("Telemetry on: anonymous usage counting is enabled.");
+                    println!("Settings: {}", path.display());
+                    Ok(0)
+                }
+                TelemetryAction::Status => {
+                    let cfg = settings::resolve_config_with_home(cli, cwd, Some(home))?;
+                    let state = telemetry::effective_state(cfg.telemetry.as_deref(), |k| {
+                        std::env::var(k).ok()
+                    });
+                    println!("{}", telemetry::status_message(state));
+                    Ok(0)
+                }
+            }
         }
         Commands::Models(args) => {
             models::models_command(cli, cwd, home, args).await?;

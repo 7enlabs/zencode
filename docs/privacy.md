@@ -41,6 +41,7 @@ per 12 hours server-side, and one per 24 hours client-side.
 Counting is opt-out. Any one of these turns it off completely, and
 the CLI checks them before every ping:
 
+- `zen telemetry off` (writes `"telemetry": "off"` to `~/.zen/settings.json`)
 - `DO_NOT_TRACK=1`
 - `ZENCODE_TELEMETRY=0`
 - `"telemetry": "off"` in `~/.zen/settings.json`
