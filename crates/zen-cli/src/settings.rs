@@ -82,6 +82,12 @@ pub struct ResolvedConfig {
 
     pub verify: Option<serde_json::Value>,
 
+    /// Merged "lsp" setting (`diagnosticsAfterEdit`,
+    /// `diagnosticsTimeoutSecs`, `diagnosticsDebounceMs` for the
+    /// post-edit LSP feedback loop, P0 #4); read from the settings
+    /// extra map.
+    pub lsp: Option<serde_json::Value>,
+
     pub retry_max_wait_secs: u64,
 
     pub request_timeout_secs: Option<u64>,
@@ -845,6 +851,7 @@ pub fn resolve_config_with_home(
         auto_compact: merged.auto_compact.clone(),
         auto_commit: merged.auto_commit.unwrap_or(false),
         verify: merged.extra.get("verify").cloned(),
+        lsp: merged.extra.get("lsp").cloned(),
         retry_max_wait_secs: retry_max_wait_secs(merged.extra.get("retry")),
         request_timeout_secs: api_timeout_secs(
             merged.extra.get("api"),
@@ -1495,6 +1502,45 @@ mod tests {
             sessions_auto_archive_days(Some(&json!({"autoArchiveDays": "soon"}))),
             0
         );
+    }
+
+    #[test]
+    fn lsp_setting_flows_into_resolved_config() {
+        let env_guard = env_lock();
+        let dir = std::env::temp_dir().join(format!("zen_cfg_lsp_{}", std::process::id()));
+        let home = dir.join("home");
+        let proj = dir.join("proj");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(proj.join(".zen")).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            proj.join(".zen/settings.json"),
+            r#"{"lsp":{"diagnosticsAfterEdit":true,"diagnosticsTimeoutSecs":5,"diagnosticsDebounceMs":200}}"#,
+        )
+        .unwrap();
+        let cfg = resolve_config_with_home(&base_cli(), &proj, Some(&home)).unwrap();
+        let lsp = cfg.lsp.as_ref().expect("lsp setting must resolve");
+        assert_eq!(
+            lsp.get("diagnosticsAfterEdit"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            lsp.get("diagnosticsTimeoutSecs"),
+            Some(&serde_json::json!(5))
+        );
+        assert_eq!(
+            lsp.get("diagnosticsDebounceMs"),
+            Some(&serde_json::json!(200))
+        );
+        let _ = fs::remove_dir_all(&dir);
+        // default_cfg_without_key() takes env_lock itself, and a std
+        // Mutex is not re-entrant: drop our guard first.
+        drop(env_guard);
+
+        // No "lsp" key anywhere: the field is None and the feedback
+        // loop stays off.
+        let cfg = default_cfg_without_key();
+        assert!(cfg.lsp.is_none());
     }
 
     #[test]

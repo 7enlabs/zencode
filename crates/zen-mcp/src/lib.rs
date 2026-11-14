@@ -14,7 +14,7 @@ pub use config::{
 };
 pub use delegate::{DelegateTool, MAX_DELEGATE_DEPTH};
 pub use lsp::{LspLanguage, LspManager};
-pub use lsp_tools::{FindReferencesTool, GotoDefinitionTool, HoverTool};
+pub use lsp_tools::{DiagnosticsTool, FindReferencesTool, GotoDefinitionTool, HoverTool};
 pub use manager::{McpManager, SkipReason};
 pub use task::TaskTool;
 

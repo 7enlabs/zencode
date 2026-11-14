@@ -25,6 +25,11 @@ pub struct AgentAssembly {
     pub subagent_sink: Arc<ForwardSink>,
 
     pub recorder: Option<Arc<crate::eventlog::Recorder>>,
+
+    /// Post-edit LSP diagnostics provider (P0 #4). Some only when
+    /// settings `lsp.diagnosticsAfterEdit` enables the feedback loop;
+    /// None keeps the agent loop at zero overhead.
+    pub diagnostics_provider: Option<Arc<dyn zen_core::DiagnosticsProvider>>,
 }
 
 #[derive(Default)]
@@ -314,12 +319,14 @@ pub async fn assemble(
         assembly_permissions = Arc::new(skill_gate.shared(build_permissions(cwd, cfg, cli)));
     }
 
+    let mut diagnostics_provider: Option<Arc<dyn zen_core::DiagnosticsProvider>> = None;
     if cli.tools.as_deref() != Some("") {
         let lsp_manager = Arc::new(zen_mcp::LspManager::new());
         let lsp_tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(zen_mcp::GotoDefinitionTool::new(lsp_manager.clone())),
             Arc::new(zen_mcp::HoverTool::new(lsp_manager.clone())),
             Arc::new(zen_mcp::FindReferencesTool::new(lsp_manager.clone())),
+            Arc::new(zen_mcp::DiagnosticsTool::new(lsp_manager.clone())),
         ];
         for tool in lsp_tools {
             let name = tool.name();
@@ -329,6 +336,7 @@ pub async fn assemble(
                 registry.register(tool);
             }
         }
+        diagnostics_provider = lsp_diagnostics_provider(cfg.lsp.as_ref(), &lsp_manager);
     }
 
     let slash_commands: Vec<String> = commands::BUILTIN_COMMANDS
@@ -347,6 +355,7 @@ pub async fn assemble(
         agent_system_prompt,
         subagent_sink,
         recorder,
+        diagnostics_provider,
     })
 }
 
@@ -370,6 +379,41 @@ fn lsp_tool_allowed(spec: Option<&str>, name: &str) -> bool {
             .any(|n| n.eq_ignore_ascii_case(name));
     }
     entries.iter().any(|e| e.eq_ignore_ascii_case(name))
+}
+
+/// Build the post-edit LSP diagnostics provider from the merged `lsp`
+/// settings value. Returns None when the feedback loop is disabled
+/// (`diagnosticsAfterEdit` absent or false - the default), so the agent
+/// adds zero overhead. When enabled, applies the configured wait timing
+/// (`diagnosticsTimeoutSecs`, default 3; `diagnosticsDebounceMs`,
+/// default 150) to the shared manager.
+pub(crate) fn lsp_diagnostics_provider(
+    lsp: Option<&serde_json::Value>,
+    manager: &Arc<zen_mcp::LspManager>,
+) -> Option<Arc<dyn zen_core::DiagnosticsProvider>> {
+    let lsp = lsp.filter(|v| v.is_object());
+    let enabled = lsp
+        .and_then(|v| v.get("diagnosticsAfterEdit"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    let timeout_secs = lsp
+        .and_then(|v| v.get("diagnosticsTimeoutSecs"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3)
+        .max(1);
+    let debounce_ms = lsp
+        .and_then(|v| v.get("diagnosticsDebounceMs"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(150)
+        .max(1);
+    manager.set_diagnostics_timing(
+        std::time::Duration::from_secs(timeout_secs),
+        std::time::Duration::from_millis(debounce_ms),
+    );
+    Some(manager.clone() as Arc<dyn zen_core::DiagnosticsProvider>)
 }
 
 fn split_rule_names(rules: &[String]) -> Vec<String> {
@@ -773,6 +817,7 @@ pub(crate) async fn run_agent_with_result(
 
     let mut config = base_agent_config(cfg, cli, system_prompt);
     config.model = effective_model.clone();
+    config.diagnostics_provider = assembly.diagnostics_provider.clone();
 
     let base_prompt = match &assembly.agent_system_prompt {
         Some(body) => format!(
@@ -2131,6 +2176,80 @@ mod descendants_tests {
             found.contains(&pid),
             "sleep {pid} not among descendants of {}: {found:?}",
             std::process::id()
+        );
+    }
+}
+
+#[cfg(test)]
+mod lsp_provider_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn manager() -> Arc<zen_mcp::LspManager> {
+        Arc::new(zen_mcp::LspManager::new())
+    }
+
+    #[test]
+    fn lsp_provider_off_without_settings() {
+        let mgr = manager();
+        assert!(lsp_diagnostics_provider(None, &mgr).is_none());
+        assert!(lsp_diagnostics_provider(Some(&json!({})), &mgr).is_none());
+        assert!(
+            lsp_diagnostics_provider(Some(&json!({"diagnosticsAfterEdit": false})), &mgr).is_none()
+        );
+        assert!(lsp_diagnostics_provider(Some(&json!("yes")), &mgr).is_none());
+    }
+
+    #[test]
+    fn lsp_provider_on_with_defaults() {
+        let mgr = manager();
+        let provider = lsp_diagnostics_provider(Some(&json!({"diagnosticsAfterEdit": true})), &mgr);
+        assert!(provider.is_some());
+        assert_eq!(
+            mgr.diagnostics_timing(),
+            (
+                std::time::Duration::from_secs(3),
+                std::time::Duration::from_millis(150)
+            )
+        );
+    }
+
+    #[test]
+    fn lsp_provider_applies_configured_timing_and_clamps() {
+        let mgr = manager();
+        let provider = lsp_diagnostics_provider(
+            Some(&json!({
+                "diagnosticsAfterEdit": true,
+                "diagnosticsTimeoutSecs": 10,
+                "diagnosticsDebounceMs": 500
+            })),
+            &mgr,
+        );
+        assert!(provider.is_some());
+        assert_eq!(
+            mgr.diagnostics_timing(),
+            (
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_millis(500)
+            )
+        );
+
+        let mgr = manager();
+        let provider = lsp_diagnostics_provider(
+            Some(&json!({
+                "diagnosticsAfterEdit": true,
+                "diagnosticsTimeoutSecs": 0,
+                "diagnosticsDebounceMs": 0
+            })),
+            &mgr,
+        );
+        assert!(provider.is_some());
+        assert_eq!(
+            mgr.diagnostics_timing(),
+            (
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(1)
+            )
         );
     }
 }

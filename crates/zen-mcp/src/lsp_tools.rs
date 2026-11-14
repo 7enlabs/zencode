@@ -275,3 +275,70 @@ impl Tool for FindReferencesTool {
         }
     }
 }
+
+pub struct DiagnosticsTool {
+    manager: Arc<LspManager>,
+}
+
+impl DiagnosticsTool {
+    pub fn new(manager: Arc<LspManager>) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait]
+impl Tool for DiagnosticsTool {
+    fn name(&self) -> &str {
+        "diagnostics"
+    }
+
+    fn description(&self) -> &str {
+        "Show the language server's latest diagnostics (errors and warnings) for a file, \
+         from the last publishDiagnostics batch the server sent. Read-only: it never \
+         starts a server and never waits - if no server is running for the file it says \
+         so. Arguments: file (path, absolute or relative to the project root)."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {"type": "string",
+                         "description": "Path to the source file (absolute or relative to the project root)"}
+            },
+            "required": ["file"]
+        })
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    async fn call(&self, args: Value, ctx: &ToolContext) -> ToolOutput {
+        let file = match arg_str(&args, "file") {
+            Ok(f) => f,
+            Err(e) => return ToolOutput::err(e.to_string()),
+        };
+        let path = resolve_file(ctx, &file);
+        match self.manager.cached_diagnostics(&path) {
+            None => ToolOutput::ok(format!(
+                "diagnostics {}:\n\n(no diagnostics available - no language server running for this file)",
+                path.display()
+            )),
+            Some(diags) if diags.is_empty() => ToolOutput::ok(format!(
+                "diagnostics {}:\n\n(no diagnostics)",
+                path.display()
+            )),
+            Some(diags) => {
+                let mut out = format!("diagnostics {} ({}):\n\n", path.display(), diags.len());
+                out.push_str(&zen_core::render_diagnostics(&diags));
+                out.push_str("\n\n```json\n");
+                out.push_str(
+                    &serde_json::to_string_pretty(&diags).unwrap_or_else(|_| "[]".to_string()),
+                );
+                out.push_str("\n```\n");
+                ToolOutput::ok(out)
+            }
+        }
+    }
+}

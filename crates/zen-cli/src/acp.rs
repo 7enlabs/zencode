@@ -383,7 +383,8 @@ async fn handle_session_new(
 
     let system_prompt = crate::build_system_prompt(cli, &cwd, home)?;
     let llm: Arc<dyn LlmBackend> = cfg.llm_client(sink.clone());
-    let agent_config = agent_run::base_agent_config(&cfg, cli, &system_prompt);
+    let mut agent_config = agent_run::base_agent_config(&cfg, cli, &system_prompt);
+    agent_config.diagnostics_provider = assembly.diagnostics_provider.clone();
     let ctx = agent_run::tool_context_public(&cwd, &cfg, cli, &session_id);
     let agent = zen_agent::Agent::new(
         llm,

@@ -4,14 +4,29 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use zen_core::LspDiagnostic;
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Default cap for waiting on `publishDiagnostics` after an edit.
+/// This is a CAP, not a fixed wait: the wait resolves as soon as the
+/// server's batches settle (see `DIAGNOSTICS_DEBOUNCE`), and only runs
+/// the full cap when the server stays silent (OpenCode
+/// `waitForDiagnostics` wraps its debounce in `withTimeout(..., 3000)`).
+const DIAGNOSTICS_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Quiet period after the last diagnostics batch before the wait
+/// resolves (OpenCode `DIAGNOSTICS_DEBOUNCE_MS = 150`).
+const DIAGNOSTICS_DEBOUNCE: Duration = Duration::from_millis(150);
+
 type Pending = Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>;
+
+/// Latest diagnostics per file URI, as published by the server.
+type DiagnosticsMap = Arc<Mutex<HashMap<String, Vec<LspDiagnostic>>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LspLanguage {
@@ -279,6 +294,8 @@ pub(crate) struct LspClient {
     child: Mutex<Option<tokio::process::Child>>,
 
     child_pid: Mutex<Option<u32>>,
+    diagnostics: DiagnosticsMap,
+    diagnostics_notify: Arc<tokio::sync::Notify>,
 }
 
 impl LspClient {
@@ -315,6 +332,10 @@ impl LspClient {
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let reader_pending = pending.clone();
+        let diagnostics: DiagnosticsMap = Arc::new(Mutex::new(HashMap::new()));
+        let reader_diagnostics = diagnostics.clone();
+        let diagnostics_notify = Arc::new(tokio::sync::Notify::new());
+        let reader_notify = diagnostics_notify.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             while let Ok(val) = read_frame(&mut reader).await {
@@ -323,8 +344,27 @@ impl LspClient {
                     if let Some(tx) = tx {
                         let _ = tx.send(val);
                     }
+                } else if val.get("method").and_then(Value::as_str)
+                    == Some("textDocument/publishDiagnostics")
+                    && let Some((uri, diags)) = parse_publish_diagnostics(&val)
+                {
+                    reader_diagnostics
+                        .lock()
+                        .expect("diagnostics lock must not be poisoned: holders only insert or drain the diagnostics map and never panic while holding it")
+                        .insert(uri, diags);
+                    reader_notify.notify_waiters();
                 }
             }
+
+            // The server closed stdout: drop its diagnostics so a later
+            // read never reports errors from a dead server, and wake any
+            // waiter so a diagnostics wait ends promptly instead of
+            // running to its cap.
+            reader_diagnostics
+                .lock()
+                .expect("diagnostics lock must not be poisoned: holders only insert or drain the diagnostics map and never panic while holding it")
+                .clear();
+            reader_notify.notify_waiters();
 
             let mut map = reader_pending.lock().expect("reader_pending lock must not be poisoned: holders only remove or drain pending response senders and never panic while holding it");
             for (_, tx) in map.drain() {
@@ -340,7 +380,24 @@ impl LspClient {
             next_id: AtomicU64::new(1),
             child: Mutex::new(Some(child)),
             child_pid: Mutex::new(child_pid),
+            diagnostics,
+            diagnostics_notify,
         }))
+    }
+
+    /// Latest published diagnostics for one file URI (empty when the
+    /// server never published for it). A poisoned lock degrades to
+    /// empty: diagnostics are best effort.
+    pub(crate) fn diagnostics_snapshot(&self, uri: &str) -> Vec<LspDiagnostic> {
+        self.diagnostics
+            .lock()
+            .ok()
+            .and_then(|map| map.get(uri).cloned())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn diagnostics_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.diagnostics_notify.clone()
     }
 
     pub(crate) async fn request(
@@ -611,6 +668,68 @@ impl LspConnection {
         )
         .await
     }
+
+    /// Latest cached diagnostics for `path`, without sending anything
+    /// to the server.
+    pub(crate) fn cached_diagnostics(&self, path: &Path) -> Vec<LspDiagnostic> {
+        self.client.diagnostics_snapshot(&path_to_uri(path))
+    }
+
+    /// Snapshot the diagnostics for `path`, send the edit to the server,
+    /// wait for fresh diagnostics, and return only the NEW ones (snapshot
+    /// diff). The wait subscribes BEFORE `didChange` is sent so the
+    /// first batch is never missed (OpenCode `touchFile` pattern).
+    /// `timeout` is a CAP, not a fixed wait: the wait resolves `debounce`
+    /// after the last batch, and only runs the full cap when the server
+    /// stays silent.
+    pub(crate) async fn diagnostics_after_edit(
+        &self,
+        path: &Path,
+        timeout: Duration,
+        debounce: Duration,
+    ) -> anyhow::Result<Vec<LspDiagnostic>> {
+        let uri = path_to_uri(path);
+        let before = self.client.diagnostics_snapshot(&uri);
+        let notify = self.client.diagnostics_notify();
+        let mut fut = Box::pin(notify.notified());
+        fut.as_mut().enable();
+        self.ensure_open(path).await?;
+        let start = Instant::now();
+        let mut seen_batch = false;
+        loop {
+            let elapsed = start.elapsed();
+            if elapsed >= timeout {
+                break;
+            }
+            let wait_for = debounce.min(timeout - elapsed);
+            match tokio::time::timeout(wait_for, fut.as_mut()).await {
+                Ok(()) => {
+                    seen_batch = true;
+                    fut = Box::pin(notify.notified());
+                    fut.as_mut().enable();
+                }
+                Err(_) => {
+                    if seen_batch {
+                        break;
+                    }
+                    fut = Box::pin(notify.notified());
+                    fut.as_mut().enable();
+                }
+            }
+        }
+        let after = self.client.diagnostics_snapshot(&uri);
+        Ok(diff_diagnostics(&before, &after))
+    }
+}
+
+/// Diagnostics in `after` whose (range, message) was not in `before`.
+fn diff_diagnostics(before: &[LspDiagnostic], after: &[LspDiagnostic]) -> Vec<LspDiagnostic> {
+    let old: std::collections::HashSet<_> = before.iter().map(LspDiagnostic::dedup_key).collect();
+    after
+        .iter()
+        .filter(|d| !old.contains(&d.dedup_key()))
+        .cloned()
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -621,6 +740,63 @@ pub struct LspLocation {
     pub col: usize,
     pub end_line: usize,
     pub end_col: usize,
+}
+
+/// Parse a `textDocument/publishDiagnostics` notification into its file
+/// URI and diagnostics. Returns None when the shape is wrong (missing
+/// `params.uri` or `params.diagnostics`); malformed items inside the
+/// array are skipped, an empty array is a valid "no diagnostics" batch.
+pub(crate) fn parse_publish_diagnostics(val: &Value) -> Option<(String, Vec<LspDiagnostic>)> {
+    let params = val.get("params")?;
+    let uri = params.get("uri")?.as_str()?.to_string();
+    let items = params.get("diagnostics")?.as_array()?;
+    let path = uri_to_path(&uri);
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(d) = parse_diagnostic(item, path.as_deref()) {
+            out.push(d);
+        }
+    }
+    Some((uri, out))
+}
+
+fn parse_diagnostic(item: &Value, path: Option<&Path>) -> Option<LspDiagnostic> {
+    let range = item.get("range")?;
+    let (line0, col_utf16) = range_pos(range, "start")?;
+    let (end_line0, end_col_utf16) = range_pos(range, "end")?;
+    let message = item.get("message")?.as_str()?.to_string();
+    // Severity is optional in LSP; a server that omits it is treated as
+    // reporting an error, so the diagnostic is never silently dropped.
+    let severity = item.get("severity").and_then(Value::as_u64).unwrap_or(1) as u8;
+    let source = item
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let code = match item.get("code") {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    };
+    let (col, end_col) = match path {
+        Some(p) => {
+            let s = p.to_string_lossy();
+            (
+                display_col(&s, line0, col_utf16),
+                display_col(&s, end_line0, end_col_utf16),
+            )
+        }
+        None => ((col_utf16 + 1) as usize, (end_col_utf16 + 1) as usize),
+    };
+    Some(LspDiagnostic {
+        line: line0 + 1,
+        col,
+        end_line: end_line0 + 1,
+        end_col,
+        severity,
+        message,
+        source,
+        code,
+    })
 }
 
 pub fn parse_locations(result: &Value) -> Vec<LspLocation> {
@@ -717,10 +893,22 @@ struct ServerKey {
     root: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct DiagnosticsTiming {
+    /// Cap for the post-edit diagnostics wait (settings
+    /// `lsp.diagnosticsTimeoutSecs`, default 3s).
+    timeout: Duration,
+    /// Quiet period after the last batch (settings
+    /// `lsp.diagnosticsDebounceMs`, default 150ms).
+    debounce: Duration,
+}
+
 pub struct LspManager {
     servers: Mutex<HashMap<ServerKey, Arc<LspConnection>>>,
 
     overrides: Mutex<HashMap<LspLanguage, (String, Vec<String>)>>,
+
+    timing: Mutex<DiagnosticsTiming>,
 }
 
 impl LspManager {
@@ -728,14 +916,82 @@ impl LspManager {
         Self {
             servers: Mutex::new(HashMap::new()),
             overrides: Mutex::new(HashMap::new()),
+            timing: Mutex::new(DiagnosticsTiming {
+                timeout: DIAGNOSTICS_TIMEOUT,
+                debounce: DIAGNOSTICS_DEBOUNCE,
+            }),
         }
+    }
+
+    /// Override the diagnostics wait timing (settings
+    /// `lsp.diagnosticsTimeoutSecs` / `lsp.diagnosticsDebounceMs`;
+    /// tests use short values). Values are clamped to at least 1ms so
+    /// a zero config can never spin the wait loop.
+    pub fn set_diagnostics_timing(&self, timeout: Duration, debounce: Duration) {
+        let mut timing = self.timing.lock().expect("diagnostics timing lock must not be poisoned: holders only read or replace two Durations and never panic while holding it");
+        timing.timeout = timeout.max(Duration::from_millis(1));
+        timing.debounce = debounce.max(Duration::from_millis(1));
+    }
+
+    /// Effective diagnostics wait timing (timeout cap, debounce).
+    pub fn diagnostics_timing(&self) -> (Duration, Duration) {
+        let timing = self.timing.lock().expect("diagnostics timing lock must not be poisoned: holders only read or replace two Durations and never panic while holding it");
+        (timing.timeout, timing.debounce)
+    }
+
+    /// Post-edit diagnostics for `path`: only the NEW diagnostics since
+    /// the snapshot taken before the edit, or empty when the file has no
+    /// language server, the server is missing, or the wait hits its cap.
+    /// Never errors: diagnostics are best effort and must never fail a
+    /// run. The whole operation (server start included) is bounded by
+    /// the timeout cap.
+    pub async fn diagnostics_after_edit(&self, path: &Path) -> Vec<LspDiagnostic> {
+        if detect_language(path).is_none() {
+            return Vec::new();
+        }
+        let (timeout, debounce) = self.diagnostics_timing();
+        tokio::time::timeout(
+            timeout,
+            self.diagnostics_after_edit_inner(path, timeout, debounce),
+        )
+        .await
+        .unwrap_or_default()
+    }
+
+    async fn diagnostics_after_edit_inner(
+        &self,
+        path: &Path,
+        timeout: Duration,
+        debounce: Duration,
+    ) -> Vec<LspDiagnostic> {
+        let Ok(conn) = self.connection_for(path).await else {
+            return Vec::new();
+        };
+        conn.diagnostics_after_edit(path, timeout, debounce)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Diagnostics currently cached for `path`, without spawning a
+    /// server or waiting. Returns None when no language server is
+    /// running for the file's language/project (the `diagnostics` tool
+    /// reports that instead of starting a server for a read-only query).
+    pub fn cached_diagnostics(&self, path: &Path) -> Option<Vec<LspDiagnostic>> {
+        let lang = detect_language(path)?;
+        let root = find_project_root(path, lang);
+        let key = ServerKey {
+            language: lang,
+            root,
+        };
+        let conn = self.servers.lock().ok()?.get(&key).cloned()?;
+        Some(conn.cached_diagnostics(path))
     }
 
     pub fn set_server_command(&self, lang: LspLanguage, command: String, args: Vec<String>) {
         self.overrides.lock().expect("overrides lock must not be poisoned: holders only insert or read server command overrides and never panic while holding it").insert(lang, (command, args));
     }
 
-    async fn connection_for(&self, path: &Path) -> anyhow::Result<Arc<LspConnection>> {
+    pub(crate) async fn connection_for(&self, path: &Path) -> anyhow::Result<Arc<LspConnection>> {
         let lang = detect_language(path).ok_or_else(|| {
             let ext = path
                 .extension()
@@ -813,6 +1069,13 @@ impl LspManager {
                 .references(path, line, col, include_declaration)
                 .await?,
         ))
+    }
+}
+
+#[async_trait::async_trait]
+impl zen_core::DiagnosticsProvider for LspManager {
+    async fn diagnostics_after_edit(&self, path: &Path) -> Vec<zen_core::LspDiagnostic> {
+        LspManager::diagnostics_after_edit(self, path).await
     }
 }
 
