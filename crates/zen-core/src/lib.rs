@@ -153,11 +153,11 @@ impl PermissionMode {
     }
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
-            "default" | "manual" | "auto" => Self::Default,
-            "acceptEdits" => Self::AcceptEdits,
+            "default" => Self::Default,
+            "acceptEdits" | "accept-edits" => Self::AcceptEdits,
             "plan" => Self::Plan,
-            "bypassPermissions" => Self::BypassPermissions,
-            "dontAsk" => Self::DontAsk,
+            "bypassPermissions" | "bypass-permissions" => Self::BypassPermissions,
+            "dontAsk" | "dont-ask" => Self::DontAsk,
             _ => return None,
         })
     }
@@ -905,6 +905,24 @@ mod tests {
         ] {
             assert_eq!(PermissionMode::parse(m).unwrap().as_str(), m);
         }
+        // Kebab-case spellings map to the same modes.
+        assert_eq!(
+            PermissionMode::parse("accept-edits").unwrap().as_str(),
+            "acceptEdits"
+        );
+        assert_eq!(
+            PermissionMode::parse("bypass-permissions")
+                .unwrap()
+                .as_str(),
+            "bypassPermissions"
+        );
+        assert_eq!(
+            PermissionMode::parse("dont-ask").unwrap().as_str(),
+            "dontAsk"
+        );
+        // 'auto' and 'manual' are not modes and never mean default.
+        assert_eq!(PermissionMode::parse("auto"), None);
+        assert_eq!(PermissionMode::parse("manual"), None);
     }
 
     #[test]

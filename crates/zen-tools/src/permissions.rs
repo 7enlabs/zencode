@@ -1985,11 +1985,18 @@ mod permission_tests {
 
     #[test]
     fn c2_11_mode_aliases_and_accept_edits_fs_scope() {
+        // 'manual' and 'auto' are not modes and never silently mean default.
+        assert_eq!(PermissionMode::parse("manual"), None);
+        assert_eq!(PermissionMode::parse("auto"), None);
+        // Kebab-case spellings parse the same as camelCase.
         assert_eq!(
-            PermissionMode::parse("manual"),
-            Some(PermissionMode::Default)
+            PermissionMode::parse("accept-edits"),
+            Some(PermissionMode::AcceptEdits)
         );
-        assert_eq!(PermissionMode::parse("auto"), Some(PermissionMode::Default));
+        assert_eq!(
+            PermissionMode::parse("dont-ask"),
+            Some(PermissionMode::DontAsk)
+        );
         let dir = tmpdir("c211");
         let ctx = ctx_for(&dir);
         let p = perms(PermissionMode::AcceptEdits, &[], &[], &[], None);
