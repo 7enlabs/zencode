@@ -1,6 +1,6 @@
 ---
 name: security-review
-description: Pre-commit security checklist - secrets, injection, auth, and dependency risks before code ships
+description: Pre-commit security checklist - secrets, injection, auth, and dependency risks before code ships. Use before committing or merging code.
 allowed-tools: read, grep, glob
 ---
 

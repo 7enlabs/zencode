@@ -1217,7 +1217,7 @@ fn print_json_value(cli: &crate::cli::Cli, v: &serde_json::Value) -> Result<()> 
 
 pub async fn skill_command(
     cli: &crate::cli::Cli,
-    _cwd: &Path,
+    cwd: &Path,
     home: Option<&Path>,
     cmd: &crate::cli::SkillSubcommand,
 ) -> Result<i32> {
@@ -1237,7 +1237,7 @@ pub async fn skill_command(
                     }
                 }
             } else if !cli.quiet {
-                cmd_list(&home)?;
+                cmd_list(&home, cwd)?;
             }
             Ok(0)
         }
@@ -1347,23 +1347,48 @@ pub async fn skill_command(
     }
 }
 
-fn cmd_list(home: &Path) -> Result<()> {
+fn cmd_list(home: &Path, cwd: &Path) -> Result<()> {
     let registry = load_registry(home);
-    if registry.skills.is_empty() {
-        println!("no skills installed. Try `zen skill install builtin:tdd`.");
-        return Ok(());
-    }
-    println!("installed skills:");
-    for (name, e) in &registry.skills {
-        println!(
-            "  {} {} v{} - {}",
-            e.tier.badge(),
-            name,
-            e.version,
-            e.source
-        );
-    }
+    let discovered = zen_ext::discover_skills(cwd, Some(home));
+    print!("{}", format_skill_list(&registry, &discovered));
     Ok(())
+}
+
+/// Pure rendering of `zen skill list`, shared by the text output and
+/// unit tests. The installed section is the registry; the discovered
+/// section adds plain `.zen/skills/` directories the model can load
+/// (same discovery as the system prompt and the Skill tool) that have
+/// no registry entry, marked advisory. Skills already in the registry
+/// are not repeated in the discovered section.
+fn format_skill_list(registry: &Registry, discovered: &[zen_core::SkillInfo]) -> String {
+    let mut out = String::new();
+    let extra: Vec<&zen_core::SkillInfo> = discovered
+        .iter()
+        .filter(|s| !registry.skills.contains_key(&s.name))
+        .collect();
+    if registry.skills.is_empty() && extra.is_empty() {
+        out.push_str("no skills installed. Try `zen skill install builtin:tdd`.\n");
+        return out;
+    }
+    if !registry.skills.is_empty() {
+        out.push_str("installed skills:\n");
+        for (name, e) in &registry.skills {
+            out.push_str(&format!(
+                "  {} {} v{} - {}\n",
+                e.tier.badge(),
+                name,
+                e.version,
+                e.source
+            ));
+        }
+    }
+    if !extra.is_empty() {
+        out.push_str("discovered skills (not installed, advisory):\n");
+        for s in extra {
+            out.push_str(&format!("  {} - {}\n", s.name, s.description));
+        }
+    }
+    out
 }
 
 fn cmd_install(
@@ -1470,7 +1495,15 @@ fn cmd_test(home: &Path, name: &str) -> Result<i32> {
 }
 
 pub fn tier_for(home: &Path, name: &str) -> TrustTier {
-    load_registry(home)
+    tier_in_registry(&load_registry(home), name)
+}
+
+/// Trust tier of a skill within an already-loaded registry. Callers
+/// that look up many skills (e.g. the system prompt) load the registry
+/// once and use this instead of [`tier_for`], which reads the registry
+/// file from disk on every call.
+pub fn tier_in_registry(registry: &Registry, name: &str) -> TrustTier {
+    registry
         .skills
         .get(name)
         .map(|e| e.tier)
@@ -1482,15 +1515,21 @@ pub fn skills_prompt_with_tiers(home: Option<&Path>, skills: &[zen_core::SkillIn
         return String::new();
     }
     let home = home.map(|p| p.to_path_buf()).or_else(dirs::home_dir);
+    let registry = home.as_deref().map(load_registry);
     let mut out = String::from("Available skills (load with the Skill tool):\n");
     for s in skills {
-        let badge = home
-            .as_deref()
-            .map(|h| tier_for(h, &s.name).badge())
+        let badge = registry
+            .as_ref()
+            .map(|r| tier_in_registry(r, &s.name).badge())
             .unwrap_or("[⚠ unverified]");
         out.push_str(&format!("- {} {}: {}\n", s.name, badge, s.description));
     }
-    out.push_str("Trust: [✓ verified] = audited + signed by ZenCode; [community] = user-approved; [⚠ unverified] = sandboxed (read-only, no network).");
+    // Default wording for the G3 gap (Leader has not ruled yet): plain
+    // skill directories without a registry entry are advisory - loading
+    // them adds no permission filtering (see docs/skills.md). Only
+    // registry-installed unverified skills are sandboxed. Text only;
+    // enforcement is unchanged.
+    out.push_str("Trust: [✓ verified] = audited + signed by ZenCode; [community] = user-approved; [⚠ unverified] = advisory for plain skill directories (no permission filtering); installed unverified skills are sandboxed.");
     out
 }
 
@@ -2213,6 +2252,14 @@ mod tests {
         }];
         let p2 = skills_prompt_with_tiers(Some(&home), &skills2);
         assert!(p2.contains("[⚠ unverified]"), "{}", p2);
+        // G3 default wording: plain (unregistered) skills are advisory,
+        // not sandboxed; the old blanket "sandboxed" claim is gone.
+        assert!(
+            p2.contains("advisory for plain skill directories"),
+            "{}",
+            p2
+        );
+        assert!(!p2.contains("[⚠ unverified] = sandboxed"), "{}", p2);
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -2405,6 +2452,77 @@ mod tests {
                 results.iter().filter(|r| !r.passed).collect::<Vec<_>>()
             );
         }
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    fn test_skill_info(name: &str, description: &str) -> zen_core::SkillInfo {
+        zen_core::SkillInfo {
+            name: name.to_string(),
+            description: description.to_string(),
+            path: std::path::PathBuf::from("/x"),
+            body: "b".to_string(),
+            allowed_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn format_skill_list_empty() {
+        let registry = Registry::default();
+        let out = format_skill_list(&registry, &[]);
+        assert!(out.contains("no skills installed"), "{}", out);
+    }
+
+    #[test]
+    fn format_skill_list_discovered_only() {
+        let registry = Registry::default();
+        let discovered = vec![test_skill_info("plain", "A plain skill")];
+        let out = format_skill_list(&registry, &discovered);
+        assert!(!out.contains("installed skills:"), "{}", out);
+        assert!(
+            out.contains("discovered skills (not installed, advisory):"),
+            "{}",
+            out
+        );
+        assert!(out.contains("plain - A plain skill"), "{}", out);
+        assert!(!out.contains("no skills installed"), "{}", out);
+    }
+
+    #[test]
+    fn format_skill_list_installed_and_discovered() {
+        let home = tmp_home("list-unified");
+        install_builtin(&home, "tdd").unwrap();
+        let registry = load_registry(&home);
+        let discovered = vec![
+            test_skill_info("tdd", "TDD workflow"),
+            test_skill_info("plain", "A plain skill"),
+        ];
+        let out = format_skill_list(&registry, &discovered);
+        assert!(out.contains("installed skills:"), "{}", out);
+        assert!(out.contains("[✓ verified] tdd v1.0.0"), "{}", out);
+        assert!(
+            out.contains("discovered skills (not installed, advisory):"),
+            "{}",
+            out
+        );
+        assert!(out.contains("plain - A plain skill"), "{}", out);
+        // tdd is installed: it must not reappear in the discovered section.
+        let discovered_section = out.split("discovered skills").nth(1).unwrap_or("");
+        assert!(!discovered_section.contains("tdd"), "{}", out);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn tier_for_matches_registry() {
+        let home = tmp_home("tier-for");
+        install_builtin(&home, "tdd").unwrap();
+        assert_eq!(tier_for(&home, "tdd"), TrustTier::Verified);
+        assert_eq!(tier_for(&home, "no-such-skill"), TrustTier::Unverified);
+        let registry = load_registry(&home);
+        assert_eq!(tier_in_registry(&registry, "tdd"), TrustTier::Verified);
+        assert_eq!(
+            tier_in_registry(&registry, "no-such-skill"),
+            TrustTier::Unverified
+        );
         std::fs::remove_dir_all(&home).ok();
     }
 }

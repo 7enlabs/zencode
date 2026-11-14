@@ -1,6 +1,6 @@
 ---
 name: token-diet
-description: Token-efficiency habits - keep every model call lean without losing correctness
+description: Token-efficiency habits - keep every model call lean without losing correctness. Use when a task needs many model calls or long context.
 allowed-tools: read
 ---
 
