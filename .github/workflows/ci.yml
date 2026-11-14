@@ -167,7 +167,7 @@ jobs:
           - { os: macos-latest, target: aarch64-apple-darwin, zig: false, test: true }
           - { os: macos-latest, target: x86_64-apple-darwin, zig: false, test: false }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
