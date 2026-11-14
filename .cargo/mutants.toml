@@ -1,0 +1,23 @@
+# cargo-mutants exclusions for the ZenCore workspace.
+#
+# Config file location: cargo-mutants reads .cargo/mutants.toml by
+# default, so CI (plain cargo mutants --in-diff) picks this up.
+# Each entry is a regex matched against the mutant name shown by
+# cargo mutants --list.
+
+exclude_re = [
+  # PR #189, repl.rs is_current_model: replace || with &&.
+  # EQUIVALENT (waived by ZC Leader, Telegram tin 11533-11534,
+  # 2026-11-14; verified by SD Leader): every catalog entry has
+  # gateway_id == id, and gateway_model_id returns its input
+  # unchanged for ids outside the catalog, so for every row that
+  # can reach this function gateway_model_id(row.id) == row.id
+  # and the two sides of the || are always identical. Swapping
+  # || for && therefore cannot change any observable behaviour,
+  # and no test can kill this mutant.
+  # EXPIRY: if the catalog gains an entry whose gateway_id differs
+  # from its id, this mutant stops being equivalent: remove this
+  # exclusion and kill it with a test where the current model equals
+  # the gateway id but not the catalog id (or vice versa).
+  "replace \\|\\| with && in is_current_model",
+]

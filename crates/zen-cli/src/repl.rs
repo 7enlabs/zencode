@@ -1060,6 +1060,106 @@ fn available_model_rows(home: Option<&Path>, base_url: &str) -> (Vec<ModelRow>, 
     (rows, None)
 }
 
+/// Whether a picker row is the current model: the stored id, or the gateway
+/// id the provider accepts for it. Same rule as format_model_list, so the
+/// list marker and the picker default never disagree.
+fn is_current_model(current: &str, row: &ModelRow) -> bool {
+    row.id == current || crate::models::gateway_model_id(&row.id) == current
+}
+
+/// Display labels for the /model picker: short name, provider, context
+/// window and probe latency, with the current model marked by a leading
+/// marker. Pure formatting so it is unit-testable without a terminal.
+fn model_picker_labels(current: &str, rows: &[ModelRow]) -> Vec<String> {
+    rows.iter()
+        .map(|row| {
+            let marker = if is_current_model(current, row) {
+                "▸ "
+            } else {
+                "  "
+            };
+            let latency = match row.latency_ms {
+                Some(ms) => format!("{ms}ms"),
+                None => "—".to_string(),
+            };
+            format!(
+                "{marker}{}  {:<10}  {} ctx  {}",
+                row.short,
+                row.provider,
+                humanise_context(row.context_window),
+                latency
+            )
+        })
+        .collect()
+}
+
+/// Index the picker opens on: the current model, or the first row when the
+/// current model is not in the list (unknown id, empty list).
+fn model_picker_default_index(current: &str, rows: &[ModelRow]) -> usize {
+    rows.iter()
+        .position(|row| is_current_model(current, row))
+        .unwrap_or(0)
+}
+
+/// Map a picker result to a model id: Some(i) picks row i, None
+/// (Esc / q) and an out-of-range index pick nothing, so a cancel never
+/// changes the model.
+fn resolve_picker_selection(selection: Option<usize>, rows: &[ModelRow]) -> Option<String> {
+    selection
+        .and_then(|i| rows.get(i))
+        .map(|row| row.id.clone())
+}
+
+/// Whether bare /model opens the arrow-key picker: only on a terminal
+/// with at least one row to pick from. Piped input keeps the numbered
+/// list so a scripted /model never blocks, and an empty list has
+/// nothing to pick. Pure predicate so the four combinations are
+/// unit-testable without a terminal.
+fn should_open_model_picker(is_terminal: bool, rows: &[ModelRow]) -> bool {
+    is_terminal && !rows.is_empty()
+}
+
+/// Open the arrow-key /model picker on a terminal: FuzzySelect with the
+/// current model pre-selected, substring filtering while typing, arrow keys
+/// to move, Enter to pick, Esc to cancel. Returns the picked id, or None
+/// on cancel. The caller keeps the numbered list for piped input and as a
+/// fallback when the terminal interaction fails.
+fn run_model_picker(current: &str, rows: &[ModelRow]) -> Result<Option<String>, dialoguer::Error> {
+    let labels = model_picker_labels(current, rows);
+    let selection = dialoguer::FuzzySelect::new()
+        .with_prompt("Model — ↑↓ move, type to filter, Enter select, Esc cancel")
+        .items(&labels)
+        .default(model_picker_default_index(current, rows))
+        .interact_opt()?;
+    Ok(resolve_picker_selection(selection, rows))
+}
+
+/// Switch to a model the picker returned, on the same path as /model <name>.
+fn apply_picked_model(
+    id: &str,
+    cfg: &mut crate::settings::ResolvedConfig,
+    agent: &mut zen_agent::Agent,
+    repl: &mut ReplState<'_>,
+    home: Option<&Path>,
+    cwd: &Path,
+) {
+    match apply_model_switch(
+        cfg,
+        agent,
+        repl.recorder.as_ref(),
+        home,
+        &repl.home_api_key,
+        id,
+    ) {
+        Ok(msg) => {
+            // A pinned model turns auto off.
+            repl.auto_model = false;
+            report_model_switch(cwd, false, &cfg.model, &cfg.base_url, &msg);
+        }
+        Err(e) => eprintln!("{e}"),
+    }
+}
+
 /// Numbered model table for `/model`: short name, provider, context
 /// window and probe latency, with the current model marked by a leading
 /// `▸`. Pure formatting so it is unit-testable without a provider.
@@ -1086,7 +1186,7 @@ fn format_model_list(current: &str, rows: &[ModelRow], auto: bool) -> String {
         // The current model is stored as the gateway id the
         // provider accepts, so a catalog row also matches when its
         // gateway id is the current one.
-        let marker = if row.id == current || crate::models::gateway_model_id(&row.id) == current {
+        let marker = if is_current_model(current, row) {
             "▸ "
         } else {
             "  "
@@ -1316,10 +1416,34 @@ async fn handle_slash(
                 eprintln!("{w}");
             }
             if arg.is_empty() {
-                print!(
-                    "{}",
-                    format_model_list(&agent.config.model, &rows, repl.auto_model)
-                );
+                // Bare `/model` on a terminal opens the arrow-key
+                // picker (B2); piped input keeps the numbered list
+                // so a scripted `/model` never blocks on a prompt.
+                if should_open_model_picker(
+                    std::io::IsTerminal::is_terminal(&std::io::stdin()),
+                    &rows,
+                ) {
+                    match run_model_picker(&agent.config.model, &rows) {
+                        Ok(Some(id)) => {
+                            apply_picked_model(&id, cfg, agent, repl, home, cwd);
+                        }
+                        Ok(None) => {
+                            println!("model unchanged (still {})", agent.config.model);
+                        }
+                        Err(e) => {
+                            eprintln!("model picker failed ({e}); showing the list instead");
+                            print!(
+                                "{}",
+                                format_model_list(&agent.config.model, &rows, repl.auto_model)
+                            );
+                        }
+                    }
+                } else {
+                    print!(
+                        "{}",
+                        format_model_list(&agent.config.model, &rows, repl.auto_model)
+                    );
+                }
             } else if crate::models::is_auto_model(&arg) {
                 // Auto mode back on (Leader tin 7962): the current
                 // provider's best free model.
@@ -2617,6 +2741,328 @@ mod model_picker_tests {
         // Catalog rows (never probed) show — for latency.
         assert!(out.contains("—"));
         assert!(out.contains("/model 2, /model nemotron"));
+    }
+
+    #[test]
+    fn picker_default_index_points_at_the_current_model() {
+        assert_eq!(
+            model_picker_default_index("deepseek-v4.1-flash", &rows()),
+            0
+        );
+        assert_eq!(
+            model_picker_default_index("cohere/north-mini-code:free", &rows()),
+            1
+        );
+        assert_eq!(
+            model_picker_default_index("nvidia/nemotron-3-nano:free", &rows()),
+            2
+        );
+        // An unknown current model falls back to the first row.
+        assert_eq!(model_picker_default_index("unknown/model", &rows()), 0);
+        assert_eq!(model_picker_default_index("deepseek-v4.1-flash", &[]), 0);
+    }
+
+    #[test]
+    fn picker_selection_maps_index_to_id_and_cancel_to_none() {
+        assert_eq!(
+            resolve_picker_selection(Some(0), &rows()),
+            Some("deepseek-v4.1-flash".to_string())
+        );
+        assert_eq!(
+            resolve_picker_selection(Some(2), &rows()),
+            Some("nvidia/nemotron-3-nano:free".to_string())
+        );
+        // Esc cancels: nothing is picked, so the model never changes.
+        assert_eq!(resolve_picker_selection(None, &rows()), None);
+        // A stale out-of-range index picks nothing instead of panicking.
+        assert_eq!(resolve_picker_selection(Some(3), &rows()), None);
+        assert_eq!(resolve_picker_selection(Some(0), &[]), None);
+    }
+
+    #[test]
+    fn picker_labels_mark_the_current_row() {
+        let labels = model_picker_labels("cohere/north-mini-code:free", &rows());
+        assert_eq!(labels.len(), 3);
+        assert!(labels[0].contains("deepseek-v4.1-flash"));
+        assert!(labels[0].contains("experientiallabs"));
+        assert!(labels[0].contains("1M ctx"));
+        assert!(labels[0].contains("210ms"));
+        assert!(!labels[0].starts_with("▸"));
+        assert!(labels[1].starts_with("▸"));
+        assert!(labels[1].contains("north-mini-code:free"));
+        assert!(labels[1].contains("131K ctx"));
+        assert!(labels[1].contains("180ms"));
+        assert!(!labels[2].starts_with("▸"));
+        // A row that was never probed shows a dash for latency.
+        assert!(labels[2].contains("—"));
+    }
+
+    #[test]
+    fn picker_guard_opens_only_on_a_terminal_with_rows() {
+        // Truth table of the bare-/model picker guard: the picker opens
+        // only when stdin is a terminal AND the list is non-empty.
+        assert!(should_open_model_picker(true, &rows()));
+        assert!(!should_open_model_picker(true, &[]));
+        assert!(!should_open_model_picker(false, &rows()));
+        assert!(!should_open_model_picker(false, &[]));
+    }
+
+    /// Serialises the pty tests: swapping fd 0/2 is process-global, so
+    /// two such tests must never run at once.
+    #[cfg(unix)]
+    static PICKER_STDIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A pty whose slave replaces fd 0 (stdin) and fd 2 (stderr) for the
+    /// duration of a test. dialoguer renders to stderr and reads keys
+    /// from stdin, so both must be a terminal or the picker spins on
+    /// Key::Unknown forever (console returns Unknown without reading
+    /// when the term is not a tty). Restores both fds on drop, even
+    /// on panic.
+    #[cfg(unix)]
+    struct PtyStdin {
+        saved_stdin: libc::c_int,
+        saved_stderr: libc::c_int,
+        master: libc::c_int,
+    }
+
+    #[cfg(unix)]
+    impl PtyStdin {
+        fn open() -> Self {
+            let mut master: libc::c_int = -1;
+            let mut slave: libc::c_int = -1;
+            let rc = unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            assert_eq!(rc, 0, "openpty failed");
+            let saved_stdin = unsafe { libc::dup(0) };
+            let saved_stderr = unsafe { libc::dup(2) };
+            assert!(saved_stdin >= 0, "dup stdin failed");
+            assert!(saved_stderr >= 0, "dup stderr failed");
+            assert_eq!(unsafe { libc::dup2(slave, 0) }, 0);
+            assert_eq!(unsafe { libc::dup2(slave, 2) }, 2);
+            unsafe { libc::close(slave) };
+            Self {
+                saved_stdin,
+                saved_stderr,
+                master,
+            }
+        }
+
+        /// Feed key bytes to the picker from a thread: the writer waits
+        /// until the picker has switched the slave to raw mode, so CR
+        /// stays CR and the escape sequence is parsed as one key. The
+        /// writer owns its own dup of the master, so the guard can be
+        /// dropped (restoring fd 0/2) before joining it.
+        fn feed_keys(&self, keys: &'static [u8]) -> std::thread::JoinHandle<()> {
+            let master = unsafe { libc::dup(self.master) };
+            assert!(master >= 0, "dup pty master failed");
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let mut sent = 0;
+                while sent < keys.len() {
+                    let n = unsafe {
+                        libc::write(
+                            master,
+                            keys[sent..].as_ptr() as *const libc::c_void,
+                            keys.len() - sent,
+                        )
+                    };
+                    assert!(n > 0, "pty write failed");
+                    sent += n as usize;
+                }
+                unsafe { libc::close(master) };
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PtyStdin {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.saved_stdin, 0);
+                libc::dup2(self.saved_stderr, 2);
+                libc::close(self.saved_stdin);
+                libc::close(self.saved_stderr);
+                libc::close(self.master);
+            }
+        }
+    }
+
+    /// Block SIGCHLD on this thread while the picker reads keys.
+    /// Other tests spawn tokio child processes, and tokio installs a
+    /// SIGCHLD handler to reap them: a SIGCHLD landing while console
+    /// polls/reads the pty makes the read fail with EINTR, and console
+    /// answers that by raising SIGINT, which kills the whole test
+    /// binary (observed twice in full-suite runs, never in serial
+    /// runs). A blocked SIGCHLD is deferred, not lost, so tokio's
+    /// reaping on other threads is unaffected.
+    #[cfg(unix)]
+    fn block_sigchld() -> libc::sigset_t {
+        unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, libc::SIGCHLD);
+            let mut old: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, &mask, &mut old);
+            old
+        }
+    }
+
+    #[cfg(unix)]
+    fn restore_sigmask(old: libc::sigset_t) {
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+        }
+    }
+
+    /// Drive run_model_picker on a pty and return what it picked. The
+    /// picker runs on a worker thread so the test thread can time it
+    /// out: with no items to pick from (a mutant that empties the
+    /// labels) dialoguer ignores Enter and waits for another key
+    /// forever, and without a timeout that hangs the whole suite
+    /// until cargo-mutants kills it. A timed-out worker is abandoned
+    /// (it stays blocked on its own pty, which nothing else uses);
+    /// the guard lives on this thread so fd 0/2 are restored before
+    /// the test fails, and the mutant is caught fast.
+    /// The guard is dropped (fd 0/2 restored) before the result is
+    /// asserted, so a failure message is not lost into the pty.
+    /// Retries on a fresh pty if the picker errors (a stray signal
+    /// can still interrupt console's key read); a retry re-feeds the
+    /// keys. A timeout is not retried: the picker is stuck, not slow.
+    #[cfg(unix)]
+    fn pick_on_pty(current: &str, rows: &[ModelRow], keys: &'static [u8]) -> Option<String> {
+        let _lock = PICKER_STDIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last_err = None;
+        for _attempt in 0..3 {
+            let owned_rows: Vec<ModelRow> = rows
+                .iter()
+                .map(|row| ModelRow {
+                    id: row.id.clone(),
+                    provider: row.provider.clone(),
+                    short: row.short.clone(),
+                    context_window: row.context_window,
+                    latency_ms: row.latency_ms,
+                })
+                .collect();
+            let owned_current = current.to_string();
+            let guard = PtyStdin::open();
+            let feeder = guard.feed_keys(keys);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                let old_mask = block_sigchld();
+                let picked = run_model_picker(&owned_current, &owned_rows);
+                restore_sigmask(old_mask);
+                let _ = tx.send(picked);
+            });
+            match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+                Ok(picked) => {
+                    let _ = handle.join();
+                    drop(guard);
+                    feeder.join().expect("key feeder thread panicked");
+                    match picked {
+                        Ok(value) => return value,
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    drop(guard);
+                    panic!("picker timed out waiting for keys (no items to pick?)");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = handle.join();
+                    drop(guard);
+                    panic!("picker thread died");
+                }
+            }
+        }
+        panic!("picker failed after retries: {last_err:?}")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn picker_enter_selects_the_default_row() {
+        // Enter with no movement picks the default row (the current
+        // model): distinguishes the real picker from a mutant that
+        // always returns None, an empty id, or a bogus id.
+        let picked = pick_on_pty("deepseek-v4.1-flash", &rows(), b"\r");
+        assert_eq!(picked, Some("deepseek-v4.1-flash".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn picker_arrow_down_then_enter_selects_the_next_row() {
+        let picked = pick_on_pty("deepseek-v4.1-flash", &rows(), b"\x1b[B\r");
+        assert_eq!(picked, Some("cohere/north-mini-code:free".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn picker_escape_cancels_without_picking() {
+        let picked = pick_on_pty("deepseek-v4.1-flash", &rows(), b"\x1b");
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn apply_picked_model_switches_model_and_turns_auto_off() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("OPENROUTER_API_KEY").ok();
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key") };
+        let backend = std::sync::Arc::new(RecordingBackend {
+            models: std::sync::Mutex::new(vec![]),
+        });
+        let mut agent = test_agent(backend);
+        let mut cfg = test_cfg();
+        let dir = std::env::temp_dir().join(format!("zen_apply_picked_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session_path = dir.join("session.jsonl");
+        let mut session_id = crate::session::new_session_id();
+        let mut writer = crate::session::TranscriptWriter::new(session_path, &session_id, &dir);
+        let mut repl = ReplState {
+            session_id: &mut session_id,
+            writer: &mut writer,
+            mcp_status: vec![],
+            interrupts: None,
+            recorder: None,
+            home_api_key: None,
+            auto_model: true,
+            goal: None,
+            personality: repl_polish::Personality::default(),
+            theme: repl_polish::Theme::default(),
+            vim_mode: false,
+            base_system_prompt: String::new(),
+            pre_plan_mode: zen_core::PermissionMode::Default,
+            pending_plan: None,
+            scope: crate::doneguard::ScopeGuard::default(),
+            scope_seeded: false,
+            checkpoints: std::sync::Arc::new(zen_tools::checkpoint::Checkpoints::new(
+                dir.join("checkpoints"),
+            )),
+            progress: std::sync::Arc::new(crate::repl_progress::ReplProgressSink::new()),
+            model_rows: Vec::new(),
+        };
+        assert_eq!(agent.config.model, "google/gemini-4-argon:free");
+        apply_picked_model(
+            "cohere/north-mini-code:free",
+            &mut cfg,
+            &mut agent,
+            &mut repl,
+            None,
+            &dir,
+        );
+        assert_eq!(agent.config.model, "cohere/north-mini-code:free");
+        assert_eq!(cfg.model, "cohere/north-mini-code:free");
+        assert!(!repl.auto_model, "pinning a model must turn auto off");
+        std::fs::remove_dir_all(&dir).ok();
+        match old {
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
+        }
     }
 
     #[test]
