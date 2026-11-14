@@ -237,16 +237,36 @@ impl LoopGuard {
         }
     }
 
-    /// Normalize an error's first non-empty line into a comparable
+    /// Whether a line is only the generic BashTool failure prefix
+    /// `Exit code N` (case-insensitive, surrounding whitespace ignored).
+    fn is_exit_code_line(line: &str) -> bool {
+        let lower = line.trim().to_ascii_lowercase();
+        let Some(code) = lower.strip_prefix("exit code ") else {
+            return false;
+        };
+        !code.is_empty() && code.chars().all(|c| c.is_ascii_digit())
+    }
+
+    /// Normalize an error's first distinguishing line into a comparable
     /// fingerprint: lowercased, absolute paths replaced with `<path>`,
     /// digit runs collapsed to `#`, whitespace collapsed. Only the first
-    /// line (capped at 500 chars) is used, so a timestamp buried at the
-    /// end of a long log cannot make every error look different.
+    /// distinguishing line (capped at 500 chars) is used, so a timestamp
+    /// buried at the end of a long log cannot make every error look
+    /// different. A leading generic `Exit code N` line (the BashTool
+    /// failure prefix) is skipped in favour of the next non-empty line,
+    /// so unrelated Bash failures do not all fingerprint alike; when
+    /// there is no body line, the prefix itself is the fingerprint.
     /// Returns the hash plus a short excerpt for the stop message, or
     /// `None` when nothing comparable remains.
     fn error_fingerprint(content: &str) -> Option<(u64, String)> {
-        let first = content.lines().find(|l| !l.trim().is_empty())?;
-        let capped: String = first.chars().take(500).collect();
+        let mut lines = content.lines().filter(|l| !l.trim().is_empty());
+        let first = lines.next()?;
+        let line = if Self::is_exit_code_line(first) {
+            lines.next().unwrap_or(first)
+        } else {
+            first
+        };
+        let capped: String = line.chars().take(500).collect();
         let mut normalized = String::with_capacity(capped.len());
         for token in capped.split_whitespace() {
             if !normalized.is_empty() {
@@ -475,6 +495,65 @@ mod tests {
         assert_eq!(a.1, "cannot open <path> exit #");
         assert_eq!(a, b);
         assert_eq!(a, c);
+    }
+
+    #[test]
+    fn different_bash_exit_code_failures_do_not_trip() {
+        // B1: every failed Bash call starts with the generic `Exit code N`
+        // line, so a fingerprint taken from that line alone counts
+        // unrelated failures as the same error. The fingerprint must
+        // look past the prefix at the body.
+        let mut g = LoopGuard::new(3);
+        let failures = [
+            "Exit code 1",
+            "Exit code 2\nls: cannot access '/nonexistent-dir': No such file or directory",
+            "Exit code 101\ntest result: FAILED. 3 failed",
+        ];
+        for (i, e) in failures.iter().enumerate() {
+            g.observe_call("Bash", &json!({"command": format!("cmd{i}")}), &err(e));
+            assert_eq!(g.take_stuck(), None);
+        }
+    }
+
+    #[test]
+    fn same_bash_failure_body_trips() {
+        // The same Bash failure, body included, three times still trips,
+        // and the stop message names the body, not the generic prefix.
+        let mut g = LoopGuard::new(3);
+        let e = err("Exit code 1\nerror: assertion failed at src/lib.rs:42");
+        for i in 0..3 {
+            g.observe_call("Bash", &json!({"command": format!("cmd{i}")}), &e);
+            if i < 2 {
+                assert_eq!(g.take_stuck(), None);
+            }
+        }
+        let stuck = g.take_stuck().expect("same Bash failure body must trip");
+        assert_eq!(stuck.kind, LoopStuckKind::RepeatedError);
+        assert!(stuck.message().contains("error: assertion failed"));
+        assert!(
+            !stuck.message().contains("exit code #"),
+            "stop message must name the body, not the generic prefix: {}",
+            stuck.message()
+        );
+    }
+
+    #[test]
+    fn bare_exit_code_failures_with_same_code_still_trip() {
+        // No body to distinguish: a bare `Exit code N` line falls back to
+        // the prefix itself, so the same bare code three times still trips.
+        let mut g = LoopGuard::new(3);
+        for i in 0..3 {
+            g.observe_call(
+                "Bash",
+                &json!({"command": format!("cmd{i}")}),
+                &err("Exit code 1"),
+            );
+            if i < 2 {
+                assert_eq!(g.take_stuck(), None);
+            }
+        }
+        let stuck = g.take_stuck().expect("same bare exit code must trip");
+        assert_eq!(stuck.kind, LoopStuckKind::RepeatedError);
     }
 
     #[test]
