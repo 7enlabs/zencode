@@ -299,32 +299,52 @@ async fn plan_mode_hides_mutating_tools_and_returns_plan_text() {
 
 #[tokio::test]
 async fn max_turns_stops_with_error_subtype() {
-    let llm = MockLlm::new(vec![
-        resp_tool("Echo", "{}", "a"),
-        resp_tool("Echo", "{}", "b"),
-        resp("never reached"),
-    ]);
+    let llm = MockLlm::with_delay(
+        vec![
+            resp_tool("Echo", "{}", "a"),
+            resp_tool("Echo", "{}", "b"),
+            resp("echoed twice, ran out of turns"),
+        ],
+        200,
+    );
     let reg = registry_with(vec![fake("Echo", true, "x")]);
     let cfg = AgentConfig {
         max_turns: 2,
         ..base_cfg()
     };
-    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), cfg);
+    let (mut agent, _s, _h) = build_agent(llm.clone(), reg, allow(), cfg);
     let r = agent.run_turn("go").await;
     assert_eq!(r.subtype, "error_max_turns");
     assert!(r.is_error);
     assert_eq!(r.num_turns, 2);
+    // G3: the third model call is the final summary, not a turn.
+    assert!(r.result.contains("echoed twice, ran out of turns"));
+    assert!(r.result.contains("Summary:"));
+    assert_eq!(llm.requests().len(), 3);
+    assert!(llm.requests()[2].tools.is_empty());
+    // The summary call's usage and latency are accounted in the result:
+    // 2 tool replies (20 prompt / 8 completion each) + 1 summary reply
+    // (10 / 5). Each mock call sleeps 200ms, so the total API time is
+    // at least 3 x 200ms; the wide upper bound only guards against the
+    // accumulation itself being wrong, not against jitter.
+    assert_eq!(r.usage.input_tokens, 50);
+    assert_eq!(r.usage.output_tokens, 21);
+    assert!(r.duration_api_ms >= 600, "api ms: {}", r.duration_api_ms);
+    assert!(r.duration_api_ms < 5000, "api ms: {}", r.duration_api_ms);
 }
 
 #[tokio::test]
 async fn loop_stuck_stops_repeated_bash_at_third_turn() {
     let args = r#"{"command": "ls"}"#;
-    let llm = MockLlm::new(vec![
-        resp_tool("Bash", args, "1"),
-        resp_tool("Bash", args, "2"),
-        resp_tool("Bash", args, "3"),
-        resp("never reached"),
-    ]);
+    let llm = MockLlm::with_delay(
+        vec![
+            resp_tool("Bash", args, "1"),
+            resp_tool("Bash", args, "2"),
+            resp_tool("Bash", args, "3"),
+            with_cache_read(resp("listed the directory three times, still stuck"), 7),
+        ],
+        200,
+    );
     let reg = registry_with(vec![fake("Bash", true, "x")]);
     let cfg = AgentConfig {
         max_turns: 50,
@@ -337,7 +357,22 @@ async fn loop_stuck_stops_repeated_bash_at_third_turn() {
     assert_eq!(r.num_turns, 3);
     assert!(r.result.contains("loop_stuck"));
     assert!(r.result.contains("prompt"));
-    assert_eq!(llm.requests().len(), 3);
+    // G3: one extra tool-less summary call after the stop.
+    assert!(r.result.contains("listed the directory three times"));
+    assert!(r.result.contains("Summary:"));
+    assert_eq!(llm.requests().len(), 4);
+    assert!(llm.requests()[3].tools.is_empty());
+    assert_eq!(llm.requests()[3].max_tokens, Some(512));
+    // The summary call's usage and latency are accounted in the result:
+    // 3 tool replies (20 prompt / 8 completion each) + 1 summary reply
+    // (10 / 5, 7 cached). Each mock call sleeps 200ms, so the total API
+    // time is at least 4 x 200ms; the wide upper bound only guards
+    // against the accumulation itself being wrong, not against jitter.
+    assert_eq!(r.usage.input_tokens, 70);
+    assert_eq!(r.usage.output_tokens, 29);
+    assert_eq!(r.usage.cache_read_input_tokens, 7);
+    assert!(r.duration_api_ms >= 800, "api ms: {}", r.duration_api_ms);
+    assert!(r.duration_api_ms < 5000, "api ms: {}", r.duration_api_ms);
 }
 
 #[tokio::test]
@@ -373,10 +408,14 @@ async fn loop_stuck_stops_unchanged_multi_call_turns() {
     ];
     let llm = MockLlm::new(scripted);
     let reg = registry_with(vec![fake("Read", true, "r")]);
-    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), base_cfg());
+    let (mut agent, _s, _h) = build_agent(llm.clone(), reg, allow(), base_cfg());
     let r = agent.run_turn("go").await;
     assert_eq!(r.subtype, "loop_stuck");
     assert_eq!(r.num_turns, 3);
+    // G3 fallback: the summary call was attempted (4th request) but the
+    // script was exhausted, so the result is the plain stop message.
+    assert_eq!(llm.requests().len(), 4);
+    assert!(!r.result.contains("Summary:"));
 }
 
 #[tokio::test]
@@ -391,6 +430,182 @@ async fn loop_stuck_k_is_configurable() {
     let reg = registry_with(vec![fake("Bash", true, "x")]);
     let cfg = AgentConfig {
         loop_stuck_k: 5,
+        ..base_cfg()
+    };
+    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), cfg);
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "success");
+    assert_eq!(r.result, "done");
+}
+
+#[tokio::test]
+async fn same_error_different_commands_trips_loop_stuck() {
+    // G2 (TDD): the same error through different commands must trip the
+    // guard even though no two tool calls share identical arguments.
+    // Written BEFORE the error-fingerprint trigger exists: it fails on
+    // current main (the run reaches the fourth scripted reply instead).
+    let err = "error: test `foo` failed\nassertion failed at src/lib.rs:42";
+    let llm = MockLlm::new(vec![
+        resp_tool("Bash", r#"{"command": "cargo test --workspace"}"#, "1"),
+        resp_tool("Bash", r#"{"command": "cargo test -p zen-cli"}"#, "2"),
+        resp_tool("Bash", r#"{"command": "cargo test -- --nocapture"}"#, "3"),
+        resp("summary of the failed tests"),
+    ]);
+    let reg = registry_with(vec![Arc::new(FakeTool {
+        name: "Bash",
+        read_only: true,
+        output: ToolOutput::err(err),
+    })]);
+    let (mut agent, _s, _h) = build_agent(llm.clone(), reg, allow(), base_cfg());
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "loop_stuck");
+    assert!(r.is_error);
+    assert_eq!(r.num_turns, 3);
+    assert!(r.result.contains("same error"));
+    assert_eq!(llm.requests().len(), 4);
+}
+
+#[tokio::test]
+async fn denied_call_repeats_trip_loop_stuck() {
+    // G1: a call denied 3 times in a row trips the guard instead of
+    // burning turns until max_turns.
+    let args = r#"{"file_path": "a.rs"}"#;
+    let llm = MockLlm::new(vec![
+        resp_tool("Edit", args, "1"),
+        resp_tool("Edit", args, "2"),
+        resp_tool("Edit", args, "3"),
+        resp("could not edit, permission denied throughout"),
+    ]);
+    let reg = registry_with(vec![fake("Edit", false, "edited")]);
+    let perms = FakePerms::new(PermissionDecision::Deny("rule says no".into()));
+    let (mut agent, _s, _h) = build_agent(llm.clone(), reg, perms, base_cfg());
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "loop_stuck");
+    assert!(r.is_error);
+    assert_eq!(r.num_turns, 3);
+    assert!(r.result.contains("denied"));
+    assert_eq!(r.permission_denials.len(), 3);
+    assert_eq!(llm.requests().len(), 4);
+}
+
+#[tokio::test]
+async fn denied_different_args_do_not_trip() {
+    // G1: rejections only accumulate per (tool, args, reason); denying
+    // different calls is not a loop.
+    let llm = MockLlm::new(vec![
+        resp_tool("Edit", r#"{"file_path": "a.rs"}"#, "1"),
+        resp_tool("Edit", r#"{"file_path": "b.rs"}"#, "2"),
+        resp_tool("Edit", r#"{"file_path": "a.rs"}"#, "3"),
+        resp_tool("Edit", r#"{"file_path": "a.rs"}"#, "4"),
+        resp("done"),
+    ]);
+    let reg = registry_with(vec![fake("Edit", false, "edited")]);
+    let perms = FakePerms::new(PermissionDecision::Deny("rule says no".into()));
+    let (mut agent, _s, _h) = build_agent(llm, reg, perms, base_cfg());
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "success");
+    assert_eq!(r.result, "done");
+}
+
+#[tokio::test]
+async fn transient_error_different_commands_do_not_trip() {
+    // G2: transient errors never feed the error trigger, and different
+    // commands never feed the repeated-call trigger.
+    let llm = MockLlm::new(vec![
+        resp_tool("Bash", r#"{"command": "cmd-a"}"#, "1"),
+        resp_tool("Bash", r#"{"command": "cmd-b"}"#, "2"),
+        resp_tool("Bash", r#"{"command": "cmd-c"}"#, "3"),
+        resp_tool("Bash", r#"{"command": "cmd-d"}"#, "4"),
+        resp_tool("Bash", r#"{"command": "cmd-e"}"#, "5"),
+        resp("done"),
+    ]);
+    let reg = registry_with(vec![Arc::new(FakeTool {
+        name: "Bash",
+        read_only: true,
+        output: ToolOutput::err("rate limit exceeded, try again later"),
+    })]);
+    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), base_cfg());
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "success");
+    assert_eq!(r.result, "done");
+}
+
+/// Test tool returning a different error on each call.
+struct CountingErrorTool {
+    name: &'static str,
+    errors: Vec<&'static str>,
+    next: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Tool for CountingErrorTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "test tool returning a different error per call"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+    fn is_read_only(&self) -> bool {
+        true
+    }
+    async fn call(&self, _args: Value, _ctx: &ToolContext) -> ToolOutput {
+        let i = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ToolOutput::err(
+            self.errors
+                .get(i)
+                .copied()
+                .unwrap_or("error: out of scripted errors"),
+        )
+    }
+}
+
+#[tokio::test]
+async fn changing_error_does_not_trip() {
+    // G2: an error that changes every time is progress, not a loop.
+    let tool = Arc::new(CountingErrorTool {
+        name: "Bash",
+        errors: vec![
+            "error: borrow of moved value",
+            "error: mismatched types",
+            "error: cannot find value in this scope",
+            "error: expected semicolon",
+            "error: type annotations needed",
+        ],
+        next: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let llm = MockLlm::new(vec![
+        resp_tool("Bash", r#"{"command": "cmd-a"}"#, "1"),
+        resp_tool("Bash", r#"{"command": "cmd-b"}"#, "2"),
+        resp_tool("Bash", r#"{"command": "cmd-c"}"#, "3"),
+        resp_tool("Bash", r#"{"command": "cmd-d"}"#, "4"),
+        resp_tool("Bash", r#"{"command": "cmd-e"}"#, "5"),
+        resp("done"),
+    ]);
+    let reg = registry_with(vec![tool]);
+    let (mut agent, _s, _h) = build_agent(llm, reg, allow(), base_cfg());
+    let r = agent.run_turn("go").await;
+    assert_eq!(r.subtype, "success");
+    assert_eq!(r.result, "done");
+}
+
+#[tokio::test]
+async fn loop_stuck_k_zero_disables_guard() {
+    // G4: K = 0 turns the guard off entirely; identical repeats run on.
+    let args = r#"{"command": "ls"}"#;
+    let llm = MockLlm::new(vec![
+        resp_tool("Bash", args, "1"),
+        resp_tool("Bash", args, "2"),
+        resp_tool("Bash", args, "3"),
+        resp_tool("Bash", args, "4"),
+        resp_tool("Bash", args, "5"),
+        resp("done"),
+    ]);
+    let reg = registry_with(vec![fake("Bash", true, "x")]);
+    let cfg = AgentConfig {
+        loop_stuck_k: 0,
         ..base_cfg()
     };
     let (mut agent, _s, _h) = build_agent(llm, reg, allow(), cfg);
@@ -1500,7 +1715,7 @@ async fn r7_fifth_edit_turn_gets_exactly_one_guard_note() {
 }
 
 #[tokio::test]
-async fn r7_three_identical_failures_nudge() {
+async fn r7_two_identical_failures_nudge() {
     let failing: Arc<dyn Tool> = Arc::new(FakeTool {
         name: "Bash",
         read_only: false,
@@ -1519,7 +1734,7 @@ async fn r7_three_identical_failures_nudge() {
     agent.run_turn("go").await;
     let tools = tool_contents(agent.messages());
     assert!(
-        !tools[1].contains("[zen:") && tools[2].contains("failed 3 times"),
+        !tools[0].contains("[zen:") && tools[1].contains("failed 2 times"),
         "{:#?}",
         tools
     );

@@ -81,3 +81,10 @@ Landed 2026-11-12 (issue #165, with tests):
 
 Do not renumber in a patch that is not about exit codes; land each
 queue item with its own tests.
+
+## Agent stops
+
+A run stopped by the loop guard (`subtype` `loop_stuck`) exits 1
+(GENERAL): it is an agent error stop, not a distinct exit code. The
+stream JSON `stop_reason` for the same run is `"loop_stuck"`, so
+machines can tell it apart from `max_turns` and `end_turn`.

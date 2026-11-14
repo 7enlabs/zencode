@@ -7,6 +7,13 @@ pub const EDIT_REPEAT_LIMIT: usize = 4;
 
 pub const FAILURE_REPEAT_LIMIT: usize = 3;
 
+/// Identical failures nudge one repeat earlier than the stop threshold:
+/// LoopGuard stops the run at the 3rd identical call, so a nudge fired
+/// on the 3rd failure would arrive in a tool result the model never gets
+/// another turn to act on. Firing at 2 gives it one turn to change
+/// approach first.
+pub const FAILURE_NUDGE_AT: usize = 2;
+
 pub const TODO_REINJECT_EVERY: usize = 6;
 
 const EDIT_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write"];
@@ -74,7 +81,7 @@ impl TurnGuard {
             let key = format!("{}\u{0}{}\u{0}{}", tool, args, out.content);
             let n = self.failures.entry(key.clone()).or_default();
             *n += 1;
-            if *n >= FAILURE_REPEAT_LIMIT && self.nudged.insert(format!("fail:{}", key)) {
+            if *n >= FAILURE_NUDGE_AT && self.nudged.insert(format!("fail:{}", key)) {
                 return Some(format!(
                     "[zen: this exact {} call has now failed {} times with the same error. Do not send it again. \
                      Re-read the relevant file or output, say what is actually wrong, and try a different approach.]",
@@ -153,7 +160,13 @@ mod tests {
     }
 
     #[test]
-    fn third_identical_failure_nudges_but_different_errors_do_not() {
+    fn second_identical_failure_nudges_but_different_errors_do_not() {
+        // The nudge fires at 2, one repeat before LoopGuard stops the
+        // run at 3 (FAILURE_REPEAT_LIMIT), so the model gets a turn to
+        // change approach.
+        const {
+            assert!(FAILURE_NUDGE_AT < FAILURE_REPEAT_LIMIT);
+        }
         let mut g = TurnGuard::default();
         let cmd = json!({"command": "cargo test"});
         let fail = ToolOutput::err("exit 101");
@@ -162,11 +175,10 @@ mod tests {
             g.observe("Bash", &cmd, &ToolOutput::err("exit 1"))
                 .is_none()
         );
-        assert!(g.observe("Bash", &cmd, &fail).is_none());
         assert!(
             g.observe("Bash", &cmd, &fail)
                 .unwrap()
-                .contains("failed 3 times")
+                .contains("failed 2 times")
         );
         assert!(g.observe("Bash", &cmd, &fail).is_none());
     }

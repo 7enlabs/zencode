@@ -13,6 +13,9 @@ use zen_core::*;
 pub struct MockLlm {
     pub queue: Mutex<VecDeque<anyhow::Result<ChatResponse>>>,
     pub requests: Mutex<Vec<ChatRequest>>,
+    /// Fixed delay before every response, so tests can observe
+    /// `duration_api_ms` (wall-clock measured, ~0 without a delay).
+    pub delay_ms: u64,
 }
 
 impl MockLlm {
@@ -20,6 +23,16 @@ impl MockLlm {
         Arc::new(Self {
             queue: Mutex::new(responses.into_iter().map(Ok).collect()),
             requests: Mutex::new(vec![]),
+            delay_ms: 0,
+        })
+    }
+
+    /// Mock that sleeps `delay_ms` before every response.
+    pub fn with_delay(responses: Vec<ChatResponse>, delay_ms: u64) -> Arc<Self> {
+        Arc::new(Self {
+            queue: Mutex::new(responses.into_iter().map(Ok).collect()),
+            requests: Mutex::new(vec![]),
+            delay_ms,
         })
     }
 
@@ -27,6 +40,7 @@ impl MockLlm {
         Arc::new(Self {
             queue: Mutex::new(items.into()),
             requests: Mutex::new(vec![]),
+            delay_ms: 0,
         })
     }
 
@@ -38,6 +52,9 @@ impl MockLlm {
 #[async_trait::async_trait]
 impl LlmBackend for MockLlm {
     async fn chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+        if self.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
         self.requests.lock().unwrap().push(req);
         let mut q = self.queue.lock().unwrap();
         q.pop_front()
@@ -57,6 +74,12 @@ pub fn resp(text: &str) -> ChatResponse {
         },
         finish_reason: Some("stop".into()),
     }
+}
+
+/// Set a response's cache-read usage (both `resp` helpers report 0).
+pub fn with_cache_read(mut r: ChatResponse, n: u64) -> ChatResponse {
+    r.usage.cache_read_input_tokens = n;
+    r
 }
 
 pub fn resp_tool(name: &str, args: &str, id: &str) -> ChatResponse {

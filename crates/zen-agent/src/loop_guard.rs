@@ -1,6 +1,6 @@
 //! Detect when the agent is stuck in a loop and stop the run with `loop_stuck`.
 //!
-//! Two triggers, both driven by the same threshold `K` (configurable, default
+//! Four triggers, all driven by the same threshold `K` (configurable, default
 //! [`DEFAULT_LOOP_STUCK_K`]; `K = 0` disables the guard):
 //!
 //! * **Repeated call** - the same tool call (same tool name and identical
@@ -12,6 +12,15 @@
 //!   fingerprints. This catches multi-call turns that repeat as a batch
 //!   (e.g. `[Read a, Read b]` three times), which the consecutive-call
 //!   counter alone would miss because the calls interleave.
+//! * **Repeated rejection** - the same tool call is rejected `K` times in a
+//!   row (denied, unknown tool, invalid args, deferred, plan mode, hook
+//!   block). Rejected calls never run, so without this trigger a denied
+//!   loop would burn turns until `max_turns`.
+//! * **Repeated error** - `K` executed calls in a row fail with the same
+//!   normalized error, even when the calls themselves differ (e.g. the same
+//!   test failure through three different `cargo test` invocations).
+//!   Transient errors (timeouts, rate limits) never count: they are
+//!   infrastructure noise, not the model being stuck.
 //!
 //! "Working state" here means exactly what the loop can observe without
 //! asking the model: the calls it made and the results it got back. Two
@@ -21,8 +30,9 @@
 //!
 //! The guard only records; the agent loop decides when to stop. Call
 //! [`LoopGuard::observe_call`] for every executed tool call (in execution
-//! order) and [`LoopGuard::end_turn`] once per turn, after the turn's calls
-//! have been flushed. When either trigger fires, [`LoopGuard::take_stuck`]
+//! order), [`LoopGuard::observe_rejected`] for every call that never ran,
+//! and [`LoopGuard::end_turn`] once per turn, after the turn's calls
+//! have been flushed. When any trigger fires, [`LoopGuard::take_stuck`]
 //! returns the [`LoopStuck`] reason and the loop must stop with subtype
 //! `loop_stuck` and the [`LoopStuck::message`] text, which names the reason
 //! and tells the user to rephrase the prompt or narrow the scope.
@@ -44,6 +54,22 @@ pub enum LoopStuckKind {
     RepeatedCall,
     /// `K` consecutive turns had identical calls and results.
     UnchangedTurns,
+    /// The same tool call was rejected `K` times in a row.
+    RepeatedRejection,
+    /// `K` executed calls in a row failed with the same normalized error.
+    RepeatedError,
+}
+
+/// Reason classes for calls that never ran, as fed to
+/// [`LoopGuard::observe_rejected`]. Kept coarse on purpose: the full
+/// denial text varies per call, the class is what repeats.
+pub mod rejection_reason {
+    pub const DENIED: &str = "denied";
+    pub const UNKNOWN_TOOL: &str = "unknown_tool";
+    pub const INVALID_ARGS: &str = "invalid_args";
+    pub const DEFERRED: &str = "deferred";
+    pub const PLAN_MODE: &str = "plan_mode";
+    pub const HOOK_BLOCKED: &str = "hook_blocked";
 }
 
 /// Why the loop was stopped. Render with [`LoopStuck::message`].
@@ -60,6 +86,8 @@ impl LoopStuck {
         let what = match self.kind {
             LoopStuckKind::RepeatedCall => "the same tool call was repeated",
             LoopStuckKind::UnchangedTurns => "the working state did not change across turns",
+            LoopStuckKind::RepeatedRejection => "the same tool call was rejected",
+            LoopStuckKind::RepeatedError => "the same error came back",
         };
         format!(
             "loop_stuck: stopped because {what} ({}). {LOOP_STUCK_SUGGESTION}",
@@ -77,6 +105,11 @@ pub struct LoopGuard {
     prev_turn: Option<String>,
     unchanged: usize,
     stuck: Option<LoopStuck>,
+    last_rejected: Option<String>,
+    rejected: usize,
+    last_error: Option<u64>,
+    last_error_text: String,
+    error_repeat: usize,
 }
 
 impl LoopGuard {
@@ -102,12 +135,18 @@ impl LoopGuard {
     }
 
     /// Observe one executed tool call, in execution order. Fires the
-    /// repeated-call trigger when the same signature reaches `K` in a row.
-    /// Skipped or denied calls must not be fed here: only calls that ran.
+    /// repeated-call trigger when the same signature reaches `K` in a row,
+    /// and the repeated-error trigger when `K` calls in a row fail with the
+    /// same normalized error. Skipped or denied calls must not be fed here:
+    /// only calls that ran (see [`LoopGuard::observe_rejected`]).
     pub fn observe_call(&mut self, tool: &str, args: &Value, out: &ToolOutput) {
         if !self.enabled() || self.stuck.is_some() {
             return;
         }
+        // A call that ran breaks any rejection streak: the rejections are
+        // no longer "in a row".
+        self.last_rejected = None;
+        self.rejected = 0;
         let sig = Self::call_signature(tool, args);
         if self.last_call.as_deref() == Some(sig.as_str()) {
             self.repeat += 1;
@@ -127,7 +166,116 @@ impl LoopGuard {
                     self.repeat
                 ),
             });
+            return;
         }
+        self.observe_error(out);
+    }
+
+    /// Observe a tool call that never ran (denied, unknown tool, invalid
+    /// args, deferred, plan mode, hook block). Fires the
+    /// repeated-rejection trigger when the same (tool, args, reason) is
+    /// rejected `K` times in a row. Calls skipped because the run is
+    /// already stopping must NOT be fed here: stopping is the consequence
+    /// of a trip, not a loop.
+    pub fn observe_rejected(&mut self, tool: &str, args: &Value, reason_class: &str) {
+        if !self.enabled() || self.stuck.is_some() {
+            return;
+        }
+        // A rejection breaks the executed-call streaks, and a run breaks
+        // the rejection streak: the counters never accumulate across each
+        // other, so an interleaved deny/run sequence cannot trip either.
+        self.last_call = None;
+        self.repeat = 0;
+        self.error_repeat = 0;
+        self.last_error = None;
+        self.last_error_text.clear();
+        let key = format!("{tool}\u{0}{args}\u{0}{reason_class}");
+        if self.last_rejected.as_deref() == Some(key.as_str()) {
+            self.rejected += 1;
+        } else {
+            self.last_rejected = Some(key);
+            self.rejected = 1;
+        }
+        if self.rejected >= self.k {
+            self.stuck = Some(LoopStuck {
+                kind: LoopStuckKind::RepeatedRejection,
+                detail: format!("`{tool}` ({reason_class}) {} times in a row", self.rejected),
+            });
+        }
+    }
+
+    /// Observe the error half of an executed call: count consecutive
+    /// calls that failed with the same normalized error. Success, a
+    /// different error, or a transient error resets the counter.
+    fn observe_error(&mut self, out: &ToolOutput) {
+        if !out.is_error || crate::retry::is_transient_error(&out.content) {
+            // Success is progress; a transient error is infrastructure
+            // noise, not the model being stuck. Neither counts.
+            self.error_repeat = 0;
+            self.last_error = None;
+            self.last_error_text.clear();
+            return;
+        }
+        let Some((fp, text)) = Self::error_fingerprint(&out.content) else {
+            return;
+        };
+        if self.last_error == Some(fp) {
+            self.error_repeat += 1;
+        } else {
+            self.last_error = Some(fp);
+            self.last_error_text = text;
+            self.error_repeat = 1;
+        }
+        if self.error_repeat >= self.k {
+            self.stuck = Some(LoopStuck {
+                kind: LoopStuckKind::RepeatedError,
+                detail: format!(
+                    "{} times in a row ({})",
+                    self.error_repeat, self.last_error_text
+                ),
+            });
+        }
+    }
+
+    /// Normalize an error's first non-empty line into a comparable
+    /// fingerprint: lowercased, absolute paths replaced with `<path>`,
+    /// digit runs collapsed to `#`, whitespace collapsed. Only the first
+    /// line (capped at 500 chars) is used, so a timestamp buried at the
+    /// end of a long log cannot make every error look different.
+    /// Returns the hash plus a short excerpt for the stop message, or
+    /// `None` when nothing comparable remains.
+    fn error_fingerprint(content: &str) -> Option<(u64, String)> {
+        let first = content.lines().find(|l| !l.trim().is_empty())?;
+        let capped: String = first.chars().take(500).collect();
+        let mut normalized = String::with_capacity(capped.len());
+        for token in capped.split_whitespace() {
+            if !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            if token.starts_with('/') || token.contains(":\\") || token.contains(":/") {
+                normalized.push_str("<path>");
+                continue;
+            }
+            let mut in_digits = false;
+            for ch in token.chars() {
+                if ch.is_ascii_digit() {
+                    if !in_digits {
+                        normalized.push('#');
+                        in_digits = true;
+                    }
+                } else {
+                    normalized.push(ch.to_ascii_lowercase());
+                    in_digits = false;
+                }
+            }
+        }
+        if normalized.is_empty() {
+            return None;
+        }
+        let mut hasher = DefaultHasher::new();
+        normalized.hash(&mut hasher);
+        let excerpt: String = normalized.chars().take(120).collect();
+        Some((hasher.finish(), excerpt))
     }
 
     /// Call once at the end of each turn, after the turn's calls were
@@ -178,6 +326,167 @@ mod tests {
 
     fn ok(content: &str) -> ToolOutput {
         ToolOutput::ok(content)
+    }
+
+    fn err(content: &str) -> ToolOutput {
+        ToolOutput::err(content)
+    }
+
+    #[test]
+    fn rejected_repeats_trip_at_k() {
+        let mut g = LoopGuard::new(3);
+        let args = json!({"file_path": "a.rs"});
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        assert_eq!(g.take_stuck(), None);
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        assert_eq!(g.take_stuck(), None);
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        let stuck = g.take_stuck().expect("third rejection must trip");
+        assert_eq!(stuck.kind, LoopStuckKind::RepeatedRejection);
+        assert!(stuck.message().contains("denied"));
+        assert!(stuck.message().starts_with("loop_stuck"));
+    }
+
+    #[test]
+    fn different_rejection_reason_does_not_accumulate() {
+        let mut g = LoopGuard::new(3);
+        let args = json!({"file_path": "a.rs"});
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        g.observe_rejected("Edit", &args, rejection_reason::UNKNOWN_TOOL);
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        assert_eq!(g.take_stuck(), None);
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        assert_eq!(
+            g.take_stuck().map(|s| s.kind),
+            Some(LoopStuckKind::RepeatedRejection)
+        );
+    }
+
+    #[test]
+    fn run_between_rejections_resets_streak() {
+        let mut g = LoopGuard::new(3);
+        let args = json!({"file_path": "a.rs"});
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        g.observe_call("Read", &json!({"path": "a.rs"}), &ok("r"));
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+        assert_eq!(g.take_stuck(), None);
+    }
+
+    #[test]
+    fn same_error_different_calls_trip() {
+        let mut g = LoopGuard::new(3);
+        let e = err("error: test `foo` failed");
+        g.observe_call("Bash", &json!({"command": "cargo test --workspace"}), &e);
+        assert_eq!(g.take_stuck(), None);
+        g.observe_call("Bash", &json!({"command": "cargo test -p zen-cli"}), &e);
+        assert_eq!(g.take_stuck(), None);
+        g.observe_call("Bash", &json!({"command": "cargo test -- --nocapture"}), &e);
+        let stuck = g.take_stuck().expect("third identical error must trip");
+        assert_eq!(stuck.kind, LoopStuckKind::RepeatedError);
+        assert!(stuck.message().contains("same error"));
+    }
+
+    #[test]
+    fn changing_error_does_not_trip() {
+        let mut g = LoopGuard::new(3);
+        let errors = [
+            "error: borrow of moved value",
+            "error: mismatched types",
+            "error: cannot find value in this scope",
+            "error: expected semicolon",
+            "error: type annotations needed",
+        ];
+        for (i, e) in errors.iter().enumerate() {
+            g.observe_call("Bash", &json!({"command": format!("cmd{i}")}), &err(e));
+            assert_eq!(g.take_stuck(), None);
+        }
+    }
+
+    #[test]
+    fn transient_error_does_not_trip() {
+        let mut g = LoopGuard::new(3);
+        for i in 0..5 {
+            g.observe_call(
+                "Bash",
+                &json!({"command": format!("cmd{i}")}),
+                &err("rate limit exceeded, try again later"),
+            );
+            assert_eq!(g.take_stuck(), None);
+        }
+    }
+
+    #[test]
+    fn error_fingerprint_ignores_paths_numbers_and_case() {
+        let mut g = LoopGuard::new(3);
+        g.observe_call(
+            "Bash",
+            &json!({"command": "a"}),
+            &err("error: assertion failed at /home/u/repo/src/lib.rs:42:10"),
+        );
+        g.observe_call(
+            "Bash",
+            &json!({"command": "b"}),
+            &err("Error: assertion failed at /tmp/other/src/main.rs:7:3"),
+        );
+        assert_eq!(g.take_stuck(), None);
+        g.observe_call(
+            "Bash",
+            &json!({"command": "c"}),
+            &err("error: assertion failed at /home/u/repo/src/lib.rs:99:1"),
+        );
+        let stuck = g.take_stuck().expect("normalized errors must trip");
+        assert_eq!(stuck.kind, LoopStuckKind::RepeatedError);
+        assert!(
+            stuck
+                .message()
+                .contains("error: assertion failed at <path>")
+        );
+    }
+
+    #[test]
+    fn success_resets_error_streak() {
+        let mut g = LoopGuard::new(3);
+        let e = err("error: boom");
+        g.observe_call("Bash", &json!({"command": "a"}), &e);
+        g.observe_call("Bash", &json!({"command": "b"}), &e);
+        g.observe_call("Bash", &json!({"command": "ok"}), &ok("fine"));
+        g.observe_call("Bash", &json!({"command": "c"}), &e);
+        g.observe_call("Bash", &json!({"command": "d"}), &e);
+        assert_eq!(g.take_stuck(), None);
+    }
+
+    #[test]
+    fn default_k_is_three() {
+        assert_eq!(DEFAULT_LOOP_STUCK_K, 3);
+    }
+
+    #[test]
+    fn fingerprint_normalizes_paths_and_digit_runs() {
+        // Windows-style paths (C:/... and C:\...) normalize like unix
+        // paths, and digit runs of different lengths normalize to the
+        // same '#': the same error through different paths and exit
+        // codes is still the same error.
+        let a = LoopGuard::error_fingerprint("cannot open C:/Users/a/file.txt: exit 1").unwrap();
+        let b = LoopGuard::error_fingerprint("cannot open C:/Users/b/other.txt: exit 101").unwrap();
+        let c = LoopGuard::error_fingerprint(r"cannot open D:\data\x.txt: exit 7").unwrap();
+        assert_eq!(a.1, "cannot open <path> exit #");
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+    }
+
+    #[test]
+    fn k_zero_disables_both_triggers() {
+        let mut g = LoopGuard::new(0);
+        let args = json!({"command": "ls"});
+        for _ in 0..5 {
+            g.observe_rejected("Edit", &args, rejection_reason::DENIED);
+            g.observe_call("Bash", &args, &err("error: boom"));
+        }
+        assert_eq!(g.end_turn(), None);
+        assert_eq!(g.take_stuck(), None);
     }
 
     #[test]

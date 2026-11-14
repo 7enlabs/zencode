@@ -546,13 +546,16 @@ impl Agent {
 
         loop {
             if num_turns >= self.config.max_turns {
+                let stop_text = format!(
+                    "Reached maximum number of turns ({})",
+                    self.config.max_turns
+                );
+                let (text, api_ms) = self.summarize_runaway(&stop_text).await;
+                duration_api_ms += api_ms;
                 return self.run_result(
                     "error_max_turns",
                     true,
-                    format!(
-                        "Reached maximum number of turns ({})",
-                        self.config.max_turns
-                    ),
+                    text,
                     started.elapsed().as_millis() as u64,
                     duration_api_ms,
                     num_turns,
@@ -897,7 +900,13 @@ impl Agent {
             let mut batch: Vec<Slot> = Vec::new();
             for tc in tool_calls {
                 let slot = self
-                    .prepare_call(&tc, text_call_id.as_deref(), plan_mode, &stop_run)
+                    .prepare_call(
+                        &tc,
+                        text_call_id.as_deref(),
+                        plan_mode,
+                        &stop_run,
+                        &mut loop_guard,
+                    )
                     .await;
                 if let Slot::Stop(id, content, reason) = slot {
                     batch.push(Slot::Done(id, content, true));
@@ -939,10 +948,12 @@ impl Agent {
             )
             .await;
             if let Some(stuck) = loop_guard.take_stuck().or_else(|| loop_guard.end_turn()) {
+                let (text, api_ms) = self.summarize_runaway(&stuck.message()).await;
+                duration_api_ms += api_ms;
                 return self.run_result(
                     "loop_stuck",
                     true,
-                    stuck.message(),
+                    text,
                     started.elapsed().as_millis() as u64,
                     duration_api_ms,
                     num_turns,
@@ -966,6 +977,44 @@ impl Agent {
         }
     }
 
+    /// One final tool-less model call asking for a short summary of a
+    /// runaway run (stopped by `loop_stuck` or `error_max_turns`).
+    /// Returns the stop text with the summary appended, plus the API
+    /// milliseconds the call took (0 when the call failed). Falls back
+    /// to the plain stop text when the call fails or returns empty text,
+    /// so a runaway run never fails twice. The call gets no tools and
+    /// runs at most once, so it cannot loop itself.
+    async fn summarize_runaway(&mut self, stop_text: &str) -> (String, u64) {
+        let mut messages = self.request_messages();
+        messages.push(ChatMessage::user(
+            "The run was stopped before finishing. In a few short lines, \
+             summarize what was already done, what is still unfinished, and \
+             what remains to be done. Do not call any tools.",
+        ));
+        let (resp, api_ms, _model) = match crate::client::chat_with_fallback(
+            &self.llm,
+            &self.config.model,
+            &self.config.fallback_models,
+            messages,
+            Vec::new(),
+            Some(512),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => return (stop_text.to_string(), 0),
+        };
+        self.usage.input_tokens += resp.usage.prompt_tokens;
+        self.usage.output_tokens += resp.usage.completion_tokens;
+        self.usage.cache_read_input_tokens += resp.usage.cache_read_input_tokens;
+        let summary = resp.message.content.unwrap_or_default();
+        let summary = summary.trim();
+        if summary.is_empty() {
+            return (stop_text.to_string(), api_ms);
+        }
+        (format!("{stop_text}\n\nSummary:\n{summary}"), api_ms)
+    }
+
     fn call_ctx(&self, tool_use_id: &str, tool_name: &str) -> ToolContext {
         let mut call_ctx = self.ctx.clone();
         call_ctx.current_tool_use_id = Some(tool_use_id.to_string());
@@ -987,6 +1036,7 @@ impl Agent {
         text_call_id: Option<&str>,
         plan_mode: bool,
         stop_run: &Option<String>,
+        loop_guard: &mut loop_guard::LoopGuard,
     ) -> Slot {
         let tool_use_id = tc.id.clone();
 
@@ -1017,6 +1067,13 @@ impl Agent {
             }
             Err(e) => {
                 let content = format!("Invalid JSON arguments for tool '{}': {}", tool_name, e);
+                // The arguments never parsed, so there is no Value to key
+                // on: count the rejection by tool + reason only.
+                loop_guard.observe_rejected(
+                    &tool_name,
+                    &Value::Null,
+                    loop_guard::rejection_reason::INVALID_ARGS,
+                );
                 return Slot::Done(tool_use_id, content, true);
             }
         };
@@ -1058,6 +1115,11 @@ impl Agent {
             let content = pre
                 .feedback
                 .unwrap_or_else(|| format!("Tool '{}' blocked by PreToolUse hook", tool_name));
+            loop_guard.observe_rejected(
+                &tool_name,
+                &args,
+                loop_guard::rejection_reason::HOOK_BLOCKED,
+            );
             return Slot::Done(tool_use_id, content, true);
         }
 
@@ -1074,6 +1136,11 @@ impl Agent {
                     tool_name,
                     self.tools.names().join(", ")
                 );
+                loop_guard.observe_rejected(
+                    &tool_name,
+                    &args,
+                    loop_guard::rejection_reason::UNKNOWN_TOOL,
+                );
                 return Slot::Done(tool_use_id, content, true);
             }
         };
@@ -1085,12 +1152,14 @@ impl Agent {
                 tool_name,
                 self.config.tool_bundle.as_str()
             );
+            loop_guard.observe_rejected(&tool_name, &args, loop_guard::rejection_reason::DEFERRED);
             return Slot::Done(tool_use_id, content, true);
         }
         let read_only = tool.is_read_only();
 
         if plan_mode && !read_only {
             let content = format!("Tool '{}' is not available in plan mode", tool_name);
+            loop_guard.observe_rejected(&tool_name, &args, loop_guard::rejection_reason::PLAN_MODE);
             return Slot::Done(tool_use_id, content, true);
         }
 
@@ -1138,6 +1207,10 @@ impl Agent {
         }
         if !allowed {
             self.record_denial(&tool_name, &tool_use_id, &args);
+            // A repeated denial is a loop too: the model keeps asking for
+            // a permission it will not get (including a user who already
+            // answered No, and headless runs with no prompter).
+            loop_guard.observe_rejected(&tool_name, &args, loop_guard::rejection_reason::DENIED);
             return Slot::Done(tool_use_id, deny_reason, true);
         }
         let parallel = read_only && is_parallel_safe(&tool_name);

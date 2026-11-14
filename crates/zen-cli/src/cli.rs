@@ -280,6 +280,11 @@ pub struct Cli {
     #[arg(long = "max-turns")]
     pub max_turns: Option<usize>,
 
+    /// Stop as loop_stuck after this many identical calls (or repeats
+    /// of one error); 0 disables the guard (default: 3)
+    #[arg(long = "loop-stuck-k")]
+    pub loop_stuck_k: Option<usize>,
+
     /// Stop when session cost passes this USD amount
     #[arg(long = "max-budget-usd")]
     pub max_budget_usd: Option<f64>,
@@ -1848,6 +1853,14 @@ mod tests {
     fn parse_max_turns() {
         let cli = parse(&["--max-turns", "10"]);
         assert_eq!(cli.max_turns, Some(10));
+    }
+
+    #[test]
+    fn parse_loop_stuck_k() {
+        let cli = parse(&["--loop-stuck-k", "5"]);
+        assert_eq!(cli.loop_stuck_k, Some(5));
+        let cli = parse(&["--loop-stuck-k", "0"]);
+        assert_eq!(cli.loop_stuck_k, Some(0));
     }
 
     #[test]
