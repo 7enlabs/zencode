@@ -445,3 +445,201 @@ async fn p0_6_verify_after_edit_times_out() {
     assert!(content.contains("timed out after 1s"), "{}", content);
     assert!(t0.elapsed() < Duration::from_secs(4));
 }
+
+struct FakeDiagnosticsProvider {
+    diags: Mutex<Vec<LspDiagnostic>>,
+    calls: Mutex<Vec<std::path::PathBuf>>,
+}
+
+impl FakeDiagnosticsProvider {
+    fn new(diags: Vec<LspDiagnostic>) -> Arc<Self> {
+        Arc::new(Self {
+            diags: Mutex::new(diags),
+            calls: Mutex::new(vec![]),
+        })
+    }
+
+    fn calls(&self) -> Vec<std::path::PathBuf> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl DiagnosticsProvider for FakeDiagnosticsProvider {
+    async fn diagnostics_after_edit(&self, path: &std::path::Path) -> Vec<LspDiagnostic> {
+        self.calls.lock().unwrap().push(path.to_path_buf());
+        self.diags.lock().unwrap().clone()
+    }
+}
+
+fn one_diag() -> LspDiagnostic {
+    LspDiagnostic {
+        line: 3,
+        col: 5,
+        end_line: 3,
+        end_col: 9,
+        severity: 1,
+        message: "mock type error".to_string(),
+        source: Some("mock".to_string()),
+        code: None,
+    }
+}
+
+fn edit_cfg(provider: Arc<FakeDiagnosticsProvider>) -> crate::AgentConfig {
+    crate::AgentConfig {
+        diagnostics_provider: Some(provider as Arc<dyn DiagnosticsProvider>),
+        ..base_cfg()
+    }
+}
+
+async fn run_one_edit(
+    cfg: crate::AgentConfig,
+    tool: &'static str,
+    args_json: &str,
+    is_error: bool,
+) -> Vec<(String, String)> {
+    let out = if is_error {
+        ToolOutput::err("edit failed")
+    } else {
+        ToolOutput::ok("edited")
+    };
+    let tools = registry_with(vec![Arc::new(FakeTool {
+        name: tool,
+        read_only: false,
+        output: out,
+    })]);
+    let llm = MockLlm::new(vec![resp_tool(tool, args_json, "e1"), resp("done")]);
+    let (mut agent, _s, _h) =
+        build_agent(llm, tools, FakePerms::new(PermissionDecision::Allow), cfg);
+    agent.run_turn("go").await;
+    tool_results(&agent)
+}
+
+#[tokio::test]
+async fn lsp_feedback_appends_new_diagnostics_after_edit() {
+    let provider = FakeDiagnosticsProvider::new(vec![one_diag()]);
+    let results = run_one_edit(
+        edit_cfg(provider),
+        "Edit",
+        r#"{"file_path": "main.rs"}"#,
+        false,
+    )
+    .await;
+    assert_eq!(results.len(), 1);
+    let content = &results[0].1;
+    assert!(content.starts_with("edited"), "{content}");
+    assert!(content.contains("[zen: LSP diagnostics for"), "{content}");
+    assert!(content.contains("(1 new)"), "{content}");
+    assert!(content.contains("Error [3:5] mock type error"), "{content}");
+}
+
+#[tokio::test]
+async fn lsp_feedback_empty_means_no_note() {
+    let provider = FakeDiagnosticsProvider::new(vec![]);
+    let results = run_one_edit(
+        edit_cfg(provider),
+        "Edit",
+        r#"{"file_path": "main.rs"}"#,
+        false,
+    )
+    .await;
+    assert_eq!(results[0].1, "edited");
+}
+
+#[tokio::test]
+async fn lsp_feedback_off_by_default() {
+    let results = run_one_edit(base_cfg(), "Edit", r#"{"file_path": "main.rs"}"#, false).await;
+    assert_eq!(results[0].1, "edited");
+}
+
+#[tokio::test]
+async fn lsp_feedback_skipped_on_error_and_non_edit_tools() {
+    let provider = FakeDiagnosticsProvider::new(vec![one_diag()]);
+    let results = run_one_edit(
+        edit_cfg(provider.clone()),
+        "Edit",
+        r#"{"file_path": "main.rs"}"#,
+        true,
+    )
+    .await;
+    assert!(results[0].1.contains("edit failed"), "{}", results[0].1);
+    assert!(
+        !results[0].1.contains("LSP diagnostics"),
+        "{}",
+        results[0].1
+    );
+    assert!(
+        provider.calls().is_empty(),
+        "a failed edit must not query diagnostics"
+    );
+
+    let results = run_one_edit(
+        edit_cfg(provider.clone()),
+        "Bash",
+        r#"{"file_path": "main.rs"}"#,
+        false,
+    )
+    .await;
+    assert_eq!(results[0].1, "edited");
+    assert!(
+        provider.calls().is_empty(),
+        "a non-edit tool must not query diagnostics"
+    );
+
+    // No file_path in args: nothing to check.
+    let results = run_one_edit(edit_cfg(provider.clone()), "Edit", "{}", false).await;
+    assert_eq!(results[0].1, "edited");
+    assert!(
+        provider.calls().is_empty(),
+        "an edit without file_path must not query diagnostics"
+    );
+}
+
+#[tokio::test]
+async fn lsp_feedback_caps_at_3_rounds_per_file() {
+    let provider = FakeDiagnosticsProvider::new(vec![one_diag()]);
+    let tools = registry_with(vec![Arc::new(FakeTool {
+        name: "Edit",
+        read_only: false,
+        output: ToolOutput::ok("edited"),
+    })]);
+    let mut responses = vec![];
+    for i in 0..5 {
+        responses.push(resp_tool(
+            "Edit",
+            r#"{"file_path": "main.rs"}"#,
+            &format!("e{i}"),
+        ));
+        responses.push(resp("done"));
+    }
+    let llm = MockLlm::new(responses);
+    let (mut agent, _s, _h) = build_agent(
+        llm,
+        tools,
+        FakePerms::new(PermissionDecision::Allow),
+        edit_cfg(provider),
+    );
+    for _ in 0..5 {
+        agent.run_turn("go").await;
+    }
+    let results = tool_results(&agent);
+    assert_eq!(results.len(), 5);
+    for (i, (_, content)) in results.iter().enumerate().take(3) {
+        assert!(
+            content.contains("[zen: LSP diagnostics for"),
+            "round {} must append diagnostics: {content}",
+            i + 1
+        );
+    }
+    assert!(
+        results[3].1.contains("LSP feedback for") && results[3].1.contains("paused after 3 rounds"),
+        "round 4 must carry the paused note: {}",
+        results[3].1
+    );
+    assert!(
+        !results[3].1.contains("mock type error"),
+        "round 4 must not append diagnostics again: {}",
+        results[3].1
+    );
+    assert_eq!(results[4].1, "edited", "round 5 must add nothing");
+}

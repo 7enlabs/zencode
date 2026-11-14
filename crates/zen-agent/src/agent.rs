@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use zen_core::*;
@@ -22,6 +23,12 @@ pub const TRUNCATION_CONTINUE_NUDGE: &str = "[zen: your last reply was cut off b
 pub const TRUNCATED_CALL_NUDGE: &str = "[zen: your last reply was cut off by the output token limit in the middle of a tool call, so no tool was run. Re-emit the tool call(s) in full. If the arguments are large, split the work into several smaller calls (e.g. write a big file in parts).]";
 
 pub const DEFAULT_MAX_CONTINUATIONS: usize = 3;
+
+/// Maximum LSP feedback appends per file in one run (Leader Q6): after
+/// three rounds the agent has had its chance to fix the file; further
+/// diagnostics would feed a fix loop, so the note stops and a single
+/// line says so.
+const MAX_LSP_FEEDBACK_PER_FILE: usize = 3;
 
 pub fn is_truncated(finish_reason: Option<&str>) -> bool {
     finish_reason.is_some_and(|r| {
@@ -83,6 +90,11 @@ pub struct AgentConfig {
     pub verify_after_edit: Option<String>,
 
     pub verify_after_edit_timeout_secs: u64,
+
+    /// Post-edit LSP diagnostics provider (P0 #4). None by default: the
+    /// feedback loop is off unless settings `lsp.diagnosticsAfterEdit`
+    /// enables it (wired in zen-cli assembly).
+    pub diagnostics_provider: Option<Arc<dyn DiagnosticsProvider>>,
 
     pub tool_timeouts: std::collections::HashMap<String, u64>,
 
@@ -251,6 +263,7 @@ impl Default for AgentConfig {
             verify_timeout_secs: 300,
             verify_after_edit: None,
             verify_after_edit_timeout_secs: 60,
+            diagnostics_provider: None,
             tool_timeouts: Default::default(),
             max_continuations: DEFAULT_MAX_CONTINUATIONS,
             prune: PruneConfig::default(),
@@ -300,6 +313,10 @@ pub struct Agent {
     pub prune_turn_starts: Vec<usize>,
 
     pub prune_stats: PruneStats,
+
+    /// LSP feedback rounds already appended per file in this run
+    /// (path string -> count), enforcing `MAX_LSP_FEEDBACK_PER_FILE`.
+    pub lsp_feedback_counts: HashMap<String, usize>,
 }
 
 impl Agent {
@@ -334,6 +351,7 @@ impl Agent {
             journal: None,
             prune_turn_starts: vec![0],
             prune_stats: PruneStats::default(),
+            lsp_feedback_counts: HashMap::new(),
         }
     }
 
@@ -1329,6 +1347,13 @@ impl Agent {
             out.content.push_str("\n\n");
             out.content.push_str(note);
         }
+        if let Some(note) = self
+            .lsp_diagnostics_note(&tool_name, &args, out.is_error)
+            .await
+        {
+            out.content.push_str("\n\n");
+            out.content.push_str(&note);
+        }
         finish_gate.observe(
             &tool_name,
             args.get("file_path").and_then(|v| v.as_str()),
@@ -1394,6 +1419,49 @@ impl Agent {
             "[zen: verify `{}` failed ({}) after this change. Last lines of output:\n{}]",
             cmd, status, tail
         )))
+    }
+
+    /// Post-edit LSP diagnostics note (P0 #4): after a successful Edit,
+    /// MultiEdit or Write, ask the diagnostics provider for NEW
+    /// diagnostics for the edited file and append them so the model can
+    /// fix its own type errors. Returns None when the provider is off,
+    /// the tool is not a file edit, the call failed, the file has no
+    /// new diagnostics, or the per-file feedback cap for this run is
+    /// reached. Diagnostics never fail a run: the provider returns an
+    /// empty vec on any failure.
+    async fn lsp_diagnostics_note(
+        &mut self,
+        tool_name: &str,
+        args: &Value,
+        is_error: bool,
+    ) -> Option<String> {
+        let provider = self.config.diagnostics_provider.clone()?;
+        if is_error || !matches!(tool_name, "Edit" | "MultiEdit" | "Write") {
+            return None;
+        }
+        let file = args.get("file_path")?.as_str()?;
+        let path = self.ctx.cwd().join(file);
+        let diags = provider.diagnostics_after_edit(&path).await;
+        if diags.is_empty() {
+            return None;
+        }
+        let key = path.to_string_lossy().into_owned();
+        let count = self.lsp_feedback_counts.entry(key.clone()).or_insert(0);
+        if *count >= MAX_LSP_FEEDBACK_PER_FILE {
+            if *count == MAX_LSP_FEEDBACK_PER_FILE {
+                *count += 1;
+                return Some(format!(
+                    "[zen: LSP feedback for {key} paused after {MAX_LSP_FEEDBACK_PER_FILE} rounds in this run.]"
+                ));
+            }
+            return None;
+        }
+        *count += 1;
+        Some(format!(
+            "[zen: LSP diagnostics for {key} ({} new):\n{}]",
+            diags.len(),
+            zen_core::render_diagnostics(&diags)
+        ))
     }
 
     fn maybe_reinject_todos(&mut self) {

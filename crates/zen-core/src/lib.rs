@@ -224,6 +224,102 @@ pub trait FileCheckpoints: Send + Sync {
     fn after_write(&self, path: &Path, content: &[u8]);
 }
 
+/// One diagnostic published by a language server
+/// (`textDocument/publishDiagnostics`). Positions are 1-based
+/// line/character columns, matching the rest of ZenCore.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LspDiagnostic {
+    pub line: usize,
+    pub col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+    /// LSP severity: 1 = Error, 2 = Warning, 3 = Information, 4 = Hint.
+    pub severity: u8,
+    pub message: String,
+    pub source: Option<String>,
+    pub code: Option<String>,
+}
+
+impl LspDiagnostic {
+    pub fn severity_label(&self) -> &'static str {
+        match self.severity {
+            1 => "Error",
+            2 => "Warning",
+            3 => "Information",
+            4 => "Hint",
+            _ => "Diagnostic",
+        }
+    }
+
+    /// OpenCode-style one-line render: `Error [line:col] message`.
+    pub fn pretty(&self) -> String {
+        format!(
+            "{} [{}:{}] {}",
+            self.severity_label(),
+            self.line,
+            self.col,
+            self.message
+        )
+    }
+
+    /// Identity for snapshot diffs: a diagnostic is "the same" when its
+    /// range and message match, even if the server re-publishes it with a
+    /// different severity, source or code.
+    pub fn dedup_key(&self) -> (usize, usize, usize, usize, &str) {
+        (
+            self.line,
+            self.col,
+            self.end_line,
+            self.end_col,
+            self.message.as_str(),
+        )
+    }
+}
+
+/// Maximum diagnostic lines appended to a tool result after an edit.
+pub const MAX_DIAGNOSTICS_LINES: usize = 20;
+
+/// Render diagnostics as capped one-per-line text. Lines beyond the cap
+/// are replaced by a single "... and N more" line.
+pub fn render_diagnostics(diags: &[LspDiagnostic]) -> String {
+    let mut lines: Vec<String> = diags
+        .iter()
+        .take(MAX_DIAGNOSTICS_LINES)
+        .map(LspDiagnostic::pretty)
+        .collect();
+    if diags.len() > MAX_DIAGNOSTICS_LINES {
+        lines.push(format!(
+            "... and {} more",
+            diags.len() - MAX_DIAGNOSTICS_LINES
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Provides post-edit LSP diagnostics to the agent loop. Implemented by
+/// zen-mcp's `LspManager`; the trait lives in zen-core so zen-agent can
+/// depend on it without depending on zen-mcp (same pattern as
+/// `FileCheckpoints`).
+#[async_trait]
+pub trait DiagnosticsProvider: Send + Sync {
+    /// Wait for the language server's diagnostics for `path` after an
+    /// edit, returning only diagnostics that are NEW compared to the
+    /// snapshot taken before the edit was sent. Best effort: any failure
+    /// (no server, unsupported file type, timeout) yields an empty vec,
+    /// never an error, so diagnostics can never fail a run.
+    async fn diagnostics_after_edit(&self, path: &Path) -> Vec<LspDiagnostic>;
+}
+
+// Debug for the trait object (as tracing-core does for `dyn Value`):
+// `AgentConfig` derives Debug, so the provider field needs it, but
+// implementations must not be forced to be Debug.
+impl std::fmt::Debug for dyn DiagnosticsProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiagnosticsProvider")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ToolContext {
     pub fn new(cwd: PathBuf, session_id: impl Into<String>) -> Self {
         Self {
@@ -1119,7 +1215,7 @@ fn match_segment(pat: &str, s: &str) -> bool {
 
 #[cfg(test)]
 mod glob_tests {
-    use super::glob_match;
+    use super::*;
 
     #[test]
     fn glob_basics() {
@@ -1153,5 +1249,93 @@ mod glob_tests {
         assert!(glob_match("src/?ain.rs", "src/main.rs"));
         assert!(!glob_match("src/?ain.rs", "src/xxain.rs"));
         assert!(!glob_match("src/?ain.rs", "src/main.tsx"));
+    }
+
+    fn sample_diag(severity: u8, message: &str) -> LspDiagnostic {
+        LspDiagnostic {
+            line: 3,
+            col: 5,
+            end_line: 3,
+            end_col: 9,
+            severity,
+            message: message.to_string(),
+            source: Some("mock".to_string()),
+            code: None,
+        }
+    }
+
+    #[test]
+    fn lsp_diagnostic_pretty_and_severity_labels() {
+        assert_eq!(
+            sample_diag(1, "type error").pretty(),
+            "Error [3:5] type error"
+        );
+        assert_eq!(sample_diag(2, "w").severity_label(), "Warning");
+        assert_eq!(sample_diag(3, "i").severity_label(), "Information");
+        assert_eq!(sample_diag(4, "h").severity_label(), "Hint");
+        assert_eq!(sample_diag(9, "?").severity_label(), "Diagnostic");
+    }
+
+    #[test]
+    fn lsp_diagnostic_dedup_key_ignores_severity_source_code() {
+        let a = sample_diag(1, "same");
+        let mut b = sample_diag(2, "same");
+        b.source = Some("other".to_string());
+        b.code = Some("E1".to_string());
+        assert_eq!(a.dedup_key(), b.dedup_key());
+        assert_ne!(a.dedup_key(), sample_diag(1, "different").dedup_key());
+        let mut moved = sample_diag(1, "same");
+        moved.col = 6;
+        assert_ne!(a.dedup_key(), moved.dedup_key());
+    }
+
+    #[test]
+    fn render_diagnostics_caps_at_20_lines() {
+        let diags: Vec<LspDiagnostic> = (0..25)
+            .map(|i| sample_diag(1, &format!("error {i}")))
+            .collect();
+        let out = render_diagnostics(&diags);
+        assert_eq!(out.lines().count(), 21);
+        assert!(out.contains("error 0"), "{out}");
+        assert!(out.contains("error 19"), "{out}");
+        assert!(!out.contains("error 20"), "{out}");
+        assert!(out.contains("... and 5 more"), "{out}");
+
+        let few = vec![sample_diag(1, "only")];
+        assert_eq!(render_diagnostics(&few), "Error [3:5] only");
+        assert_eq!(render_diagnostics(&[]), "");
+
+        // Exactly at the cap: no suffix line (boundary for `>` vs `>=`).
+        let exact: Vec<LspDiagnostic> = (0..20)
+            .map(|i| sample_diag(1, &format!("error {i}")))
+            .collect();
+        let out = render_diagnostics(&exact);
+        assert_eq!(out.lines().count(), 20);
+        assert!(!out.contains("more"), "{out}");
+        // One over the cap: the suffix appears with the right count.
+        let over: Vec<LspDiagnostic> = (0..21)
+            .map(|i| sample_diag(1, &format!("error {i}")))
+            .collect();
+        assert!(
+            render_diagnostics(&over).contains("... and 1 more"),
+            "{}",
+            render_diagnostics(&over)
+        );
+    }
+
+    struct DummyProvider;
+
+    #[async_trait]
+    impl DiagnosticsProvider for DummyProvider {
+        async fn diagnostics_after_edit(&self, _path: &Path) -> Vec<LspDiagnostic> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn diagnostics_provider_debug_names_the_trait() {
+        let provider: &dyn DiagnosticsProvider = &DummyProvider;
+        let out = format!("{provider:?}");
+        assert!(out.contains("DiagnosticsProvider"), "{out}");
     }
 }

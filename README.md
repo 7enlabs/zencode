@@ -673,10 +673,11 @@ Auto-archive stale sessions with `sessions.autoArchiveDays` in `~/.zen/settings.
 ```
 ## LSP code intelligence
 
-`zen` reads code like a compiler: three read-only tools - `goto_definition`, `hover` and
-`find_references` - backed by real language servers spoken to over LSP (JSON-RPC 2.0 on
-stdio with `Content-Length` framing). Servers start lazily per language the first time a
-tool needs them and stay alive for the whole session, so repeated queries are fast.
+`zen` reads code like a compiler: four read-only tools - `goto_definition`, `hover`,
+`find_references` and `diagnostics` - backed by real language servers spoken to over LSP
+(JSON-RPC 2.0 on stdio with `Content-Length` framing). Servers start lazily per language
+the first time a tool needs them and stay alive for the whole session, so repeated queries
+are fast.
 
 Supported servers:
 
@@ -704,9 +705,33 @@ Tool reference:
   three LSP shapes: a single `Location`, `Location[]`, and `LocationLink[]`.
 - `hover(file, line, col)` - type signature and documentation, rendered as markdown.
 - `find_references(file, line, col, include_declaration=true)` - every use of the symbol.
+- `diagnostics(file)` - the server's latest diagnostics for a file, from the last
+  `publishDiagnostics` batch. Never starts a server or waits: if no server is running
+  for the file it says so.
 
 Each result prints human-readable `path:line:col` lines followed by a fenced `json` block, so
 both the model and scripts can consume it.
+
+Post-edit feedback loop (off by default): when `lsp.diagnosticsAfterEdit` is enabled in
+settings, a successful Edit/Write/MultiEdit waits for the language server's fresh
+diagnostics for the edited file and appends only the NEW ones (snapshot diff) to the tool
+result, so the model can fix its own type errors. The wait resolves 150ms after the
+server's last diagnostics batch (`lsp.diagnosticsDebounceMs`) and never waits more than
+3s (`lsp.diagnosticsTimeoutSecs`): 3s is a cap, not a fixed wait, and a slow first batch
+on a large project just yields an empty round - raise the cap if your server needs more.
+Feedback is capped at 3 rounds per file per run, and diagnostics never fail a run: a
+missing server, a timeout or a dead server just means no diagnostics that round.
+
+```json
+"lsp": {
+  "diagnosticsAfterEdit": true,
+  "diagnosticsTimeoutSecs": 3,
+  "diagnosticsDebounceMs": 150
+}
+```
+
+Servers stay alive for the whole session and can use significant memory (rust-analyzer
+up to a few GB on large projects); there is no server eviction yet.
 
 Graceful degradation: if a server binary is missing from `PATH`, the tool fails with a
 clear error naming the server and the exact install command - the agent never hangs.

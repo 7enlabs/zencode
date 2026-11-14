@@ -2,17 +2,18 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncWriteExt, BufReader};
-use zen_core::{Tool, ToolContext};
+use zen_core::{DiagnosticsProvider, Tool, ToolContext};
 
 use crate::lsp::LspClient;
 use crate::lsp::{
     LspLanguage, LspManager, col_to_utf16, detect_language, find_binary, find_project_root,
-    parse_locations, path_to_uri, render_hover, server_spec, uri_to_path, utf16_to_col,
+    parse_locations, parse_publish_diagnostics, path_to_uri, render_hover, server_spec,
+    uri_to_path, utf16_to_col,
 };
 use crate::lsp::{read_frame, write_frame};
-use crate::lsp_tools::{FindReferencesTool, GotoDefinitionTool, HoverTool};
+use crate::lsp_tools::{DiagnosticsTool, FindReferencesTool, GotoDefinitionTool, HoverTool};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -94,6 +95,85 @@ while True:
     # notifications (initialized / didOpen / didChange) and unknown methods: no reply
 "##;
 
+/// Mock server that answers every didOpen/didChange with a
+/// `publishDiagnostics` batch derived from the file text: a line
+/// containing `ERROR_ONE` yields an Error diagnostic, `ERROR_TWO` a
+/// Warning. Text without markers yields an empty batch (which must
+/// clear previously published diagnostics for the URI).
+const MOCK_SERVER_DIAG: &str = r##"#!/usr/bin/env python3
+import sys, json
+
+log_path, target_uri = sys.argv[1], sys.argv[2]
+
+def log(method):
+    with open(log_path, "a") as f:
+        f.write(method + "\n")
+
+def read_msg():
+    headers = {}
+    while True:
+        raw = sys.stdin.buffer.readline()
+        if not raw:
+            return None
+        line = raw.decode("utf-8", "replace")
+        if line in ("\r\n", "\n", ""):
+            break
+        if ":" in line:
+            k, v = line.split(":", 1)
+            headers[k.strip().lower()] = v.strip()
+    n = int(headers.get("content-length", "0"))
+    if n <= 0:
+        return None
+    return json.loads(sys.stdin.buffer.read(n).decode("utf-8"))
+
+def send(obj):
+    data = json.dumps(obj).encode("utf-8")
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
+    sys.stdout.buffer.flush()
+
+def diagnostics_for(text, uri):
+    diags = []
+    for i, line in enumerate(text.split("\n")):
+        if "ERROR_ONE" in line:
+            diags.append({"range": {"start": {"line": i, "character": 4},
+                                    "end": {"line": i, "character": 9}},
+                          "severity": 1, "message": "mock error one", "source": "mock"})
+        if "ERROR_TWO" in line:
+            diags.append({"range": {"start": {"line": i, "character": 0},
+                                    "end": {"line": i, "character": 5}},
+                          "severity": 2, "message": "mock warning two", "source": "mock"})
+    return {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+            "params": {"uri": uri, "diagnostics": diags}}
+
+while True:
+    msg = read_msg()
+    if msg is None:
+        break
+    method, mid = msg.get("method", ""), msg.get("id")
+    log(method)
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {
+            "capabilities": {"textDocumentSync": 2}}})
+    elif method == "textDocument/didOpen":
+        td = msg["params"]["textDocument"]
+        send(diagnostics_for(td["text"], td["uri"]))
+    elif method == "textDocument/didChange":
+        td = msg["params"]["textDocument"]
+        text = msg["params"]["contentChanges"][0]["text"]
+        send(diagnostics_for(text, td["uri"]))
+    elif method == "shutdown":
+        send({"jsonrpc": "2.0", "id": mid, "result": None})
+    elif method == "exit":
+        break
+"##;
+
+/// Mock server that exits immediately: the client must treat the dead
+/// server as "no diagnostics", never as a hang or a failed run.
+const MOCK_SERVER_EXIT: &str = r##"#!/usr/bin/env python3
+import sys
+sys.exit(0)
+"##;
+
 struct MockSetup {
     manager: LspManager,
     _tmp: PathBuf,
@@ -139,6 +219,54 @@ fn mock_setup() -> Option<MockSetup> {
         target_rs,
         log,
     })
+}
+
+fn mock_diag_setup() -> Option<MockSetup> {
+    let py = find_binary("python3")?;
+    let tmp = unique_tmpdir("mock-diag");
+    let main_rs = tmp.join("main.rs");
+    write_file(&main_rs, "fn main() {\n    let x = 1;\n}\n");
+    let target_rs = tmp.join("target.rs");
+    write_file(&target_rs, "pub fn target_fn() {}\n");
+    let script = tmp.join("mock_lsp.py");
+    write_file(&script, MOCK_SERVER_DIAG);
+    let log = tmp.join("methods.log");
+    write_file(&log, "");
+
+    let manager = LspManager::new();
+    manager.set_server_command(
+        LspLanguage::Rust,
+        py.to_string_lossy().into_owned(),
+        vec![
+            script.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+            path_to_uri(&target_rs),
+        ],
+    );
+    // Short timings so the wait tests run fast: cap 500ms, debounce 50ms.
+    manager.set_diagnostics_timing(Duration::from_millis(500), Duration::from_millis(50));
+    Some(MockSetup {
+        manager,
+        _tmp: tmp,
+        main_rs,
+        target_rs,
+        log,
+    })
+}
+
+/// Rewrite a file until its mtime moves, so the next LSP sync sends
+/// `didChange` instead of reusing the cached document.
+fn rewrite_moved(path: &Path, content: &str) {
+    let old_mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+    for _ in 0..50 {
+        write_file(path, content);
+        let new_mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+        if new_mtime != old_mtime {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("mtime did not move after 50 rewrites of {}", path.display());
 }
 
 fn logged_methods(log: &Path) -> Vec<String> {
@@ -723,4 +851,400 @@ async fn tool_output_has_human_lines_and_json_block() {
         "got: {}",
         hover_out.content
     );
+}
+
+#[tokio::test]
+async fn diagnostics_publish_are_captured() {
+    let Some(setup) = mock_diag_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    write_file(&setup.main_rs, "fn main() {\n    ERROR_ONE\n}\n");
+    let diags = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    assert_eq!(diags.len(), 1, "got: {diags:?}");
+    let d = &diags[0];
+    assert_eq!(d.message, "mock error one");
+    assert_eq!(d.severity, 1);
+    assert_eq!((d.line, d.col), (2, 5));
+    assert_eq!((d.end_line, d.end_col), (2, 10));
+    assert_eq!(d.source.as_deref(), Some("mock"));
+
+    // The batch stays in the map: the read-only tool sees it without waiting.
+    let cached = setup
+        .manager
+        .cached_diagnostics(&setup.main_rs)
+        .expect("connection must exist after diagnostics_after_edit");
+    assert_eq!(cached.len(), 1);
+    assert_eq!(cached[0].message, "mock error one");
+}
+
+#[tokio::test]
+async fn diagnostics_empty_publish_clears_previous() {
+    let Some(setup) = mock_diag_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    write_file(&setup.main_rs, "fn main() {\n    ERROR_ONE\n}\n");
+    let diags = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    assert_eq!(diags.len(), 1, "got: {diags:?}");
+
+    rewrite_moved(&setup.main_rs, "fn main() {\n    let x = 1;\n}\n");
+    let diags = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    assert!(diags.is_empty(), "got: {diags:?}");
+    let cached = setup.manager.cached_diagnostics(&setup.main_rs).unwrap();
+    assert!(
+        cached.is_empty(),
+        "an empty publish must clear the map: {cached:?}"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_wait_resolves_on_publish_not_on_timeout() {
+    let Some(setup) = mock_diag_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    write_file(&setup.main_rs, "fn main() {\n    ERROR_ONE\n}\n");
+    let start = Instant::now();
+    let diags = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    let elapsed = start.elapsed();
+    assert_eq!(diags.len(), 1, "got: {diags:?}");
+    // The cap is 500ms; a wait that resolved on the publish (+50ms
+    // debounce) must finish well before it. This is the measured proof
+    // that the loop does NOT wait a fixed 3s.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "wait ran to the cap: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_wait_runs_to_cap_when_server_silent() {
+    let Some(setup) = mock_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    // The plain mock never publishes: the wait must run the full cap
+    // (200ms here) and return empty, not error.
+    setup
+        .manager
+        .set_diagnostics_timing(Duration::from_millis(200), Duration::from_millis(20));
+    let start = Instant::now();
+    let diags = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    let elapsed = start.elapsed();
+    assert!(diags.is_empty(), "got: {diags:?}");
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "wait returned before the cap: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "wait hung past the cap: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_connection_wait_ends_at_cap_not_past_it() {
+    let Some(setup) = mock_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    // The plain mock never publishes. Cap 1500ms with a 600ms debounce
+    // is deliberately NOT a multiple: the correct wait ends at the cap
+    // (600 + 600 + 200), while `timeout + elapsed` instead of
+    // `timeout - elapsed` would wait a full extra debounce (1800ms).
+    // This calls the connection directly: the manager wraps the same
+    // wait in an outer timeout that would mask the overshoot.
+    let conn = setup
+        .manager
+        .connection_for(&setup.main_rs)
+        .await
+        .expect("mock server must spawn");
+    let start = Instant::now();
+    let diags = conn
+        .diagnostics_after_edit(
+            &setup.main_rs,
+            Duration::from_millis(1500),
+            Duration::from_millis(600),
+        )
+        .await
+        .expect("connection wait must not error");
+    let elapsed = start.elapsed();
+    assert!(diags.is_empty(), "got: {diags:?}");
+    assert!(
+        elapsed >= Duration::from_millis(1300),
+        "wait returned before the cap: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1650),
+        "wait ran past the cap: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_trait_method_forwards_to_manager() {
+    let Some(setup) = mock_diag_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    write_file(&setup.main_rs, "fn main() {\n    ERROR_ONE\n}\n");
+    // Call through the trait object, as the agent loop does: the trait
+    // impl must forward to the manager, not return an empty vec.
+    let provider: &dyn DiagnosticsProvider = &setup.manager;
+    let diags = provider.diagnostics_after_edit(&setup.main_rs).await;
+    assert_eq!(diags.len(), 1, "got: {diags:?}");
+    assert_eq!(diags[0].message, "mock error one");
+}
+
+#[tokio::test]
+async fn diagnostics_diff_only_new() {
+    let Some(setup) = mock_diag_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    write_file(&setup.main_rs, "fn main() {\n    ERROR_ONE\n}\n");
+    let first = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    assert_eq!(first.len(), 1, "got: {first:?}");
+
+    rewrite_moved(
+        &setup.main_rs,
+        "fn main() {\n    ERROR_ONE\n    ERROR_TWO\n}\n",
+    );
+    let second = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    assert_eq!(
+        second.len(),
+        1,
+        "only the new diagnostic may be reported: {second:?}"
+    );
+    assert_eq!(second[0].message, "mock warning two");
+    assert_eq!(second[0].severity, 2);
+}
+
+#[tokio::test]
+async fn diagnostics_after_edit_unsupported_extension_returns_empty_without_spawn() {
+    let tmp = unique_tmpdir("diag-unsupported");
+    let f = tmp.join("notes.txt");
+    write_file(&f, "hello\n");
+    let mgr = LspManager::new();
+    let diags = mgr.diagnostics_after_edit(&f).await;
+    assert!(diags.is_empty());
+    assert!(
+        mgr.cached_diagnostics(&f).is_none(),
+        "no server must be spawned for an unsupported extension"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_after_edit_server_exit_returns_empty() {
+    let py = match find_binary("python3") {
+        Some(p) => p,
+        None => {
+            eprintln!("SKIP: python3 not found");
+            return;
+        }
+    };
+    let tmp = unique_tmpdir("diag-exit");
+    let main_rs = tmp.join("main.rs");
+    write_file(&main_rs, "fn main() {}\n");
+    let script = tmp.join("mock_exit.py");
+    write_file(&script, MOCK_SERVER_EXIT);
+    let mgr = LspManager::new();
+    mgr.set_server_command(
+        LspLanguage::Rust,
+        py.to_string_lossy().into_owned(),
+        vec![script.to_string_lossy().into_owned()],
+    );
+    mgr.set_diagnostics_timing(Duration::from_millis(500), Duration::from_millis(50));
+    let start = Instant::now();
+    let diags = mgr.diagnostics_after_edit(&main_rs).await;
+    assert!(diags.is_empty(), "got: {diags:?}");
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "a dead server must not hang the wait"
+    );
+}
+
+#[test]
+fn diagnostics_timing_defaults_and_clamping() {
+    let mgr = LspManager::new();
+    let (timeout, debounce) = mgr.diagnostics_timing();
+    assert_eq!(timeout, Duration::from_secs(3));
+    assert_eq!(debounce, Duration::from_millis(150));
+    mgr.set_diagnostics_timing(Duration::from_millis(0), Duration::from_millis(0));
+    let (timeout, debounce) = mgr.diagnostics_timing();
+    assert_eq!(timeout, Duration::from_millis(1));
+    assert_eq!(debounce, Duration::from_millis(1));
+    mgr.set_diagnostics_timing(Duration::from_secs(10), Duration::from_millis(500));
+    let (timeout, debounce) = mgr.diagnostics_timing();
+    assert_eq!(timeout, Duration::from_secs(10));
+    assert_eq!(debounce, Duration::from_millis(500));
+}
+
+#[tokio::test]
+async fn diagnostics_tool_reads_cached_diagnostics_without_waiting() {
+    let Some(setup) = mock_diag_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    write_file(&setup.main_rs, "fn main() {\n    ERROR_ONE\n}\n");
+    let diags = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    assert_eq!(diags.len(), 1, "got: {diags:?}");
+
+    let mgr = std::sync::Arc::new(setup.manager);
+    let ctx = test_ctx(&setup._tmp);
+    let out = DiagnosticsTool::new(mgr)
+        .call(json!({"file": "main.rs"}), &ctx)
+        .await;
+    assert!(!out.is_error, "got error: {}", out.content);
+    assert!(
+        out.content.contains("mock error one"),
+        "got: {}",
+        out.content
+    );
+    assert!(out.content.contains("Error [2:5]"), "got: {}", out.content);
+    assert!(out.content.contains("```json"), "got: {}", out.content);
+}
+
+#[tokio::test]
+async fn diagnostics_tool_reports_no_server_without_spawning() {
+    let tmp = unique_tmpdir("diag-tool-noserver");
+    write_file(&tmp.join("main.rs"), "fn main() {}\n");
+    let mgr = std::sync::Arc::new(LspManager::new());
+    let ctx = test_ctx(&tmp);
+    let out = DiagnosticsTool::new(mgr.clone())
+        .call(json!({"file": "main.rs"}), &ctx)
+        .await;
+    assert!(!out.is_error, "got error: {}", out.content);
+    assert!(
+        out.content.contains("no language server running"),
+        "got: {}",
+        out.content
+    );
+    assert!(
+        mgr.cached_diagnostics(&tmp.join("main.rs")).is_none(),
+        "the diagnostics tool must not spawn a server"
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_tool_rejects_missing_file() {
+    let mgr = std::sync::Arc::new(LspManager::new());
+    let ctx = test_ctx(&unique_tmpdir("diag-tool-badargs"));
+    let out = DiagnosticsTool::new(mgr).call(json!({}), &ctx).await;
+    assert!(
+        out.is_error && out.content.contains("'file'"),
+        "got: {}",
+        out.content
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_tool_reports_no_diagnostics_when_cache_empty() {
+    let Some(setup) = mock_diag_setup() else {
+        eprintln!("SKIP: python3 not found");
+        return;
+    };
+    // Content with no markers: the mock publishes an empty batch, so a
+    // connection exists but the cache is empty.
+    write_file(&setup.main_rs, "fn main() {\n    let x = 1;\n}\n");
+    let diags = setup.manager.diagnostics_after_edit(&setup.main_rs).await;
+    assert!(diags.is_empty(), "got: {diags:?}");
+
+    let mgr = std::sync::Arc::new(setup.manager);
+    let ctx = test_ctx(&setup._tmp);
+    let out = DiagnosticsTool::new(mgr)
+        .call(json!({"file": "main.rs"}), &ctx)
+        .await;
+    assert!(!out.is_error, "got error: {}", out.content);
+    assert!(
+        out.content.contains("(no diagnostics)"),
+        "got: {}",
+        out.content
+    );
+}
+
+#[test]
+fn diagnostics_tool_metadata() {
+    let mgr = std::sync::Arc::new(LspManager::new());
+    let tool = DiagnosticsTool::new(mgr);
+    assert_eq!(tool.name(), "diagnostics");
+    assert!(tool.is_read_only());
+    let desc = tool.description();
+    assert!(desc.contains("diagnostics"), "{desc}");
+    assert!(desc.contains("Read-only"), "{desc}");
+    let schema = tool.parameters_schema();
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert_eq!(required, vec!["file"]);
+}
+
+#[test]
+fn parse_publish_diagnostics_ok_and_defaults() {
+    let val = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": "file:///nonexistent/a.rs",
+            "diagnostics": [
+                {"range": {"start": {"line": 4, "character": 2}, "end": {"line": 4, "character": 8}},
+                 "severity": 1, "message": "type error", "source": "rust-analyzer", "code": "E0308"},
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}},
+                 "message": "no severity here", "code": 42},
+                {"range": {"start": {"line": 1, "character": 1}, "end": {"line": 1, "character": 2}},
+                 "severity": 2, "message": "warn"},
+                {"nope": true},
+                {"range": {"start": {"line": 1, "character": 1}, "end": {"line": 1, "character": 2}}}
+            ]
+        }
+    });
+    let (uri, diags) = parse_publish_diagnostics(&val).expect("must parse");
+    assert_eq!(uri, "file:///nonexistent/a.rs");
+    assert_eq!(diags.len(), 3, "malformed items must be skipped: {diags:?}");
+    assert_eq!(diags[0].message, "type error");
+    assert_eq!((diags[0].line, diags[0].col), (5, 3));
+    assert_eq!((diags[0].end_line, diags[0].end_col), (5, 9));
+    assert_eq!(diags[0].severity, 1);
+    assert_eq!(diags[0].source.as_deref(), Some("rust-analyzer"));
+    assert_eq!(diags[0].code.as_deref(), Some("E0308"));
+    assert_eq!(diags[1].severity, 1, "missing severity defaults to Error");
+    assert_eq!(
+        diags[1].code.as_deref(),
+        Some("42"),
+        "a numeric code stringifies"
+    );
+    assert_eq!(diags[1].source, None);
+    assert_eq!(diags[2].severity, 2);
+}
+
+#[test]
+fn parse_publish_diagnostics_non_file_uri_uses_utf16_plus_one() {
+    let val = json!({
+        "params": {
+            "uri": "untitled:Untitled-1",
+            "diagnostics": [
+                {"range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 9}},
+                 "severity": 1, "message": "unsaved buffer error"}
+            ]
+        }
+    });
+    let (_uri, diags) = parse_publish_diagnostics(&val).expect("must parse");
+    assert_eq!(diags.len(), 1);
+    // No file to read: columns fall back to UTF-16 + 1.
+    assert_eq!((diags[0].line, diags[0].col), (2, 5));
+    assert_eq!((diags[0].end_line, diags[0].end_col), (2, 10));
+}
+
+#[test]
+fn parse_publish_diagnostics_rejects_bad_shapes() {
+    assert!(parse_publish_diagnostics(&json!({})).is_none());
+    assert!(parse_publish_diagnostics(&json!({"params": {}})).is_none());
+    assert!(parse_publish_diagnostics(&json!({"params": {"uri": "file:///a.rs"}})).is_none());
+    let (uri, diags) =
+        parse_publish_diagnostics(&json!({"params": {"uri": "file:///a.rs", "diagnostics": []}}))
+            .expect("an empty diagnostics array is valid");
+    assert_eq!(uri, "file:///a.rs");
+    assert!(diags.is_empty());
 }

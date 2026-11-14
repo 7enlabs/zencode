@@ -300,6 +300,7 @@ pub async fn run_repl(cli: &Cli, cwd: &Path, home: Option<&Path>) -> Result<()> 
 
     let mut config = build_repl_config(cli, &cfg, cwd);
     let _ = &mut config;
+    config.diagnostics_provider = assembly.diagnostics_provider.clone();
 
     let base_system_prompt = config.system_prompt.clone();
     if config.permission_mode == zen_core::PermissionMode::Plan {
