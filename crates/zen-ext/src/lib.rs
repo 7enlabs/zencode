@@ -21,8 +21,9 @@ pub use settings::{
     LoadedSettings, load_settings, load_settings_trust, load_settings_with_managed, merge_json,
 };
 pub use skills::{
-    Frontmatter, SkillTool, discover_skill_entries, discover_skills, load_skill, load_skill_entry,
-    skills_prompt, split_frontmatter,
+    Frontmatter, SkillTool, SkippedSkill, discover_skill_entries,
+    discover_skill_entries_with_warnings, discover_skills, discover_skills_with_warnings,
+    load_skill, load_skill_entry, skills_prompt, split_frontmatter,
 };
 pub use trust::{
     TRUST_ENV, gated_project_config, is_folder_trusted, project_mcp_files, trust_env_set,

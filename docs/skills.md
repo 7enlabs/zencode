@@ -32,7 +32,8 @@ allowed-tools: read, write, edit, bash
 ```
 
 Frontmatter fields: `name`, `description` (required), `allowed-tools`
-(comma list). The body is markdown the model reads when the skill is invoked.
+(comma list, or a YAML-style block list). The body is markdown the model reads
+when the skill is invoked.
 Session start loads only frontmatter (~dozens of tokens/skill); the full body
 loads on demand via the Skill tool.
 
@@ -158,3 +159,9 @@ All three are signed and ship `[✓ verified]`.
 - Boundary: enforcement covers **registry-installed** skills (permissions the
   user approved at install time). Plain `.zen/skills/` directories without a
   registry entry are advisory - loading them adds no filtering.
+- Skills that fail to load (missing `SKILL.md`, missing `description`, or
+  unclosed frontmatter) print a one-line warning to stderr at session start
+  instead of disappearing silently; the session still runs.
+- `zen skill list` shows installed (registry) skills plus discovered plain
+  skills from `~/.zen/skills/` and `<cwd>/.zen/skills/`, marked advisory.
+  `zen skill list --json` still dumps the registry only.

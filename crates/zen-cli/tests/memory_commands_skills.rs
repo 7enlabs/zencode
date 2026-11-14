@@ -417,3 +417,87 @@ async fn multiple_skills_user_and_project() {
         sys_msg
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn broken_skill_warns_on_stderr_and_session_continues() {
+    let home = TempDir::new("broken_skill_home");
+    let cwd = TempDir::new("broken_skill_cwd");
+
+    cwd.write(
+        ".zen/skills/nodesc/SKILL.md",
+        "---\nname: nodesc\n---\n# No description here\n",
+    );
+    cwd.write(
+        ".zen/skills/good/SKILL.md",
+        "---\nname: good\ndescription: A good skill\n---\n# Good\n",
+    );
+
+    let server = MockServer::single_text("ok").await;
+
+    let (_, stderr, code) = tokio::time::timeout(TEST_TIMEOUT, async {
+        ZenRun::new("broken_skill", &home, &cwd)
+            .args([
+                "-p",
+                "--output-format",
+                "json",
+                "--setting-sources",
+                "project",
+            ])
+            .mock("mock-model", &server)
+            .arg("hello")
+            .run_output()
+    })
+    .await
+    .expect("timed out");
+
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(
+        stderr.contains("warning: skill \"nodesc\" skipped: missing description"),
+        "expected a one-line warning for the broken skill, stderr: {}",
+        stderr
+    );
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 1);
+    let sys_msg = system_message(&requests[0]);
+    assert!(
+        sys_msg.contains("good"),
+        "good skill missing from prompt: {}",
+        sys_msg
+    );
+    assert!(
+        !sys_msg.contains("nodesc"),
+        "broken skill leaked into prompt: {}",
+        sys_msg
+    );
+}
+
+#[test]
+fn skill_list_shows_discovered_plain_skills() {
+    let home = TempDir::new("skill_list_home");
+    let cwd = TempDir::new("skill_list_cwd");
+
+    cwd.write(
+        ".zen/skills/plain/SKILL.md",
+        "---\nname: plain\ndescription: A plain skill\n---\n# Plain\n",
+    );
+
+    let (stdout, stderr, code) = ZenRun::new("skill_list", &home, &cwd)
+        .args(["skill", "list"])
+        .run_output();
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(
+        stdout.contains("discovered skills (not installed, advisory):"),
+        "stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("plain - A plain skill"),
+        "stdout: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("no skills installed"),
+        "stdout: {}",
+        stdout
+    );
+}

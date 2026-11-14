@@ -159,7 +159,11 @@ pub async fn assemble(
         cwd, cfg, cli,
     )));
     if !cli.bare {
-        skills = zen_ext::discover_skills(cwd, home);
+        let (found, skipped) = zen_ext::discover_skills_with_warnings(cwd, home);
+        for s in &skipped {
+            eprintln!("warning: {}", s.message());
+        }
+        skills = found;
         if cli.tools.as_deref() != Some("") {
             let installed = home
                 .map(crate::skills::load_enabled_skills)

@@ -45,11 +45,21 @@ fn parse_frontmatter(lines: &[String]) -> Frontmatter {
     let mut current_key: Option<String> = None;
     let mut list_items: Vec<String> = Vec::new();
 
+    // Block-list items (`- read`) under an allowed-tools key belong to
+    // `allowed_tools`, not `extra`: previously they were silently filed
+    // under extra["allowed-tools"] while allowed_tools stayed empty, so
+    // a skill that declared its tools in block form was treated as
+    // advisory (no filtering). Other keys keep the old join-into-extra
+    // behaviour.
     let flush = |fm: &mut Frontmatter, key: &Option<String>, items: &mut Vec<String>| {
         if let Some(k) = key {
             if !items.is_empty() {
-                let joined = items.join(", ");
-                fm.extra.insert(k.clone(), joined);
+                if matches!(k.as_str(), "allowed-tools" | "allowed_tools" | "tools") {
+                    fm.allowed_tools.extend(items.iter().cloned());
+                } else {
+                    let joined = items.join(", ");
+                    fm.extra.insert(k.clone(), joined);
+                }
             }
             items.clear();
         }
@@ -134,9 +144,39 @@ pub fn discover_skills(cwd: &Path, home: Option<&Path>) -> Vec<SkillInfo> {
         .collect()
 }
 
+/// Model-facing discovery plus the skill directories that were dropped
+/// (see [`SkippedSkill`]). Session start prints the warnings once; the
+/// model-facing list is identical to [`discover_skills`].
+pub fn discover_skills_with_warnings(
+    cwd: &Path,
+    home: Option<&Path>,
+) -> (Vec<SkillInfo>, Vec<SkippedSkill>) {
+    let (entries, skipped) = discover_skill_entries_with_warnings(cwd, home);
+    (
+        entries
+            .into_iter()
+            .filter(|(_, fm)| !fm.disable_model_invocation)
+            .map(|(info, _)| info)
+            .collect(),
+        skipped,
+    )
+}
+
 pub fn discover_skill_entries(cwd: &Path, home: Option<&Path>) -> Vec<(SkillInfo, Frontmatter)> {
+    discover_skill_entries_with_warnings(cwd, home).0
+}
+
+/// Full discovery plus the skill directories that were dropped, with
+/// the reason each one was dropped. Project skills still override
+/// user skills of the same name (that override is intentional and
+/// stays silent); only genuine load failures are reported.
+pub fn discover_skill_entries_with_warnings(
+    cwd: &Path,
+    home: Option<&Path>,
+) -> (Vec<(SkillInfo, Frontmatter)>, Vec<SkippedSkill>) {
     let home_dir = home.map(|p| p.to_path_buf()).or_else(dirs::home_dir);
     let mut by_name: Vec<(SkillInfo, Frontmatter)> = Vec::new();
+    let mut skipped: Vec<SkippedSkill> = Vec::new();
 
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Some(home) = &home_dir {
@@ -145,7 +185,9 @@ pub fn discover_skill_entries(cwd: &Path, home: Option<&Path>) -> Vec<(SkillInfo
     roots.push(cwd.join(".zen").join("skills"));
 
     for root in roots {
-        for entry in scan_skill_dir(&root) {
+        let (entries, mut root_skipped) = scan_skill_dir_with_warnings(&root);
+        skipped.append(&mut root_skipped);
+        for entry in entries {
             if let Some(existing) = by_name.iter_mut().find(|s| s.0.name == entry.0.name) {
                 *existing = entry;
             } else {
@@ -155,13 +197,14 @@ pub fn discover_skill_entries(cwd: &Path, home: Option<&Path>) -> Vec<(SkillInfo
     }
 
     by_name.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-    by_name
+    (by_name, skipped)
 }
 
-fn scan_skill_dir(root: &Path) -> Vec<(SkillInfo, Frontmatter)> {
+fn scan_skill_dir_with_warnings(root: &Path) -> (Vec<(SkillInfo, Frontmatter)>, Vec<SkippedSkill>) {
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     let Ok(entries) = std::fs::read_dir(root) else {
-        return out;
+        return (out, skipped);
     };
     let mut dirs: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
@@ -170,44 +213,113 @@ fn scan_skill_dir(root: &Path) -> Vec<(SkillInfo, Frontmatter)> {
         .collect();
     dirs.sort();
     for dir in dirs {
-        if let Some(entry) = load_skill_entry(&dir) {
-            out.push(entry);
+        match load_skill_entry_result(&dir) {
+            Ok(entry) => {
+                // Two directories in the same root that resolve to one
+                // skill name: the later one (sorted order) wins, as
+                // before, but the shadowed one is reported instead of
+                // vanishing silently.
+                if let Some(pos) = out.iter().position(|(info, _)| info.name == entry.0.name) {
+                    let shadowed = out.remove(pos);
+                    let shadowed_dir = shadowed
+                        .0
+                        .path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let winner_dir = dir
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    skipped.push(SkippedSkill {
+                        name: shadowed_dir,
+                        reason: format!(
+                            "duplicate skill name {:?} in {} (shadowed by {:?})",
+                            entry.0.name,
+                            root.display(),
+                            winner_dir
+                        ),
+                    });
+                }
+                out.push(entry);
+            }
+            Err(s) => skipped.push(s),
         }
     }
-    out
+    (out, skipped)
 }
 
 pub fn load_skill(dir: &Path) -> Option<SkillInfo> {
     load_skill_entry(dir).map(|(info, _)| info)
 }
 
-pub fn load_skill_entry(dir: &Path) -> Option<(SkillInfo, Frontmatter)> {
-    let path = dir.join("SKILL.md");
-    if !path.is_file() {
-        return None;
-    }
-    let content = std::fs::read_to_string(&path).ok()?;
-    let (fm, body) = split_frontmatter(&content);
-    let fm = fm.unwrap_or_default();
+/// A skill directory that was found during discovery but could not be
+/// loaded, with the reason it was dropped. Discovery never fails the
+/// session because of a bad skill: callers surface these as warnings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedSkill {
+    /// Directory name of the dropped skill.
+    pub name: String,
+    /// Short reason, e.g. "missing SKILL.md" or "missing description".
+    pub reason: String,
+}
 
+impl SkippedSkill {
+    /// One-line human-readable warning, without the `warning:` prefix
+    /// (callers add it when printing to stderr).
+    pub fn message(&self) -> String {
+        format!("skill {:?} skipped: {}", self.name, self.reason)
+    }
+}
+
+pub fn load_skill_entry(dir: &Path) -> Option<(SkillInfo, Frontmatter)> {
+    load_skill_entry_result(dir).ok()
+}
+
+/// Like [`load_skill_entry`], but reports why a directory was skipped
+/// instead of returning `None`.
+pub fn load_skill_entry_result(dir: &Path) -> Result<(SkillInfo, Frontmatter), SkippedSkill> {
     let dir_name = dir
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+    let skip = |reason: &str| SkippedSkill {
+        name: dir_name.clone(),
+        reason: reason.to_string(),
+    };
+    let path = dir.join("SKILL.md");
+    if !path.is_file() {
+        return Err(skip("missing SKILL.md"));
+    }
+    let content = std::fs::read_to_string(&path).map_err(|_| skip("cannot read SKILL.md"))?;
+    let (fm, body) = split_frontmatter(&content);
+    // split_frontmatter returns None both when there is no frontmatter
+    // and when the frontmatter never closes; only the latter is an
+    // error worth naming.
+    if fm.is_none() && content.lines().next().map(str::trim) == Some("---") {
+        return Err(skip("unclosed frontmatter (missing closing ---)"));
+    }
+    let fm = fm.unwrap_or_default();
+
     let name = fm
         .name
         .clone()
         .filter(|s| !s.is_empty())
-        .unwrap_or(dir_name);
+        .unwrap_or_else(|| dir_name.clone());
     if name.is_empty() {
-        return None;
+        return Err(skip("missing name"));
     }
 
-    let description = fm
+    let description = match fm
         .description
         .clone()
         .map(|d| d.trim().to_string())
-        .filter(|d| !d.is_empty())?;
+        .filter(|d| !d.is_empty())
+    {
+        Some(d) => d,
+        None => return Err(skip("missing description")),
+    };
 
     let info = SkillInfo {
         name,
@@ -216,7 +328,7 @@ pub fn load_skill_entry(dir: &Path) -> Option<(SkillInfo, Frontmatter)> {
         body,
         allowed_tools: fm.allowed_tools.clone(),
     };
-    Some((info, fm))
+    Ok((info, fm))
 }
 
 pub fn skills_prompt(skills: &[SkillInfo]) -> String {
@@ -477,5 +589,190 @@ mod tests {
         let ctx = ToolContext::new(tmp.path().to_path_buf(), "s1");
         let out = tool.call(serde_json::json!({"name": "nope"}), &ctx).await;
         assert!(out.is_error);
+    }
+
+    #[test]
+    fn test_allowed_tools_block_list_parsed() {
+        let tmp = TempDir::new();
+        let proj = tmp.path().join("proj");
+        let skills = proj.join(".zen/skills");
+        write_skill(
+            &skills,
+            "blocktools",
+            "name: blocktools\ndescription: Block tools\nallowed-tools:\n  - Read\n  - Bash",
+            "body",
+        );
+        let found = discover_skills(&proj, Some(&tmp.path().join("nohome")));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].allowed_tools, vec!["Read", "Bash"]);
+    }
+
+    #[test]
+    fn test_allowed_tools_inline_plus_block_list() {
+        // Inline value and block items combine; block items under an
+        // unrelated key still land in extra.
+        let fm = parse_frontmatter(&[
+            "name: x".to_string(),
+            "description: x".to_string(),
+            "allowed-tools: Read".to_string(),
+            "  - Bash".to_string(),
+            "  - Grep".to_string(),
+            "tags:".to_string(),
+            "  - a".to_string(),
+            "  - b".to_string(),
+        ]);
+        assert_eq!(fm.allowed_tools, vec!["Read", "Bash", "Grep"]);
+        assert_eq!(fm.extra.get("tags").map(String::as_str), Some("a, b"));
+        assert!(!fm.extra.contains_key("allowed-tools"));
+    }
+
+    #[test]
+    fn test_skipped_skill_message() {
+        let s = SkippedSkill {
+            name: "nodesc".to_string(),
+            reason: "missing description".to_string(),
+        };
+        assert_eq!(s.message(), "skill \"nodesc\" skipped: missing description");
+    }
+
+    #[test]
+    fn test_discovery_warns_on_skipped_skills() {
+        let tmp = TempDir::new();
+        let proj = tmp.path().join("proj");
+        let skills = proj.join(".zen/skills");
+        write_skill(&skills, "nodesc", "name: nodesc", "body");
+        write_skill(&skills, "good", "name: good\ndescription: fine", "body");
+        // Directory without SKILL.md.
+        fs::create_dir_all(skills.join("emptydir")).unwrap();
+        // Unclosed frontmatter.
+        let bad = skills.join("unclosed");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(
+            bad.join("SKILL.md"),
+            "---\nname: unclosed\ndescription: never closed\nbody without closing fence",
+        )
+        .unwrap();
+
+        let (found, skipped) =
+            discover_skills_with_warnings(&proj, Some(&tmp.path().join("nohome")));
+        assert_eq!(
+            found.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["good"]
+        );
+        let reasons: Vec<(&str, &str)> = skipped
+            .iter()
+            .map(|s| (s.name.as_str(), s.reason.as_str()))
+            .collect();
+        assert!(
+            reasons.contains(&("nodesc", "missing description")),
+            "{:?}",
+            reasons
+        );
+        assert!(
+            reasons.contains(&("emptydir", "missing SKILL.md")),
+            "{:?}",
+            reasons
+        );
+        assert!(
+            reasons
+                .iter()
+                .any(|(n, r)| *n == "unclosed" && r.contains("unclosed frontmatter")),
+            "{:?}",
+            reasons
+        );
+    }
+
+    #[test]
+    fn test_discovery_warns_on_duplicate_name_in_same_root() {
+        let tmp = TempDir::new();
+        let proj = tmp.path().join("proj");
+        let skills = proj.join(".zen/skills");
+        write_skill(
+            &skills,
+            "aaa",
+            "name: dup\ndescription: first",
+            "first body",
+        );
+        write_skill(
+            &skills,
+            "zzz",
+            "name: dup\ndescription: second",
+            "second body",
+        );
+        let (found, skipped) =
+            discover_skill_entries_with_warnings(&proj, Some(&tmp.path().join("nohome")));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.description, "second");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "aaa");
+        assert!(
+            skipped[0].reason.contains("duplicate skill name"),
+            "{}",
+            skipped[0].reason
+        );
+    }
+
+    #[test]
+    fn test_project_override_user_is_not_a_warning() {
+        let tmp = TempDir::new();
+        let home = tmp.path().join("home");
+        let proj = tmp.path().join("proj");
+        write_skill(
+            &home.join(".zen/skills"),
+            "dup",
+            "name: dup\ndescription: from user",
+            "user body",
+        );
+        write_skill(
+            &proj.join(".zen/skills"),
+            "dup",
+            "name: dup\ndescription: from project",
+            "project body",
+        );
+        let (found, skipped) = discover_skill_entries_with_warnings(&proj, Some(&home));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.description, "from project");
+        assert!(skipped.is_empty(), "{:?}", skipped);
+    }
+
+    #[test]
+    fn test_load_skill_entry_wrapper_round_trips() {
+        let tmp = TempDir::new();
+        let skills = tmp.path().join(".zen/skills");
+        write_skill(
+            &skills,
+            "wrap",
+            "name: wrap\ndescription: Wrapper skill",
+            "wrapper body",
+        );
+        let dir = skills.join("wrap");
+        let (info, fm) = load_skill_entry(&dir).expect("good skill loads");
+        assert_eq!(info.name, "wrap");
+        assert_eq!(info.description, "Wrapper skill");
+        assert!(!fm.disable_model_invocation);
+        assert_eq!(load_skill(&dir).map(|s| s.name), Some("wrap".to_string()));
+        assert!(load_skill_entry(&skills.join("nope")).is_none());
+        assert!(load_skill(&skills.join("nope")).is_none());
+    }
+
+    #[test]
+    fn test_discovery_with_warnings_still_hides_manual_skills() {
+        let tmp = TempDir::new();
+        let proj = tmp.path().join("proj");
+        let skills = proj.join(".zen/skills");
+        write_skill(
+            &skills,
+            "manual",
+            "name: manual\ndescription: Manual only\ndisable-model-invocation: true",
+            "body",
+        );
+        write_skill(&skills, "auto", "name: auto\ndescription: Auto", "body");
+        let (found, skipped) =
+            discover_skills_with_warnings(&proj, Some(&tmp.path().join("nohome")));
+        assert_eq!(
+            found.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["auto"]
+        );
+        assert!(skipped.is_empty(), "{:?}", skipped);
     }
 }

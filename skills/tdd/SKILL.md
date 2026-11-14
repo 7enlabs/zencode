@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Test-driven development workflow - write the failing test first, then minimal code, then refactor
+description: Test-driven development workflow - write the failing test first, then minimal code, then refactor. Use when adding a feature or fixing a bug.
 allowed-tools: read, write, edit, bash
 ---
 
