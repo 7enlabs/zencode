@@ -135,7 +135,7 @@ impl ReplProgressSink {
                     ""
                 };
                 let mut out = Vec::new();
-                if let Some(text) = message.content.as_deref()
+                if let Some(text) = message.text_ref()
                     && !text.trim().is_empty()
                 {
                     // Same ● marker as the final answer (print_turn).
@@ -290,7 +290,7 @@ pub fn render(ev: &AgentEvent) -> Vec<String> {
                 ""
             };
             let mut out = Vec::new();
-            if let Some(text) = message.content.as_deref()
+            if let Some(text) = message.text_ref()
                 && !text.trim().is_empty()
             {
                 out.push(format!("{indent}● {}", clip(text, 160)));

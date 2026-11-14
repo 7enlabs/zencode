@@ -433,7 +433,7 @@ impl TranscriptWriter {
                 Some(x) => x,
                 None => return Ok(()),
             };
-            let text = first.content.clone().unwrap_or_default();
+            let text = first.text();
             self.write("summary", None, Some(Value::String(text)))?;
             rest
         };
@@ -824,8 +824,8 @@ mod tests {
         assert_eq!(msgs, vec![m1.clone(), m2.clone()]);
         let history = load_history(&path).unwrap();
         assert_eq!(history.len(), 2);
-        assert_eq!(history[0].content.as_deref(), Some("hello"));
-        assert_eq!(history[1].content.as_deref(), Some("hi there"));
+        assert_eq!(history[0].text_ref(), Some("hello"));
+        assert_eq!(history[1].text_ref(), Some("hi there"));
     }
 
     #[test]

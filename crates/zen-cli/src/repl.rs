@@ -643,8 +643,7 @@ fn with_hook_context(
     let mut out: Vec<zen_core::ChatMessage> = current
         .iter()
         .filter(|m| {
-            m.content
-                .as_deref()
+            m.text_ref()
                 .is_some_and(|c| c.starts_with("[SessionStart hook context]"))
         })
         .filter(|m| !history.contains(m))
@@ -2595,10 +2594,10 @@ mod hook_context_tests {
         let out = with_hook_context(&current, history);
         assert_eq!(out.len(), 2);
         assert_eq!(
-            out[0].content.as_deref(),
+            out[0].text_ref(),
             Some("[SessionStart hook context]\nfresh context")
         );
-        assert_eq!(out[1].content.as_deref(), Some("old question"));
+        assert_eq!(out[1].text_ref(), Some("old question"));
     }
 
     #[test]
@@ -2615,7 +2614,7 @@ mod hook_context_tests {
         let history = vec![ChatMessage::user("q")];
         let out = with_hook_context(&current, history);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].content.as_deref(), Some("q"));
+        assert_eq!(out[0].text_ref(), Some("q"));
     }
 }
 

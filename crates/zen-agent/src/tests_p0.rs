@@ -107,12 +107,7 @@ fn tool_results(agent: &crate::Agent) -> Vec<(String, String)> {
         .messages()
         .iter()
         .filter(|m| m.role == "tool")
-        .map(|m| {
-            (
-                m.tool_call_id.clone().unwrap_or_default(),
-                m.content.clone().unwrap_or_default(),
-            )
-        })
+        .map(|m| (m.tool_call_id.clone().unwrap_or_default(), m.text()))
         .collect()
 }
 
@@ -311,7 +306,7 @@ async fn p0_4_gateway_errors_retry_until_success_within_the_budget() {
         .chat(req())
         .await
         .expect("should succeed on the 4th attempt");
-    assert_eq!(r.message.content.as_deref(), Some("ok"));
+    assert_eq!(r.message.text_ref(), Some("ok"));
     assert_eq!(served.load(Ordering::SeqCst), 4);
     assert_eq!(retries(&sink), 3);
 }

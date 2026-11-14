@@ -96,10 +96,9 @@ impl zen_core::EventSink for TextSink {
                 self.buf.write_str(&text);
             }
             AgentEvent::Assistant { message, .. } => {
-                if let Some(content) = &message.content
-                    && !content.is_empty()
-                {
-                    self.buf.write_str(content);
+                let text = message.text();
+                if !text.is_empty() {
+                    self.buf.write_str(&text);
                 }
 
                 if self.is_repl
@@ -159,9 +158,7 @@ impl zen_core::EventSink for CapturingSink {
         match ev {
             AgentEvent::TextDelta { text } => self.buf.write_str(&text),
             AgentEvent::Assistant { message, .. } => {
-                if let Some(c) = &message.content {
-                    self.buf.write_str(c);
-                }
+                self.buf.write_str(&message.text());
             }
             AgentEvent::ToolResult { .. } => {}
             AgentEvent::PermissionDenied(_) => {}

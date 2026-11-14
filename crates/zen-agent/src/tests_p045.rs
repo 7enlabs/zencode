@@ -213,7 +213,7 @@ async fn p0_4_429_waits_until_x_ratelimit_reset() {
     c.base_retry_delay_ms = 1;
     let t0 = Instant::now();
     let r = c.chat(req()).await.unwrap();
-    assert_eq!(r.message.content.as_deref(), Some("ok"));
+    assert_eq!(r.message.text_ref(), Some("ok"));
     assert_eq!(served.load(Ordering::SeqCst), 2);
     let d = retry_delays(&sink);
     assert_eq!(d.len(), 1);
@@ -272,10 +272,7 @@ async fn p0_4_402_in_flight_budget_with_retry_after_is_retried() {
     .await;
     let mut c = OpenAiClient::new(base, None, Arc::new(CollectSink::default()));
     c.base_retry_delay_ms = 1;
-    assert_eq!(
-        c.chat(req()).await.unwrap().message.content.as_deref(),
-        Some("ok")
-    );
+    assert_eq!(c.chat(req()).await.unwrap().message.text_ref(), Some("ok"));
     assert_eq!(served.load(Ordering::SeqCst), 2);
 }
 
@@ -327,10 +324,7 @@ async fn p0_5_mid_response_429_is_retried_then_succeeds() {
     let sink = Arc::new(CollectSink::default());
     let mut c = OpenAiClient::new(base, None, sink.clone());
     c.base_retry_delay_ms = 1;
-    assert_eq!(
-        c.chat(req()).await.unwrap().message.content.as_deref(),
-        Some("ok")
-    );
+    assert_eq!(c.chat(req()).await.unwrap().message.text_ref(), Some("ok"));
     assert_eq!(served.load(Ordering::SeqCst), 2);
     let ev = sink.events.lock().unwrap();
     assert!(ev.iter().any(|e| matches!(
@@ -377,10 +371,7 @@ async fn p0_5_content_filter_is_one_request_not_a_resample() {
     let r = c.chat(req()).await.unwrap();
     assert_eq!(served.load(Ordering::SeqCst), 1);
     assert_eq!(r.finish_reason.as_deref(), Some("content_filter"));
-    assert_eq!(
-        r.message.content.as_deref(),
-        Some("I can't help with that.")
-    );
+    assert_eq!(r.message.text_ref(), Some("I can't help with that."));
 }
 
 fn filtered(text: Option<&str>) -> ChatResponse {

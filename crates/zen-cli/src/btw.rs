@@ -31,7 +31,7 @@ pub async fn run_btw(
         max_tokens: Some(BTW_MAX_TOKENS),
     };
     let resp = llm.chat(req).await?;
-    Ok(resp.message.content.unwrap_or_default())
+    Ok(resp.message.text())
 }
 
 #[cfg(test)]
@@ -78,12 +78,12 @@ mod tests {
         assert_eq!(req.messages.len(), 2);
         assert_eq!(req.messages[0].role, "system");
         assert_eq!(
-            req.messages[0].content.as_deref(),
+            req.messages[0].text_ref(),
             Some(BTW_SYSTEM_PROMPT),
             "side questions use the short btw prompt, not the agent system prompt"
         );
         assert_eq!(req.messages[1].role, "user");
-        assert_eq!(req.messages[1].content.as_deref(), Some("what is 6*7?"));
+        assert_eq!(req.messages[1].text_ref(), Some("what is 6*7?"));
 
         assert!(req.tools.is_empty());
     }

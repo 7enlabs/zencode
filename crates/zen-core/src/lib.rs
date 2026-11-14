@@ -39,11 +39,173 @@ fn default_function() -> String {
     "function".into()
 }
 
+/// Fixed token estimate for one image content part. The provider bills at
+/// most 384 input tokens per image; the estimate never scales with the
+/// base64 payload length, so a large image cannot silently eat the budget.
+pub const IMAGE_PART_TOKEN_ESTIMATE: u64 = 384;
+
+/// Placeholder rendered for an image part in transcripts and compaction
+/// input. The base64 payload is never written there.
+pub const IMAGE_PART_PLACEHOLDER: &str = "[image]";
+
+/// The payload of one `image_url` content part (OpenAI-compatible shape).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageUrl {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl ImageUrl {
+    /// Build an image URL part payload. `detail` defaults to `"auto"`.
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            detail: Some("auto".into()),
+        }
+    }
+}
+
+/// The payload of one Anthropic `image` content block.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageSource {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub media_type: String,
+    pub data: String,
+}
+
+impl ImageSource {
+    /// Build a base64 image source for the Anthropic `image` block shape.
+    pub fn base64(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self {
+            source_type: "base64".into(),
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+}
+
+/// One entry of a multi-part message `content` array.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+    Image { source: ImageSource },
+}
+
+impl ContentPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn image_url(url: impl Into<String>) -> Self {
+        Self::ImageUrl {
+            image_url: ImageUrl::new(url),
+        }
+    }
+
+    pub fn image(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Image {
+            source: ImageSource::base64(media_type, data),
+        }
+    }
+
+    pub fn is_image(&self) -> bool {
+        !matches!(self, Self::Text { .. })
+    }
+}
+
+/// A message `content` value: either a plain string (the historical shape,
+/// serialised verbatim) or an array of content parts (text + images).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+impl From<String> for MessageContent {
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
+}
+
+impl From<&str> for MessageContent {
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_string())
+    }
+}
+
+impl From<Vec<ContentPart>> for MessageContent {
+    fn from(parts: Vec<ContentPart>) -> Self {
+        Self::Parts(parts)
+    }
+}
+
+impl MessageContent {
+    /// Plain-text view: the string itself, or the text parts of a parts
+    /// message joined together. Image parts contribute nothing here.
+    pub fn text(&self) -> String {
+        match self {
+            Self::Text(s) => s.clone(),
+            Self::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Transcript-safe view: like [`MessageContent::text`], but each image
+    /// part renders as the `[image]` placeholder. The base64 payload never
+    /// appears in the returned string.
+    pub fn transcript_text(&self) -> String {
+        match self {
+            Self::Text(s) => s.clone(),
+            Self::Parts(parts) => {
+                let mut out = String::new();
+                for p in parts {
+                    match p {
+                        ContentPart::Text { text } => out.push_str(text),
+                        _ => out.push_str(IMAGE_PART_PLACEHOLDER),
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    /// Number of bytes of plain text (text parts only, never base64).
+    pub fn text_len(&self) -> usize {
+        match self {
+            Self::Text(s) => s.len(),
+            Self::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.len()),
+                    _ => None,
+                })
+                .sum(),
+        }
+    }
+
+    pub fn image_part_count(&self) -> usize {
+        match self {
+            Self::Text(_) => 0,
+            Self::Parts(parts) => parts.iter().filter(|p| p.is_image()).count(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ChatMessage {
     pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,18 +218,36 @@ impl ChatMessage {
     pub fn system(c: impl Into<String>) -> Self {
         Self {
             role: "system".into(),
-            content: Some(c.into()),
+            content: Some(MessageContent::Text(c.into())),
             ..Default::default()
         }
     }
     pub fn user(c: impl Into<String>) -> Self {
         Self {
             role: "user".into(),
-            content: Some(c.into()),
+            content: Some(MessageContent::Text(c.into())),
+            ..Default::default()
+        }
+    }
+    /// A user message carrying text and/or image parts.
+    pub fn user_parts(parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: "user".into(),
+            content: Some(MessageContent::Parts(parts)),
             ..Default::default()
         }
     }
     pub fn assistant(c: Option<String>, calls: Option<Vec<ToolCall>>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: c.map(MessageContent::Text),
+            tool_calls: calls,
+            ..Default::default()
+        }
+    }
+    /// An assistant message whose content is already a [`MessageContent`]
+    /// (text or parts, e.g. decoded from a provider response).
+    pub fn assistant_content(c: Option<MessageContent>, calls: Option<Vec<ToolCall>>) -> Self {
         Self {
             role: "assistant".into(),
             content: c,
@@ -78,10 +258,41 @@ impl ChatMessage {
     pub fn tool(id: impl Into<String>, c: impl Into<String>) -> Self {
         Self {
             role: "tool".into(),
-            content: Some(c.into()),
+            content: Some(MessageContent::Text(c.into())),
             tool_call_id: Some(id.into()),
             ..Default::default()
         }
+    }
+
+    /// Plain-text view of the content (`""` when absent). See
+    /// [`MessageContent::text`].
+    pub fn text(&self) -> String {
+        self.content.as_ref().map(|c| c.text()).unwrap_or_default()
+    }
+
+    /// Transcript-safe view of the content. See
+    /// [`MessageContent::transcript_text`].
+    pub fn transcript_text(&self) -> String {
+        self.content
+            .as_ref()
+            .map(|c| c.transcript_text())
+            .unwrap_or_default()
+    }
+
+    /// The content as a plain `&str` when it is a text string, `None` for
+    /// absent content and for parts content.
+    pub fn text_ref(&self) -> Option<&str> {
+        match &self.content {
+            Some(MessageContent::Text(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn image_part_count(&self) -> usize {
+        self.content
+            .as_ref()
+            .map(|c| c.image_part_count())
+            .unwrap_or(0)
     }
 }
 
@@ -662,21 +873,25 @@ pub trait SubAgentRunner: Send + Sync {
 }
 
 pub fn estimate_tokens(messages: &[ChatMessage]) -> u64 {
-    messages
-        .iter()
-        .map(|m| {
-            m.content.as_deref().map(|c| c.len()).unwrap_or(0)
-                + m.tool_calls
-                    .as_ref()
-                    .map(|v| {
-                        v.iter()
-                            .map(|c| c.function.arguments.len() + c.function.name.len())
-                            .sum()
-                    })
-                    .unwrap_or(0)
-        })
-        .sum::<usize>() as u64
-        / 4
+    let mut chars = 0usize;
+    let mut images = 0u64;
+    for m in messages {
+        if let Some(content) = &m.content {
+            chars += content.text_len();
+            images += content.image_part_count() as u64;
+        }
+        chars += m
+            .tool_calls
+            .as_ref()
+            .map(|v| {
+                v.iter()
+                    .map(|c| c.function.arguments.len() + c.function.name.len())
+                    .sum()
+            })
+            .unwrap_or(0);
+    }
+    // Image parts cost a fixed estimate each (never the base64 length).
+    chars as u64 / 4 + images * IMAGE_PART_TOKEN_ESTIMATE
 }
 
 pub fn extra_root_pem() -> Option<Vec<u8>> {
@@ -886,6 +1101,61 @@ mod tests {
     fn message_serializes_without_nulls() {
         let s = serde_json::to_string(&ChatMessage::user("hi")).unwrap();
         assert_eq!(s, r#"{"role":"user","content":"hi"}"#);
+    }
+    #[test]
+    fn message_parts_serialize_openai_compatible() {
+        // Golden JSON: a user message with a text part and an image_url part
+        // serialises to the exact OpenAI-compatible shape.
+        let msg = ChatMessage::user_parts(vec![
+            ContentPart::text("Describe this image"),
+            ContentPart::image_url("data:image/png;base64,iVBORw0KGgo="),
+        ]);
+        let s = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            s,
+            r#"{"role":"user","content":[{"type":"text","text":"Describe this image"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=","detail":"auto"}}]}"#
+        );
+    }
+    #[test]
+    fn message_content_roundtrips_string_and_parts() {
+        let from_string: ChatMessage =
+            serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        assert_eq!(from_string, ChatMessage::user("hi"));
+        let from_parts: ChatMessage = serde_json::from_str(
+            r#"{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA","detail":"auto"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(from_parts.image_part_count(), 1);
+        assert_eq!(from_parts.text(), "hi");
+        // The base64 payload never leaks into the transcript view.
+        assert!(!from_parts.transcript_text().contains("AAAA"));
+        assert!(from_parts.transcript_text().contains("[image]"));
+    }
+    #[test]
+    fn estimate_tokens_charges_image_parts_fixed_estimate() {
+        let text_only = vec![ChatMessage::user("hi")];
+        assert_eq!(estimate_tokens(&text_only), 0);
+        let with_image = vec![ChatMessage::user_parts(vec![
+            ContentPart::text("hi"),
+            ContentPart::image_url("data:image/png;base64,AAAA"),
+        ])];
+        assert_eq!(
+            estimate_tokens(&with_image),
+            IMAGE_PART_TOKEN_ESTIMATE,
+            "one image part costs the fixed estimate, not base64 length / 4"
+        );
+        // A long base64 payload must not raise the estimate.
+        let long_payload = "A".repeat(100_000);
+        let with_long_image = vec![ChatMessage::user_parts(vec![
+            ContentPart::text("hi"),
+            ContentPart::image_url(format!("data:image/png;base64,{long_payload}")),
+        ])];
+        assert_eq!(estimate_tokens(&with_long_image), IMAGE_PART_TOKEN_ESTIMATE);
+        let two_images = vec![ChatMessage::user_parts(vec![
+            ContentPart::image_url("data:image/png;base64,AAAA"),
+            ContentPart::image_url("data:image/png;base64,BBBB"),
+        ])];
+        assert_eq!(estimate_tokens(&two_images), 2 * IMAGE_PART_TOKEN_ESTIMATE);
     }
     #[test]
     fn settings_parse_camel_case_and_extra() {

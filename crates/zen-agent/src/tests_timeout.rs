@@ -142,7 +142,7 @@ async fn p0_2_slow_server_times_out_at_the_configured_threshold_then_retries() {
         .await
         .expect("retry after the timeout should succeed");
     let took = t0.elapsed();
-    assert_eq!(r.message.content.as_deref(), Some("ok"));
+    assert_eq!(r.message.text_ref(), Some("ok"));
     assert_eq!(served.load(Ordering::SeqCst), 2);
     let errs = retry_errors(&sink);
     assert_eq!(errs.len(), 1, "{errs:?}");
@@ -189,7 +189,7 @@ async fn p0_2_idle_timeout_catches_a_stalled_body() {
         .chat(req())
         .await
         .expect("retry after the stall should succeed");
-    assert_eq!(r.message.content.as_deref(), Some("ok"));
+    assert_eq!(r.message.text_ref(), Some("ok"));
     assert_eq!(served.load(Ordering::SeqCst), 2);
     let errs = retry_errors(&sink);
     assert!(errs[0].contains("api.idleTimeoutSecs"), "{}", errs[0]);
@@ -268,7 +268,7 @@ async fn p0_2_anthropic_client_times_out_retries_and_reports_request_id() {
         .chat(req())
         .await
         .expect("retry after the timeout should succeed");
-    assert_eq!(r.message.content.as_deref(), Some("ok"));
+    assert_eq!(r.message.text_ref(), Some("ok"));
     assert_eq!(served.load(Ordering::SeqCst), 2);
     assert!(retry_errors(&sink)[0].contains("api.timeoutSecs"));
 

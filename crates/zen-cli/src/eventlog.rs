@@ -976,10 +976,7 @@ mod tests {
         );
         let r1 = &history[turn1.len() + 2];
         assert_eq!(r1.tool_call_id.as_deref(), Some("c1"));
-        assert!(
-            r1.content.as_deref().unwrap().contains("alpha-durable"),
-            "{r1:?}"
-        );
+        assert!(r1.text_ref().unwrap().contains("alpha-durable"), "{r1:?}");
         assert_eq!(
             history[turn1.len() + 3],
             ChatMessage::tool("c2", INTERRUPTED_TOOL_RESULT)

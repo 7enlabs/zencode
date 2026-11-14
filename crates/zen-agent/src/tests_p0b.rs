@@ -58,7 +58,7 @@ async fn run_slow(
         .messages()
         .iter()
         .find(|m| m.role == "tool")
-        .and_then(|m| m.content.clone())
+        .and_then(|m| m.text_ref().map(str::to_string))
         .unwrap_or_default();
     let seen = seen.lock().unwrap().clone();
     (result, seen, t0.elapsed())

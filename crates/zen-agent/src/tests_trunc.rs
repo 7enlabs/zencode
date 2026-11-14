@@ -61,7 +61,7 @@ fn last_user(req: &ChatRequest) -> String {
         .iter()
         .rev()
         .find(|m| m.role == "user")
-        .and_then(|m| m.content.clone())
+        .and_then(|m| m.text_ref().map(str::to_string))
         .unwrap_or_default()
 }
 
@@ -100,7 +100,7 @@ async fn trunc_text_reply_is_continued_and_stitched() {
     assert_eq!(last_user(&reqs[1]), TRUNCATION_CONTINUE_NUDGE);
     let prev = &reqs[1].messages[reqs[1].messages.len() - 2];
     assert_eq!(prev.role, "assistant");
-    assert_eq!(prev.content.as_deref(), Some("The answer is forty"));
+    assert_eq!(prev.text_ref(), Some("The answer is forty"));
     assert_eq!(last_user(&reqs[2]), TRUNCATION_CONTINUE_NUDGE);
 
     let n = sink

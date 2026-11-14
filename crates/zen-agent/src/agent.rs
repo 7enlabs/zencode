@@ -461,21 +461,21 @@ impl Agent {
         let mut glue = false;
         for m in self.messages.iter().rev() {
             if m.role == "user" {
-                if m.content.as_deref() == Some(TRUNCATION_CONTINUE_NUDGE) {
+                if m.text_ref() == Some(TRUNCATION_CONTINUE_NUDGE) {
                     glue = true;
                     continue;
                 }
                 break;
             }
             if m.role == "assistant"
-                && let Some(c) = &m.content
+                && let Some(c) = m.text_ref()
             {
                 if glue && !parts.is_empty() {
                     if let Some(last) = parts.last_mut() {
                         last.insert_str(0, c);
                     }
                 } else if !c.trim().is_empty() {
-                    parts.push(c.clone());
+                    parts.push(c.to_string());
                 }
                 glue = false;
             }
@@ -669,7 +669,7 @@ impl Agent {
                     .as_ref()
                     .is_none_or(|c| c.is_empty())
             {
-                let text = resp.message.content.clone().unwrap_or_default();
+                let text = resp.message.text();
                 if !text.trim().is_empty() {
                     self.messages.push(resp.message.clone());
                     self.sink.emit(AgentEvent::Assistant {
@@ -698,7 +698,7 @@ impl Agent {
                 if calls.is_empty() || broken {
                     let mut msg = resp.message.clone();
                     msg.tool_calls = None;
-                    let text = msg.content.clone().unwrap_or_default();
+                    let text = msg.text();
 
                     if !text.is_empty() {
                         self.messages.push(msg.clone());
@@ -761,7 +761,7 @@ impl Agent {
                 .as_ref()
                 .is_none_or(|c| c.is_empty())
             {
-                let text = resp.message.content.clone().unwrap_or_default();
+                let text = resp.message.text();
                 if let Some((name, arguments)) =
                     repair::tool_call_in_text(&text, &self.tools.names())
                 {
@@ -784,7 +784,7 @@ impl Agent {
 
             let assistant = &resp.message;
             let tool_calls = assistant.tool_calls.clone().unwrap_or_default();
-            final_text = assistant.content.clone().unwrap_or_default();
+            final_text = assistant.text();
 
             if tool_calls.is_empty()
                 && final_text.trim().is_empty()
@@ -1408,9 +1408,18 @@ impl Agent {
         if let Some(last) = self.messages.last_mut()
             && (last.role == "tool" || last.role == "user")
         {
-            let content = last.content.get_or_insert_with(String::new);
-            content.push_str("\n\n");
-            content.push_str(&note);
+            let content = last
+                .content
+                .get_or_insert_with(|| MessageContent::Text(String::new()));
+            match content {
+                MessageContent::Text(text) => {
+                    text.push_str("\n\n");
+                    text.push_str(&note);
+                }
+                MessageContent::Parts(parts) => {
+                    parts.push(ContentPart::text(format!("\n\n{note}")));
+                }
+            }
             self.model_calls_since_todo = 0;
         }
     }

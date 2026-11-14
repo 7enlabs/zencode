@@ -642,7 +642,7 @@ mod tests {
         messages.push(zen_core::ChatMessage::user(exp.prompt));
         let all: String = messages
             .iter()
-            .filter_map(|m| m.content.clone())
+            .filter_map(|m| m.text_ref().map(str::to_string))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(all.contains("shell-content"));

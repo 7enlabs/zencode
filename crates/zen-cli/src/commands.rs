@@ -205,7 +205,10 @@ pub fn init_prompt_with_imports(candidates: &[std::path::PathBuf]) -> String {
 /// Bytes one message adds to the estimate; the same terms as
 /// `zen_core::estimate_tokens`, so the groups below add up to its total.
 fn message_bytes(m: &zen_core::ChatMessage) -> usize {
-    m.content.as_deref().map(str::len).unwrap_or(0)
+    // Image parts cost the fixed estimate; expressed in bytes (4 bytes per
+    // token) so the groups below still add up to `estimate_tokens`.
+    m.text().len()
+        + m.image_part_count() * (zen_core::IMAGE_PART_TOKEN_ESTIMATE as usize * 4)
         + m.tool_calls
             .as_ref()
             .map(|calls| {
@@ -422,14 +425,12 @@ pub fn transcript_markdown(session_id: &str, messages: &[zen_core::ChatMessage])
     let mut out = format!("# zen session {}\n", session_id);
     for m in messages {
         match m.role.as_str() {
-            "user" => out.push_str(&format!(
-                "\n## User\n\n{}\n",
-                m.content.as_deref().unwrap_or("")
-            )),
+            "user" => out.push_str(&format!("\n## User\n\n{}\n", m.text())),
             "assistant" => {
                 out.push_str("\n## Assistant\n\n");
-                if let Some(c) = m.content.as_deref().filter(|c| !c.is_empty()) {
-                    out.push_str(c);
+                let text = m.text();
+                if !text.is_empty() {
+                    out.push_str(&text);
                     out.push('\n');
                 }
                 for call in m.tool_calls.iter().flatten() {
@@ -443,7 +444,7 @@ pub fn transcript_markdown(session_id: &str, messages: &[zen_core::ChatMessage])
                 out.push_str(&format!(
                     "\n**Tool result** ({}):\n\n```\n{}\n```\n",
                     m.tool_call_id.as_deref().unwrap_or("?"),
-                    m.content.as_deref().unwrap_or("")
+                    m.text()
                 ));
             }
             _ => {}

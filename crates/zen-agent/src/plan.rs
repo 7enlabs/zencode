@@ -191,7 +191,7 @@ mod tests {
             .collect();
         let tail = safe_tail(&msgs, 2);
         assert_eq!(tail.len(), 2);
-        assert_eq!(tail[0].content.as_deref(), Some("m4"));
+        assert_eq!(tail[0].text_ref(), Some("m4"));
     }
 
     #[test]
@@ -206,7 +206,7 @@ mod tests {
         let tail = safe_tail(&msgs, 2);
         assert_eq!(tail.len(), 3);
         assert_eq!(tail[0].role, "assistant");
-        assert_eq!(tail[2].content.as_deref(), Some("done"));
+        assert_eq!(tail[2].text_ref(), Some("done"));
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
         let msgs = vec![tool_call_msg("c1"), ChatMessage::user("later")];
         let tail = safe_tail(&msgs, 2);
         assert_eq!(tail.len(), 1);
-        assert_eq!(tail[0].content.as_deref(), Some("later"));
+        assert_eq!(tail[0].text_ref(), Some("later"));
     }
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
         let tail = safe_tail(&msgs, 10);
         assert!(!tail.is_empty(), "tail must retain the complete exchange");
         assert_eq!(tail[0].role, "user");
-        assert_eq!(tail[0].content.as_deref(), Some("u"));
+        assert_eq!(tail[0].text_ref(), Some("u"));
     }
 
     #[test]
