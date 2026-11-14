@@ -41,11 +41,11 @@ impl PermissionMode {
     }
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
-            "default" | "manual" | "auto" => PermissionMode::Default,
-            "acceptEdits" => PermissionMode::AcceptEdits,
+            "default" => PermissionMode::Default,
+            "acceptEdits" | "accept-edits" => PermissionMode::AcceptEdits,
             "plan" => PermissionMode::Plan,
-            "bypassPermissions" => PermissionMode::BypassPermissions,
-            "dontAsk" => PermissionMode::DontAsk,
+            "bypassPermissions" | "bypass-permissions" => PermissionMode::BypassPermissions,
+            "dontAsk" | "dont-ask" => PermissionMode::DontAsk,
             _ => return None,
         })
     }
@@ -55,17 +55,25 @@ fn parse_tool_bundle(s: &str) -> Result<zen_agent::ToolBundle, String> {
     s.parse::<zen_agent::ToolBundle>()
 }
 
-fn parse_permission_mode_flag(s: &str) -> Result<PermissionMode, String> {
-    if s == "auto" {
-        eprintln!("warning: permission mode 'auto' is not supported; using 'default'");
-    }
-    PermissionMode::parse(s).ok_or_else(|| {
+/// Error text for a permission-mode spelling that is not a supported mode.
+/// `auto` and `manual` are not modes: they point at `default` instead of
+/// silently meaning it. Anything else lists the accepted spellings.
+/// `source` names where the value came from, e.g. "--permission-mode"
+/// or "settings (permissions.defaultMode)".
+pub fn invalid_permission_mode_error(value: &str, source: &str) -> String {
+    if value == "auto" || value == "manual" {
         format!(
-            "invalid permission mode '{}' (expected one of: default, manual, acceptEdits, plan, \
-             dontAsk, bypassPermissions)",
-            s
+            "invalid permission mode '{value}' in {source}: '{value}' is not a supported mode; use 'default'"
         )
-    })
+    } else {
+        format!(
+            "invalid permission mode '{value}' in {source} (expected one of: default, acceptEdits, accept-edits, plan, bypassPermissions, bypass-permissions, dontAsk, dont-ask)"
+        )
+    }
+}
+
+fn parse_permission_mode_flag(s: &str) -> Result<PermissionMode, String> {
+    PermissionMode::parse(s).ok_or_else(|| invalid_permission_mode_error(s, "--permission-mode"))
 }
 
 impl std::fmt::Display for PermissionMode {
@@ -213,7 +221,10 @@ pub struct Cli {
     #[arg(long = "provider")]
     pub provider: Option<String>,
 
-    /// Permission mode for tool calls
+    /// Permission mode for tool calls: default, acceptEdits, plan,
+    /// bypassPermissions, dontAsk. Kebab-case spellings (accept-edits,
+    /// bypass-permissions, dont-ask) mean the same mode. 'auto' and
+    /// 'manual' are not modes and are rejected; use 'default'.
     #[arg(long = "permission-mode", value_parser = parse_permission_mode_flag)]
     pub permission_mode: Option<PermissionMode>,
 
@@ -1131,25 +1142,75 @@ mod tests {
     }
 
     #[test]
+    fn permission_mode_parse_table() {
+        for (spelling, mode) in [
+            ("default", PermissionMode::Default),
+            ("acceptEdits", PermissionMode::AcceptEdits),
+            ("accept-edits", PermissionMode::AcceptEdits),
+            ("plan", PermissionMode::Plan),
+            ("bypassPermissions", PermissionMode::BypassPermissions),
+            ("bypass-permissions", PermissionMode::BypassPermissions),
+            ("dontAsk", PermissionMode::DontAsk),
+            ("dont-ask", PermissionMode::DontAsk),
+        ] {
+            assert_eq!(PermissionMode::parse(spelling), Some(mode), "{spelling}");
+        }
+        // 'auto' and 'manual' are not modes and never silently mean default.
+        // Anything else (wrong case, snake_case, empty) is rejected too.
+        for spelling in [
+            "auto",
+            "manual",
+            "yolo",
+            "",
+            "Default",
+            "PLAN",
+            "accept_edits",
+        ] {
+            assert_eq!(PermissionMode::parse(spelling), None, "{spelling}");
+        }
+    }
+
+    #[test]
     fn c2_11_permission_mode_aliases() {
+        // Kebab-case spellings are accepted and mean the same mode.
         assert_eq!(
-            parse(&["--permission-mode", "manual"]).permission_mode,
-            Some(PermissionMode::Default)
+            parse(&["--permission-mode", "accept-edits"]).permission_mode,
+            Some(PermissionMode::AcceptEdits)
         );
         assert_eq!(
-            parse(&["--permission-mode", "auto"]).permission_mode,
-            Some(PermissionMode::Default)
+            parse(&["--permission-mode", "bypass-permissions"]).permission_mode,
+            Some(PermissionMode::BypassPermissions)
+        );
+        assert_eq!(
+            parse(&["--permission-mode", "dont-ask"]).permission_mode,
+            Some(PermissionMode::DontAsk)
         );
         assert_eq!(
             parse(&["--permission-mode", "dontAsk"]).permission_mode,
             Some(PermissionMode::DontAsk)
         );
+        // 'auto' and 'manual' are rejected with a pointer at 'default',
+        // never silently mapped to it.
+        for name in ["auto", "manual"] {
+            let err = Cli::try_parse_from(["zen", "--permission-mode", name]).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!("invalid permission mode '{name}'")),
+                "{msg}"
+            );
+            assert!(
+                msg.contains(&format!("'{name}' is not a supported mode")),
+                "{msg}"
+            );
+            assert!(msg.contains("use 'default'"), "{msg}");
+        }
+        // Any other unknown value lists the accepted spellings.
         let err = Cli::try_parse_from(["zen", "--permission-mode", "yolo"]).unwrap_err();
-        assert!(
-            err.to_string().contains("invalid permission mode 'yolo'"),
-            "{}",
-            err
-        );
+        let msg = err.to_string();
+        assert!(msg.contains("invalid permission mode 'yolo'"), "{msg}");
+        assert!(msg.contains("expected one of"), "{msg}");
+        assert!(msg.contains("accept-edits"), "{msg}");
+        assert!(!msg.contains("not a supported mode"), "{msg}");
     }
 
     #[test]

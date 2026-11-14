@@ -31,7 +31,7 @@ zen [OPTIONS] [PROMPT]
 | `--model <name>` | Override model. |
 | `--base-url <url>` / env `ZEN_BASE_URL` | OpenAI-compatible endpoint. |
 | env `ZEN_API_KEY` (or `OPENAI_API_KEY`) | Bearer token; optional (some gateways inject auth). Never logged. |
-| `--permission-mode default\|acceptEdits\|plan\|bypassPermissions\|dontAsk` | See §5. |
+| `--permission-mode default\|acceptEdits\|plan\|bypassPermissions\|dontAsk` (kebab-case `accept-edits`, `bypass-permissions`, `dont-ask` also accepted; `auto`/`manual` rejected) | See §5. |
 | `--allowedTools <rules...>` / `--disallowedTools <rules...>` | Comma/space separated permission rules. |
 | `--tools <list>` | Restrict built-in tool set (`""` = none, `default` = all, `Read,Bash` = only those, `-Bash,-Write` / `+Name` = default set minus/plus; plain names and +/- deltas cannot be mixed). |
 | `--system-prompt <text>` / `--append-system-prompt <text>` | Replace / append to the built-in system prompt. |
@@ -99,6 +99,7 @@ Read-only tools (no permission needed in `default`): Read, Glob, Grep, TodoWrite
 - `plan`: no mutating tool runs; the model is told to research and present a plan; an `ExitPlanMode`-style tool (`ExitPlan{plan}`) ends plan mode after user approval.
 - `bypassPermissions`: everything allowed (still subject to `deny` rules? → No: bypass skips checks, but `deny` rules still win - zen choice for safety).
 - `dontAsk`: anything that would prompt is denied automatically; allow rules still apply.
+- Spelling: kebab-case (`accept-edits`, `bypass-permissions`, `dont-ask`) is accepted everywhere a mode name is parsed. `auto` and `manual` are not modes: the flag rejects them and `permissions.defaultMode` with those values fails config resolution; neither ever silently means `default`.
 
 **Rule syntax** (in settings `permissions.allow|ask|deny` arrays and CLI flags): `Tool` or `Tool(specifier)`.
 - `Bash(npm run test)` exact; `Bash(git diff *)` prefix (space before `*` matters; `Bash(git diff*)` also matches `git diff-index`).
@@ -242,7 +243,7 @@ Status column is maintained in PLAN.md ("Parity status").
 - C2.8 P1 `WebFetch(domain:x)` hostname match, case-insensitive; `*.x` = subdomains only; `domain:*` = all.
 - C2.9 P1 MCP: `mcp__srv`, `mcp__srv__*`, `mcp__srv__tool`; deny/ask accept tool-name globs (`*`, `mcp__*`).
 - C2.10 P2 `Agent(name)` / `Task(name)` rules gate sub-agent types.
-- C2.11 P1 Modes: default (alias `manual`), acceptEdits (edits + mkdir/touch/mv/cp inside working dirs), plan (no mutations), dontAsk (would-ask → deny), bypassPermissions (deny rules still win); `auto` is P3 (classifier) - accepted as alias of default with a warning.
+- C2.11 P1 Modes: default, acceptEdits (also `accept-edits`; edits + mkdir/touch/mv/cp inside working dirs), plan (no mutations), dontAsk (also `dont-ask`; would-ask → deny), bypassPermissions (also `bypass-permissions`; deny rules still win); `auto` and `manual` are not modes and are rejected (flag error, settings error), never silently `default`.
 - C2.12 P1 "Always allow" from the REPL writes to `.zen/settings.local.json`; for a compound Bash command one rule per sub-command (max 5).
 - C2.13 P1 PreToolUse hook decisions cannot override deny/ask rules; exit-2 block beats allow rules.
 

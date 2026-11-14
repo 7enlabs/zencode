@@ -1,4 +1,4 @@
-use crate::cli::{Cli, PermissionMode};
+use crate::cli::{Cli, PermissionMode, invalid_permission_mode_error};
 use anyhow::Result;
 use zen_core::{PermissionSettings, Settings};
 
@@ -547,9 +547,16 @@ fn resolve_permission_mode(
         }
         return Ok(*m);
     }
-    if let Some(m) = default_mode
-        && let Some(parsed) = PermissionMode::parse(m)
-    {
+    if let Some(m) = default_mode {
+        let Some(parsed) = PermissionMode::parse(m) else {
+            // A bad defaultMode in settings must fail loudly: silently
+            // falling back to `default` hid typos and the unsupported
+            // 'auto'/'manual' spellings (which never were real modes).
+            anyhow::bail!(invalid_permission_mode_error(
+                m,
+                "settings (permissions.defaultMode)"
+            ));
+        };
         if bypass_forbidden && parsed == PermissionMode::BypassPermissions {
             anyhow::bail!(
                 "bypassPermissions mode is disabled by settings (disableBypassPermissionsMode)"
@@ -624,9 +631,6 @@ pub fn resolve_config_with_home(
     let merged = loaded.settings;
     let loaded_sources = loaded.sources;
     let mut warnings = loaded.warnings;
-    if cli.permission_mode.is_none() && merged.permissions.default_mode.as_deref() == Some("auto") {
-        warnings.push("permission mode 'auto' is not supported; using 'default'".to_string());
-    }
 
     if !cli.print {
         for w in &warnings {
@@ -1383,27 +1387,47 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join(".zen")).unwrap();
         let cli = Cli::parse_from(["zen", "-p", "--setting-sources", "project"]);
+        // Kebab-case spellings in settings mean the same mode.
         fs::write(
             dir.join(".zen/settings.json"),
-            r#"{"permissions":{"defaultMode":"manual"}}"#,
+            r#"{"permissions":{"defaultMode":"accept-edits"}}"#,
         )
         .unwrap();
-        let manual = resolve_config(&cli, &dir).unwrap();
+        let kebab = resolve_config(&cli, &dir).unwrap();
+        assert_eq!(kebab.permission_mode, PermissionMode::AcceptEdits);
+        // 'manual' and 'auto' are not modes: config resolution fails
+        // loudly instead of silently falling back to `default`.
+        for name in ["manual", "auto"] {
+            fs::write(
+                dir.join(".zen/settings.json"),
+                format!(r#"{{"permissions":{{"defaultMode":"{name}"}}}}"#),
+            )
+            .unwrap();
+            let err = resolve_config(&cli, &dir).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!("invalid permission mode '{name}'")),
+                "{msg}"
+            );
+            assert!(
+                msg.contains(&format!("'{name}' is not a supported mode")),
+                "{msg}"
+            );
+            assert!(msg.contains("use 'default'"), "{msg}");
+            assert!(msg.contains("permissions.defaultMode"), "{msg}");
+        }
+        // Any other unknown value fails too, listing the accepted spellings.
         fs::write(
             dir.join(".zen/settings.json"),
-            r#"{"permissions":{"defaultMode":"auto"}}"#,
+            r#"{"permissions":{"defaultMode":"yolo"}}"#,
         )
         .unwrap();
-        let auto = resolve_config(&cli, &dir).unwrap();
+        let err = resolve_config(&cli, &dir).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid permission mode 'yolo'"), "{msg}");
+        assert!(msg.contains("expected one of"), "{msg}");
+        assert!(!msg.contains("not a supported mode"), "{msg}");
         let _ = fs::remove_dir_all(&dir);
-        assert_eq!(manual.permission_mode, PermissionMode::Default);
-        assert!(manual.warnings.is_empty());
-        assert_eq!(auto.permission_mode, PermissionMode::Default);
-        assert!(
-            auto.warnings.iter().any(|w| w.contains("'auto'")),
-            "{:?}",
-            auto.warnings
-        );
     }
 
     #[test]

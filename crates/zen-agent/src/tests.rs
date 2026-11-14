@@ -1168,6 +1168,15 @@ fn c6_subagent_mode_cannot_escalate() {
     );
     assert_eq!(subagent_mode(Plan, Some("garbage")), Plan);
     assert_eq!(subagent_mode(Default, None), Default);
+    // 'auto' and 'manual' are not modes: they must not silently
+    // downgrade the parent mode to Default.
+    assert_eq!(subagent_mode(Plan, Some("auto")), Plan);
+    assert_eq!(subagent_mode(Plan, Some("manual")), Plan);
+    // Kebab-case spellings parse the same as camelCase.
+    assert_eq!(
+        subagent_mode(AcceptEdits, Some("accept-edits")),
+        AcceptEdits
+    );
 }
 
 struct YesPrompter;
