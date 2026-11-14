@@ -37,3 +37,7 @@ walkdir.workspace = true
 globset.workspace = true
 uuid.workspace = true
 rustyline = { version = "=18.0.1", default-features = false, features = ["with-file-history"] }
+
+[dev-dependencies]
+# pty-driven /model picker tests only; never linked into the product.
+libc.workspace = true

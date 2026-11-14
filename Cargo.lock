@@ -2315,6 +2315,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "globset",
+ "libc",
  "regex",
  "reqwest",
  "rustyline",
