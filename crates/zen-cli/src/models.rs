@@ -683,7 +683,7 @@ pub async fn probe_model(
         let start = Instant::now();
         match backend.chat(req).await {
             Ok(resp) => {
-                let text = resp.message.content.unwrap_or_default();
+                let text = resp.message.text();
                 latencies.push(start.elapsed().as_millis() as u64);
                 qualities.push((task.check)(&text));
             }

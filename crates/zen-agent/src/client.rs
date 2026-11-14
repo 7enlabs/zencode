@@ -1107,7 +1107,7 @@ mod tests {
             trailing
         );
         let r = parse_completion(&body).unwrap();
-        assert_eq!(r.message.content.as_deref(), Some("hi"));
+        assert_eq!(r.message.text_ref(), Some("hi"));
         assert_eq!(r.usage.total_tokens, 12);
     }
 
@@ -1120,7 +1120,7 @@ mod tests {
         .to_string();
         let body = format!("{completion}\n\ntrailing text\n");
         let r = parse_completion(&body).unwrap();
-        assert_eq!(r.message.content.as_deref(), Some("hi"));
+        assert_eq!(r.message.text_ref(), Some("hi"));
     }
 
     #[test]
@@ -1187,7 +1187,7 @@ mod tests {
         .to_string();
         let body = format!("\u{feff}{completion}");
         let r = parse_completion(&body).unwrap();
-        assert_eq!(r.message.content.as_deref(), Some("hi"));
+        assert_eq!(r.message.text_ref(), Some("hi"));
         assert_eq!(openai_cached_tokens(&body), 1500);
         let empty = "\u{feff}{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[]},\"finish_reason\":\"stop\"}]}";
         assert!(
@@ -1425,7 +1425,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(model, "fallback");
-        assert_eq!(resp.message.content.as_deref(), Some("ok"));
+        assert_eq!(resp.message.text_ref(), Some("ok"));
     }
 
     #[test]
@@ -1549,7 +1549,7 @@ mod tests {
             max_tokens: None,
         };
         let r = c.chat(req).await.unwrap();
-        assert_eq!(r.message.content.as_deref(), Some("fixed"));
+        assert_eq!(r.message.text_ref(), Some("fixed"));
         let retries = sink
             .events
             .lock()
@@ -1843,7 +1843,7 @@ mod tests {
         let r = c.chat(chat_req()).await;
         let elapsed = started.elapsed();
         let r = r.unwrap_or_else(|e| panic!("hint at the delay budget must be retried: {e}"));
-        assert_eq!(r.message.content.as_deref(), Some("fixed"));
+        assert_eq!(r.message.text_ref(), Some("fixed"));
         assert_eq!(
             hits.load(Ordering::SeqCst),
             2,
@@ -1944,8 +1944,9 @@ pub(crate) fn anthropic_request_body(req: &ChatRequest) -> Value {
     for m in &req.messages {
         match m.role.as_str() {
             "system" => {
-                if let Some(c) = m.content.as_deref().filter(|c| !c.is_empty()) {
-                    system_parts.push(c.to_string());
+                let text = m.text();
+                if !text.is_empty() {
+                    system_parts.push(text);
                 }
             }
             "tool" => {
@@ -1954,14 +1955,15 @@ pub(crate) fn anthropic_request_body(req: &ChatRequest) -> Value {
                     "content": [{
                         "type": "tool_result",
                         "tool_use_id": m.tool_call_id.as_deref().unwrap_or(""),
-                        "content": m.content.as_deref().unwrap_or(""),
+                        "content": m.text(),
                     }],
                 }));
             }
             "assistant" => {
                 let mut blocks: Vec<Value> = Vec::new();
-                if let Some(c) = m.content.as_deref().filter(|c| !c.is_empty()) {
-                    blocks.push(serde_json::json!({"type": "text", "text": c}));
+                let text = m.text();
+                if !text.is_empty() {
+                    blocks.push(serde_json::json!({"type": "text", "text": text}));
                 }
                 for tc in m.tool_calls.iter().flatten() {
                     let input: Value =
@@ -1978,7 +1980,7 @@ pub(crate) fn anthropic_request_body(req: &ChatRequest) -> Value {
             _ => {
                 messages.push(serde_json::json!({
                     "role": "user",
-                    "content": m.content.as_deref().unwrap_or(""),
+                    "content": m.text(),
                 }));
             }
         }
@@ -2503,7 +2505,7 @@ mod anthropic_tests {
             "usage": {"input_tokens": 120, "output_tokens": 30}
         }"#;
         let resp = parse_anthropic_response(body).unwrap();
-        assert_eq!(resp.message.content.as_deref(), Some("checking "));
+        assert_eq!(resp.message.text_ref(), Some("checking "));
         let calls = resp.message.tool_calls.unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "toolu_9");
@@ -2551,7 +2553,7 @@ mod anthropic_tests {
             "usage": {"input_tokens": 10, "output_tokens": 5}
         }"#;
         let resp = parse_anthropic_response(body).unwrap();
-        assert_eq!(resp.message.content.as_deref(), Some("done"));
+        assert_eq!(resp.message.text_ref(), Some("done"));
         assert!(resp.message.tool_calls.is_none());
     }
 
@@ -2628,7 +2630,7 @@ mod anthropic_tests {
             })
             .await
             .unwrap();
-        assert_eq!(r.message.content.as_deref(), Some("ok"));
+        assert_eq!(r.message.text_ref(), Some("ok"));
         assert_eq!(r.usage.cache_read_input_tokens, 90);
         assert_eq!(r.usage.cache_creation_input_tokens, 10);
 
@@ -2846,7 +2848,7 @@ mod anthropic_tests {
         let r = c.chat(req()).await;
         let elapsed = started.elapsed();
         let r = r.unwrap_or_else(|e| panic!("hint at the delay budget must be retried: {e}"));
-        assert_eq!(r.message.content.as_deref(), Some("ok"));
+        assert_eq!(r.message.text_ref(), Some("ok"));
         assert_eq!(
             hits.load(Ordering::SeqCst),
             2,
@@ -2897,7 +2899,7 @@ mod anthropic_tests {
             let started = Instant::now();
             match c.chat(req()).await {
                 Ok(r) => {
-                    assert_eq!(r.message.content.as_deref(), Some("ok"));
+                    assert_eq!(r.message.text_ref(), Some("ok"));
                     assert_eq!(
                         hits.load(Ordering::SeqCst),
                         2,

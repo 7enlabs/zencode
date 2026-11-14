@@ -50,7 +50,7 @@ async fn text_reply_is_the_result_and_system_prompt_is_sent_not_stored() {
     assert_eq!(r.usage.output_tokens, 5);
     let req = &llm.requests()[0];
     assert_eq!(req.messages[0].role, "system");
-    assert_eq!(req.messages[0].content.as_deref(), Some("you are a test"));
+    assert_eq!(req.messages[0].text_ref(), Some("you are a test"));
     assert_eq!(
         agent.messages()[0].role,
         "user",
@@ -88,20 +88,14 @@ async fn prune_old_tool_results_end_to_end() {
     let pruned_summaries: Vec<_> = last_req
         .messages
         .iter()
-        .filter(|m| {
-            m.role == "tool"
-                && m.content
-                    .as_deref()
-                    .unwrap_or("")
-                    .starts_with("[zen: pruned")
-        })
+        .filter(|m| m.role == "tool" && m.text_ref().unwrap_or("").starts_with("[zen: pruned"))
         .collect();
     assert!(
         !pruned_summaries.is_empty(),
         "expected [zen: pruned markers in the final request"
     );
 
-    let first = pruned_summaries[0].content.as_deref().unwrap();
+    let first = pruned_summaries[0].text_ref().unwrap();
     assert!(
         first.contains("src/f1.rs"),
         "identifier preserved: {}",
@@ -139,7 +133,7 @@ async fn no_prune_disables_pruning_and_capping() {
     assert_eq!(agent.prune_stats().capped, 0);
 
     let tool_msg = agent.messages().iter().find(|m| m.role == "tool").unwrap();
-    assert_eq!(tool_msg.content.as_deref().unwrap().len(), 12_000);
+    assert_eq!(tool_msg.text_ref().unwrap().len(), 12_000);
 }
 
 #[tokio::test]
@@ -158,7 +152,7 @@ async fn oversized_tool_result_is_capped_with_reread_hint() {
     assert!(stats.capped_tokens > 0);
 
     let tool_msg = agent.messages().iter().find(|m| m.role == "tool").unwrap();
-    let content = tool_msg.content.as_deref().unwrap();
+    let content = tool_msg.text_ref().unwrap();
     assert!(
         content.starts_with("[zen: truncated"),
         "capped result carries the marker"
@@ -204,7 +198,7 @@ async fn tool_call_roundtrip_feeds_result_back_and_accumulates_usage() {
     let second = &llm.requests()[1];
     let tool_msg = second.messages.iter().find(|m| m.role == "tool").unwrap();
     assert_eq!(tool_msg.tool_call_id.as_deref(), Some("c1"));
-    assert_eq!(tool_msg.content.as_deref(), Some("ECHOED"));
+    assert_eq!(tool_msg.text_ref(), Some("ECHOED"));
     let events = sink.events.lock().unwrap();
     assert!(events.iter().any(|e| matches!(e,
         AgentEvent::ToolResult { tool_use_id, content, is_error: false, .. }
@@ -226,7 +220,7 @@ async fn unknown_tool_and_bad_json_become_tool_errors_not_crashes() {
     let contents: Vec<&str> = msgs
         .iter()
         .filter(|m| m.role == "tool")
-        .filter_map(|m| m.content.as_deref())
+        .filter_map(|m| m.text_ref())
         .collect();
     assert!(contents[0].contains("Unknown tool 'Nope'"));
     assert!(contents[1].contains("Invalid JSON arguments"));
@@ -245,7 +239,7 @@ async fn deny_is_recorded_in_result_and_event() {
     assert_eq!(r.permission_denials[0].tool_use_id, "w1");
     assert_eq!(r.permission_denials[0].tool_input, json!({"p":"a"}));
     let tool_msg = agent.messages().iter().find(|m| m.role == "tool").unwrap();
-    assert_eq!(tool_msg.content.as_deref(), Some("rule says no"));
+    assert_eq!(tool_msg.text_ref(), Some("rule says no"));
     assert!(
         sink.events
             .lock()
@@ -268,13 +262,7 @@ async fn ask_without_prompter_denies_in_headless_mode() {
     let r = agent.run_turn("go").await;
     assert_eq!(r.permission_denials.len(), 1);
     let tool_msg = agent.messages().iter().find(|m| m.role == "tool").unwrap();
-    assert!(
-        tool_msg
-            .content
-            .as_deref()
-            .unwrap()
-            .contains("non-interactive")
-    );
+    assert!(tool_msg.text_ref().unwrap().contains("non-interactive"));
 }
 
 #[tokio::test]
@@ -459,7 +447,7 @@ async fn c3_10_user_prompt_submit_block_skips_model_and_context_is_appended() {
         },
     );
     agent.run_turn("hello").await;
-    let user = llm.requests()[0].messages[1].content.clone().unwrap();
+    let user = llm.requests()[0].messages[1].text();
     assert!(user.starts_with("hello") && user.contains("CTX: branch main"));
     let calls = hooks.calls.lock().unwrap();
     assert_eq!(calls[0].2["prompt"], "hello");
@@ -494,7 +482,7 @@ async fn c3_7_pre_tool_use_block_and_updated_input() {
         .messages()
         .iter()
         .filter(|m| m.role == "tool")
-        .map(|m| m.content.clone().unwrap())
+        .map(|m| m.text())
         .collect();
     assert_eq!(
         tools,
@@ -679,7 +667,7 @@ async fn c3_8_post_tool_use_updated_output_and_feedback() {
         .find(|m| m.role == "tool")
         .cloned()
         .unwrap();
-    assert_eq!(tool.content.as_deref(), Some("redacted\nlint: 2 warnings"));
+    assert_eq!(tool.text_ref(), Some("redacted\nlint: 2 warnings"));
 }
 
 #[tokio::test]
@@ -718,7 +706,7 @@ async fn c3_9_stop_hook_block_continues_with_reason_and_sets_stop_hook_active() 
     assert_eq!(r.num_turns, 2);
     let second = &llm.requests()[1];
     assert_eq!(
-        second.messages.last().unwrap().content.as_deref(),
+        second.messages.last().unwrap().text_ref(),
         Some("run the tests")
     );
     let calls = hooks.calls.lock().unwrap();
@@ -798,11 +786,10 @@ async fn c10_manual_compact_replaces_history_keeps_pairs_and_fires_hooks() {
         .await
         .unwrap();
     let msgs = agent.messages();
-    assert!(msgs[0].content.as_deref().unwrap().contains("SUMMARY TEXT"));
+    assert!(msgs[0].text_ref().unwrap().contains("SUMMARY TEXT"));
     assert!(
         msgs[0]
-            .content
-            .as_deref()
+            .text_ref()
             .unwrap()
             .starts_with("[Compaction summary")
     );
@@ -818,8 +805,7 @@ async fn c10_manual_compact_replaces_history_keeps_pairs_and_fires_hooks() {
         sreq.messages
             .last()
             .unwrap()
-            .content
-            .as_deref()
+            .text_ref()
             .unwrap()
             .contains("focus on parser")
     );
@@ -857,13 +843,13 @@ async fn compaction_request_is_one_transcript_message_and_summary_tracks_files()
         sreq.messages
     );
     assert_eq!(sreq.messages[0].role, "user");
-    let body = sreq.messages[0].content.as_deref().unwrap();
+    let body = sreq.messages[0].text_ref().unwrap();
     assert!(body.contains("[User]: first"));
     assert!(body.contains(r#"[Assistant tool calls]: Read({"file_path":"src/a.rs"})"#));
     assert!(body.contains("[Tool result]: file body"));
     assert!(body.contains("Summarize this coding session"));
     assert!(!body.contains("SYSTEM-PROMPT-XYZ"));
-    let summary = agent.messages()[0].content.as_deref().unwrap();
+    let summary = agent.messages()[0].text_ref().unwrap();
     assert!(
         summary.contains("SUMMARY TEXT\n\n<read-files>\nsrc/a.rs\n</read-files>"),
         "{summary}"
@@ -923,7 +909,7 @@ async fn set_messages_replaces_history_for_resume() {
     let sent: Vec<String> = llm.requests()[0]
         .messages
         .iter()
-        .filter_map(|m| m.content.clone())
+        .filter_map(|m| m.text_ref().map(str::to_string))
         .collect();
     assert_eq!(sent, vec!["you are a test", "old q", "old a", "new q"]);
 }
@@ -1023,12 +1009,7 @@ async fn c6_subagent_stop_block_continues_subagent() {
     let out = ex.run_subagent(&def, "do", "t").await.unwrap();
     assert_eq!(out, "final");
     assert_eq!(
-        llm.requests()[1]
-            .messages
-            .last()
-            .unwrap()
-            .content
-            .as_deref(),
+        llm.requests()[1].messages.last().unwrap().text_ref(),
         Some("add tests")
     );
 }
@@ -1091,7 +1072,7 @@ async fn c6_1_preloads_skills_into_subagent_system_prompt() {
         ..Default::default()
     };
     assert_eq!(ex.run_subagent(&def, "go", "t").await.unwrap(), "done");
-    let sys = llm.requests()[0].messages[0].content.clone().unwrap();
+    let sys = llm.requests()[0].messages[0].text();
     assert!(sys.starts_with("Base."));
 
     let norm = |p: &str| p.replace('\\', "/");
@@ -1295,7 +1276,7 @@ async fn r7_fenced_args_and_lowercase_name_are_repaired_and_run() {
 
     let second = &llm.requests()[1];
     let tool_msg = second.messages.iter().find(|m| m.role == "tool").unwrap();
-    let content = tool_msg.content.as_deref().unwrap();
+    let content = tool_msg.text_ref().unwrap();
     assert!(content.starts_with("edited"), "{}", content);
     assert!(
         content.contains("mapped to 'Edit'") && content.contains("code fence"),
@@ -1364,10 +1345,10 @@ async fn c5_empty_reply_is_requeried_then_accepted_after_two() {
     let second = &llm.requests()[1];
     let last = second.messages.last().unwrap();
     assert_eq!(last.role, "user");
-    assert!(last.content.as_deref().unwrap().contains("reply was empty"));
+    assert!(last.text_ref().unwrap().contains("reply was empty"));
     assert!(
         !second.messages.iter().any(|m| m.role == "assistant"
-            && m.content.as_deref().unwrap_or("").is_empty()
+            && m.text_ref().unwrap_or("").is_empty()
             && m.tool_calls.is_none()),
         "the empty reply is not kept in history"
     );
@@ -1391,11 +1372,7 @@ async fn c7_unparsed_sample_error_is_requeried_but_other_errors_end_the_run() {
     let r = agent.run_turn("go").await;
     assert_eq!(r.result, "done");
     let last = llm.requests()[1].messages.last().unwrap().clone();
-    assert!(
-        last.content
-            .unwrap()
-            .contains("could not parse your last reply")
-    );
+    assert!(last.text().contains("could not parse your last reply"));
 
     let llm = MockLlm::with_errors(vec![
         Err(anyhow::anyhow!("HTTP 401: bad key")),
@@ -1428,7 +1405,7 @@ async fn r7_well_formed_call_gets_no_repair_note_and_bad_call_lists_fields() {
         .messages()
         .iter()
         .filter(|m| m.role == "tool")
-        .filter_map(|m| m.content.clone())
+        .filter_map(|m| m.text_ref().map(str::to_string))
         .collect();
     assert_eq!(tools[0], "edited");
     assert!(
@@ -1447,7 +1424,7 @@ async fn r7_well_formed_call_gets_no_repair_note_and_bad_call_lists_fields() {
 fn tool_contents(msgs: &[ChatMessage]) -> Vec<String> {
     msgs.iter()
         .filter(|m| m.role == "tool")
-        .filter_map(|m| m.content.clone())
+        .filter_map(|m| m.text_ref().map(str::to_string))
         .collect()
 }
 
@@ -1551,7 +1528,7 @@ async fn r7_todos_reinjected_every_sixth_call_and_after_compaction() {
         .filter(|(_, r)| {
             r.messages
                 .last()
-                .and_then(|m| m.content.as_deref())
+                .and_then(|m| m.text_ref())
                 .is_some_and(|c| c.contains("[~] fix the parser"))
         })
         .map(|(i, _)| i + 1)
@@ -1559,7 +1536,7 @@ async fn r7_todos_reinjected_every_sixth_call_and_after_compaction() {
     assert_eq!(with_todo, vec![6, 12]);
 
     agent.compact(None, "manual").await.unwrap();
-    let summary = agent.messages()[0].content.clone().unwrap();
+    let summary = agent.messages()[0].text();
     assert!(
         summary.contains("SUMMARY TEXT") && summary.contains("[~] fix the parser"),
         "{}",
@@ -1586,7 +1563,7 @@ async fn r7_short_turn_and_empty_todo_list_get_no_notes() {
         agent
             .messages()
             .iter()
-            .all(|m| !m.content.as_deref().unwrap_or("").contains("[zen:"))
+            .all(|m| !m.text_ref().unwrap_or("").contains("[zen:"))
     );
 }
 
@@ -1615,20 +1592,13 @@ async fn r7_edit_then_answer_gets_one_reminder_then_bash_then_success() {
         .iter()
         .filter(|m| {
             m.role == "user"
-                && m.content
-                    .as_deref()
+                && m.text_ref()
                     .unwrap_or("")
                     .contains("have not run any command")
         })
         .collect();
     assert_eq!(reminders.len(), 1);
-    assert!(
-        reminders[0]
-            .content
-            .as_deref()
-            .unwrap()
-            .contains("src/a.rs")
-    );
+    assert!(reminders[0].text_ref().unwrap().contains("src/a.rs"));
 }
 
 #[tokio::test]
@@ -1690,9 +1660,7 @@ async fn r7_failing_verify_command_stops_after_two_rounds() {
     let feedback = agent
         .messages()
         .iter()
-        .filter(|m| {
-            m.role == "user" && m.content.as_deref().unwrap_or("").contains("FAILING-CHECK")
-        })
+        .filter(|m| m.role == "user" && m.text_ref().unwrap_or("").contains("FAILING-CHECK"))
         .count();
     assert_eq!(feedback, 2);
     assert!(sink.events.lock().unwrap().iter().any(|e| matches!(e,
@@ -1719,8 +1687,7 @@ async fn r7_tool_call_written_as_text_runs_as_a_call() {
     let tool_msg = second.messages.iter().find(|m| m.role == "tool").unwrap();
     assert!(
         tool_msg
-            .content
-            .as_deref()
+            .text_ref()
             .unwrap()
             .contains("written as message text")
     );
@@ -1951,7 +1918,7 @@ async fn plan_mode_rejects_hallucinated_mutating_call_by_the_harness() {
         .messages()
         .iter()
         .filter(|m| m.role == "tool")
-        .filter_map(|m| m.content.as_deref())
+        .filter_map(|m| m.text_ref())
         .collect();
     assert_eq!(tool_contents.len(), 1, "one tool result expected");
     assert!(
@@ -1963,7 +1930,7 @@ async fn plan_mode_rejects_hallucinated_mutating_call_by_the_harness() {
         !agent
             .messages()
             .iter()
-            .any(|m| m.content.as_deref().unwrap_or("").contains("MUTATED")),
+            .any(|m| m.text_ref().unwrap_or("").contains("MUTATED")),
         "the mutating tool must never execute in plan mode"
     );
     assert!(
@@ -2133,12 +2100,7 @@ async fn error_in_one_parallel_call_does_not_block_others() {
         .messages()
         .iter()
         .filter(|m| m.role == "tool")
-        .map(|m| {
-            (
-                m.tool_call_id.as_deref().unwrap(),
-                m.content.as_deref().unwrap(),
-            )
-        })
+        .map(|m| (m.tool_call_id.as_deref().unwrap(), m.text_ref().unwrap()))
         .collect();
     assert_eq!(tool_msgs.len(), 3);
     assert_eq!(tool_msgs[0].0, "r1");

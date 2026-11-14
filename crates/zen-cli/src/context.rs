@@ -3,14 +3,14 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use zen_core::{ChatMessage, ToolDefinition};
+use zen_core::{ChatMessage, IMAGE_PART_TOKEN_ESTIMATE, ToolDefinition};
 
 fn est_tokens(s: &str) -> u64 {
     s.len() as u64 / 4
 }
 
 fn message_tokens(m: &ChatMessage) -> u64 {
-    let mut n = m.content.as_deref().map(est_tokens).unwrap_or(0);
+    let mut n = est_tokens(&m.text()) + m.image_part_count() as u64 * IMAGE_PART_TOKEN_ESTIMATE;
     if let Some(calls) = &m.tool_calls {
         for c in calls {
             n += est_tokens(&c.function.name) + est_tokens(&c.function.arguments);
@@ -294,7 +294,7 @@ fn analyze(parsed: &ParsedSession) -> ContextAnalysis {
         let later_text: Vec<String> = req
             .messages
             .iter()
-            .filter_map(|m| m.content.clone())
+            .filter_map(|m| m.text_ref().map(str::to_string))
             .collect();
 
         for (i, m) in req.messages.iter().enumerate().skip(history_start) {
@@ -313,12 +313,11 @@ fn analyze(parsed: &ParsedSession) -> ContextAnalysis {
                 if tokens >= PRUNE_CANDIDATE_TOKENS {
                     let id = base.split_whitespace().nth(1).unwrap_or("");
                     if !id.is_empty() {
-                        let mentioned_later = req.messages.iter().skip(i + 1).any(|lm| {
-                            lm.content
-                                .as_deref()
-                                .map(|c| c.contains(id))
-                                .unwrap_or(false)
-                        });
+                        let mentioned_later = req
+                            .messages
+                            .iter()
+                            .skip(i + 1)
+                            .any(|lm| lm.text().contains(id));
                         if !mentioned_later {
                             flag = true;
                             reason = Some(format!(

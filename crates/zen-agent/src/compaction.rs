@@ -79,7 +79,7 @@ pub(crate) async fn compact_impl(
     )
     .await?;
 
-    let model_summary = resp.message.content.clone().unwrap_or_default();
+    let model_summary = resp.message.text();
     if model_summary.trim().is_empty() {
         anyhow::bail!("compaction produced an empty summary");
     }
@@ -139,7 +139,8 @@ fn truncate_chars(s: &str, max: usize) -> String {
 pub fn serialize_conversation(msgs: &[ChatMessage]) -> String {
     let mut out: Vec<String> = Vec::new();
     for m in msgs {
-        let text = m.content.as_deref().unwrap_or("").trim();
+        let text = m.transcript_text();
+        let text = text.trim();
         match m.role.as_str() {
             "user" if !text.is_empty() => out.push(format!("[User]: {text}")),
             "assistant" => {
@@ -176,10 +177,10 @@ impl FileOps {
     pub fn collect(msgs: &[ChatMessage]) -> Self {
         let mut ops = FileOps::default();
         for m in msgs {
-            let text = m.content.as_deref().unwrap_or("");
+            let text = m.transcript_text();
             if m.role == "user" && text.starts_with(SUMMARY_PREFIX) {
-                ops.read.extend(block_lines(text, "read-files"));
-                ops.modified.extend(block_lines(text, "modified-files"));
+                ops.read.extend(block_lines(&text, "read-files"));
+                ops.modified.extend(block_lines(&text, "modified-files"));
             }
             for c in m.tool_calls.iter().flatten() {
                 let Ok(args) = serde_json::from_str::<serde_json::Value>(&c.function.arguments)
@@ -275,6 +276,28 @@ mod tests {
         assert!(t.contains("[… 50 more characters truncated]"));
         assert!(t.ends_with("[Assistant]: done"));
         assert!(t.len() < TOOL_RESULT_CHARS + 300);
+    }
+
+    #[test]
+    fn serialize_conversation_replaces_image_parts_with_placeholder() {
+        let payload = "A".repeat(10_000);
+        let msgs = vec![
+            ChatMessage::user_parts(vec![
+                ContentPart::text("what is wrong in this screenshot?"),
+                ContentPart::image_url(format!("data:image/png;base64,{payload}")),
+            ]),
+            ChatMessage::assistant(Some("the button is misaligned".into()), None),
+        ];
+        let t = serialize_conversation(&msgs);
+        assert!(
+            t.contains("[User]: what is wrong in this screenshot?[image]"),
+            "image part renders as a placeholder next to the text: {t}"
+        );
+        assert!(
+            !t.contains(&payload),
+            "base64 payload must never reach the compaction transcript"
+        );
+        assert!(t.contains("[Assistant]: the button is misaligned"));
     }
 
     #[test]

@@ -226,8 +226,8 @@ pub fn prune_messages(
         if m.role != "tool" {
             continue;
         }
-        let content = m.content.as_deref().unwrap_or("");
-        let tokens = est_tokens(content);
+        let content = m.text();
+        let tokens = est_tokens(&content);
         let age = current_turn.saturating_sub(turn_of(turn_starts, i));
         let (label, identifier) = match m.tool_call_id.as_deref().and_then(|id| args_by_id.get(id))
         {
@@ -241,7 +241,7 @@ pub fn prune_messages(
         let later_text: String = messages
             .iter()
             .skip(i + 1)
-            .filter_map(|m| m.content.as_deref())
+            .filter_map(|m| m.text_ref())
             .collect::<Vec<_>>()
             .join("\n");
         if should_prune(
@@ -254,13 +254,13 @@ pub fn prune_messages(
         )
         .is_some()
         {
-            let original = messages[i].content.clone().unwrap_or_default();
+            let original = messages[i].text();
             let summary = format!(
                 "{}\nOriginal first line: {}",
                 summarize_pruned(&label, identifier.as_deref(), tokens, age),
                 first_line(&original, 200)
             );
-            messages[i].content = Some(summary);
+            messages[i].content = Some(summary.into());
             stats.pruned += 1;
             stats.pruned_tokens += tokens;
         }
@@ -431,7 +431,7 @@ mod tests {
         let current_turn = turn_starts.len() - 1;
         let before: u64 = messages
             .iter()
-            .filter_map(|m| m.content.as_deref())
+            .filter_map(|m| m.text_ref())
             .map(est_tokens)
             .sum();
 
@@ -442,7 +442,7 @@ mod tests {
 
         let after: u64 = messages
             .iter()
-            .filter_map(|m| m.content.as_deref())
+            .filter_map(|m| m.text_ref())
             .map(est_tokens)
             .sum();
         assert!(
@@ -453,7 +453,7 @@ mod tests {
         );
 
         let pruned_msg = &messages[2];
-        let content = pruned_msg.content.as_deref().unwrap();
+        let content = pruned_msg.text();
         assert!(content.starts_with(PRUNE_MARKER), "marker present");
         assert!(content.contains("src/file1.rs"), "identifier preserved");
         assert_eq!(pruned_msg.role, "tool");
@@ -476,7 +476,7 @@ mod tests {
 
         let kept = &messages[7];
         assert!(
-            !kept.content.as_deref().unwrap().starts_with(PRUNE_MARKER),
+            !kept.text().starts_with(PRUNE_MARKER),
             "protected identifier must not be pruned"
         );
     }

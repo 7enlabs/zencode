@@ -183,7 +183,7 @@ impl EventSink for AcpSink {
 }
 
 fn emit_assistant(sink: &AcpSink, message: &ChatMessage) {
-    if let Some(text) = message.content.as_deref().filter(|t| !t.is_empty()) {
+    if let Some(text) = message.text_ref().filter(|t| !t.is_empty()) {
         sink.notify(SessionUpdate::AgentMessageChunk {
             content: ContentBlock::Text {
                 text: text.to_string(),
