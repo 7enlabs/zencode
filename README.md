@@ -280,6 +280,7 @@ no file paths. Aggregates are public at `GET https://count.runzen.dev/stats`.
 
 Opt out at any time, through any of:
 
+- `zen telemetry off` (writes `"telemetry": "off"` to `~/.zen/settings.json`)
 - `DO_NOT_TRACK=1`
 - `ZENCODE_TELEMETRY=0`
 - `"telemetry": "off"` in `~/.zen/settings.json`
