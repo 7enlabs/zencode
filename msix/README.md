@@ -1,4 +1,4 @@
-# ZenCode MSIX packaging (Microsoft Store)
+# Zen CLI MSIX packaging (Microsoft Store)
 
 Packages the Windows build of `zen.exe` as an MSIX for the Microsoft
 Store. A Store package is re-signed by Microsoft, so users install
@@ -7,12 +7,12 @@ without SmartScreen / Smart App Control warnings.
 Status: **template, identity filled - ready to pack once the logo assets land.**
 
 1. **Identity** - filled from the Partner Center reservation
-   (team lead, 2026-11-10): Name 7ENLabs.ZenCode, Publisher
+   (team lead, 2026-11-10; Store values updated 2026-11-14): Name 7ENLabs.ZenCLI, Publisher
    CN=3B32146C-7F74-4349-BE62-4416DB18376F, Version 0.1.0.0,
-   Store ID 9NK3CWNMJKM9, Package Family Name
-   7ENLabs.ZenCode_meqb5mtvkpysg. Do not invent values, an upload
+   Store ID 9PC8DGHLJ84N, Package Family Name
+   7ENLabs.ZenCLI_meqb5mtvkpysg. Do not invent values, an upload
    with a mismatched Publisher is rejected. PublisherDisplayName
-   7EN Labs is the plan proposal, pending confirmation by Zen.
+   7EN Labs, confirmed unchanged by the team lead (2026-11-14).
 2. **Logo assets** - the PNG files listed in `Assets/README.md`, from
    the brand owner. None exist yet; do not fabricate them.
 
