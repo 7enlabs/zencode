@@ -551,6 +551,7 @@ pub fn result_json(result: &RunResult) -> serde_json::Value {
     let stop_reason = match result.subtype.as_str() {
         "success" => json!("end_turn"),
         "error_max_turns" => json!("max_turns"),
+        "loop_stuck" => json!("loop_stuck"),
         _ => serde_json::Value::Null,
     };
     if let Some(obj) = v.as_object_mut() {
@@ -762,6 +763,8 @@ mod tests {
         assert!(result_json(&r)["stop_reason"].is_null());
         r.subtype = "error_max_turns".into();
         assert_eq!(result_json(&r)["stop_reason"], "max_turns");
+        r.subtype = "loop_stuck".into();
+        assert_eq!(result_json(&r)["stop_reason"], "loop_stuck");
     }
 
     #[test]

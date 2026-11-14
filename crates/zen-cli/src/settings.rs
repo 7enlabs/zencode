@@ -98,6 +98,7 @@ pub struct ResolvedConfig {
 
     pub max_parallel_tool_calls: usize,
     pub max_turns: usize,
+    pub loop_stuck_k: usize,
 
     pub max_budget_usd: Option<f64>,
 
@@ -808,6 +809,13 @@ pub fn resolve_config_with_home(
         .or(merged.max_turns)
         .unwrap_or(DEFAULT_MAX_TURNS);
 
+    // K = 0 disables the guard, so the resolved value is used as-is
+    // (no .max(1) clamp like max_turns).
+    let loop_stuck_k = cli
+        .loop_stuck_k
+        .or(merged.loop_stuck_k)
+        .unwrap_or(zen_agent::loop_guard::DEFAULT_LOOP_STUCK_K);
+
     Ok(ResolvedConfig {
         model,
         model_auto,
@@ -862,6 +870,7 @@ pub fn resolve_config_with_home(
         auto_archive_days: sessions_auto_archive_days(merged.extra.get("sessions")),
         max_parallel_tool_calls: max_parallel_tool_calls(merged.extra.get("maxParallelToolCalls")),
         max_turns,
+        loop_stuck_k,
         max_budget_usd: merged.extra.get("maxBudgetUsd").and_then(|v| v.as_f64()),
         budget_warn_at: merged.extra.get("budgetWarnAt").and_then(|v| v.as_f64()),
         context_window: merged.context_window,
@@ -956,6 +965,10 @@ mod tests {
         assert_eq!(cfg.model, DEFAULT_MODEL);
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
         assert_eq!(cfg.max_turns, DEFAULT_MAX_TURNS);
+        assert_eq!(
+            cfg.loop_stuck_k,
+            zen_agent::loop_guard::DEFAULT_LOOP_STUCK_K
+        );
         assert_eq!(cfg.permission_mode, PermissionMode::Default);
     }
 
@@ -1219,7 +1232,7 @@ mod tests {
         fs::create_dir_all(dir.join(".zen")).unwrap();
         fs::write(
             dir.join(".zen/settings.json"),
-            r#"{"model":"from-file","baseUrl":"https://file.example.com/v1","permissions":{"defaultMode":"acceptEdits","allow":["Read"]}}"#,
+            r#"{"model":"from-file","baseUrl":"https://file.example.com/v1","loopStuckK":5,"permissions":{"defaultMode":"acceptEdits","allow":["Read"]}}"#,
         )
         .unwrap();
 
@@ -1247,6 +1260,31 @@ mod tests {
         assert_eq!(cfg.permission_mode, PermissionMode::AcceptEdits);
         assert!(cfg.permissions.allow.contains(&"Read".to_string()));
         assert!(!cfg.loaded_sources.is_empty());
+        assert_eq!(cfg.loop_stuck_k, 5);
+    }
+
+    #[test]
+    fn config_loop_stuck_k_cli_overrides_file() {
+        let _env = env_lock();
+        let dir = std::env::temp_dir().join(format!("zen_cfg_test_k_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".zen")).unwrap();
+        fs::write(dir.join(".zen/settings.json"), r#"{"loopStuckK":5}"#).unwrap();
+        let home = std::env::temp_dir().join(format!("zen_cfg_test_k_home_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        let cli = Cli::parse_from([
+            "zen",
+            "--setting-sources",
+            "project",
+            "--trust-folder",
+            "--loop-stuck-k",
+            "7",
+        ]);
+        let cfg = resolve_config_with_home(&cli, &dir, Some(&home)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        assert_eq!(cfg.loop_stuck_k, 7);
     }
 
     #[test]

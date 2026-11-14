@@ -500,6 +500,7 @@ pub fn base_agent_config(
             core_mode(cfg.permission_mode),
         ),
         max_turns: cfg.max_turns.max(1),
+        loop_stuck_k: cfg.loop_stuck_k,
         max_output_tokens: cli.max_output_tokens,
         permission_mode: core_mode(cfg.permission_mode),
         context_window,

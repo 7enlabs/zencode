@@ -587,6 +587,10 @@ pub struct Settings {
     pub auto_commit: Option<bool>,
     #[serde(default)]
     pub max_turns: Option<usize>,
+    /// Loop-guard repeat threshold K (settings key `loopStuckK`);
+    /// 0 disables the guard. Default 3.
+    #[serde(default)]
+    pub loop_stuck_k: Option<usize>,
     #[serde(default)]
     pub context_window: Option<u64>,
 

@@ -2415,6 +2415,7 @@ fn build_repl_config(
         fallback_models: cfg.fallback_models.clone(),
         system_prompt: crate::build_system_prompt(cli, cwd, None).unwrap_or_default(),
         max_turns: cfg.max_turns.max(1),
+        loop_stuck_k: cfg.loop_stuck_k,
         permission_mode: crate::agent_run::core_mode(cfg.permission_mode),
         tool_timeouts: cfg.tool_timeouts.clone(),
         max_continuations: cfg.max_continuations,
@@ -3654,6 +3655,27 @@ mod model_picker_tests {
         let config = build_repl_config(&cli, &cfg, &std::env::temp_dir());
         assert_eq!(config.context_window, 128_000);
         assert_eq!(config.auto_compact_threshold, Some(102_400));
+    }
+
+    #[test]
+    fn loop_stuck_k_flows_into_agent_config() {
+        use clap::Parser;
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cli = crate::cli::Cli::parse_from(["zen"]);
+        let mut cfg = test_cfg();
+        assert_eq!(
+            cfg.loop_stuck_k,
+            zen_agent::loop_guard::DEFAULT_LOOP_STUCK_K
+        );
+        // REPL path and headless path both pass K through; a
+        // non-default K flows unchanged, and 0 stays 0 (no clamp).
+        for k in [3, 5, 0] {
+            cfg.loop_stuck_k = k;
+            let config = build_repl_config(&cli, &cfg, &std::env::temp_dir());
+            assert_eq!(config.loop_stuck_k, k);
+            let config = crate::agent_run::base_agent_config(&cfg, &cli, "");
+            assert_eq!(config.loop_stuck_k, k);
+        }
     }
 
     #[test]
